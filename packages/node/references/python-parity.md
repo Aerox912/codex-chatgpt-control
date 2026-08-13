@@ -63,6 +63,24 @@ Python does not reinterpret attachment paths. It sends the path string to the No
 
 Python exposes the backend-visible `files.preflight` command as `chatgpt.files.preflight(...)`. It returns the same `CommandResult` as TypeScript and can be decoded with `FilePreflightData` when callers want typed metadata. The command validates paths, readability, file-vs-directory status, size limits, duplicate basenames, duplicate resolved paths, zero-byte files, and extension-based MIME/category guesses without opening ChatGPT or reading file contents for MIME detection. Zero-byte files are blocked before browser interaction. Optional `include_hashes=True` / wire `includeHashes: true` adds SHA-256 metadata to `FilePreflightFile.sha256` for local diagnostics; file contents are never returned.
 
+## Workspace Project Routing
+
+Python forwards the same `threads.new` Project target to the Node backend:
+
+```python
+result = chatgpt.threads.new(project={
+    "name": "Codex ChatGPT Control",
+    "icon": "Code Brackets",
+    "color": "purple",
+    "confirm_creation": True,
+})
+```
+
+Nested `confirm_creation` is normalized to the shared `confirmCreation` wire
+field. Python does not duplicate workspace naming, matching, or DOM logic.
+Project discovery, confirmation blockers, visible creation, and postcondition
+verification remain owned by the TypeScript backend.
+
 ## Project Sources
 
 Python exposes the protocol-visible Project Sources commands through `chatgpt.projects.sources`:

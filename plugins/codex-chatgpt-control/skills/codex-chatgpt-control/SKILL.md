@@ -42,11 +42,20 @@ const loaderUrl = new URL(
 const { importChatGPTControl } = await import(`${loaderUrl.href}?t=${Date.now()}`);
 const { createChatGPT } = await importChatGPTControl();
 
+const workspacePath = typeof globalThis.nodeRepl?.cwd === "string"
+  ? globalThis.nodeRepl.cwd
+  : undefined;
 const chatgpt = createChatGPT({
   agent: globalThis.agent,
+  ...(workspacePath === undefined ? {} : { workspaceProject: { path: workspacePath } }),
   reporting: { enabled: true, includeContent: false }
 });
 ```
+
+This routes new Chat threads into a matching workspace-named ChatGPT Project.
+If the Project is missing, stop on the creation confirmation blocker. Set
+`confirmCreation: true` only after the user explicitly approves creating it.
+Use `project: false` on a new-thread selector when the user wants a global chat.
 
 When using this installed plugin, do not import from an older manually installed skill runtime. Use the plugin-bundled runtime so the installed plugin and SDK stay in sync.
 

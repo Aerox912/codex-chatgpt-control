@@ -139,6 +139,34 @@ const result = await chatgpt.runner.run(reviewer, {
 console.log(result.output_text);
 ```
 
+Route every new Chat workflow into a ChatGPT Project named after the current
+Codex workspace:
+
+```ts
+const workspacePath = globalThis.nodeRepl?.cwd;
+if (typeof workspacePath !== "string") {
+  throw new Error("The Codex workspace path is unavailable in this runtime.");
+}
+const chatgpt = createChatGPT({
+  agent: globalThis.agent,
+  workspaceProject: { path: workspacePath }
+});
+```
+
+The local path is reduced to a display name before browser work. For example,
+`C:\Users\you\codex-chatgpt-control` becomes `Codex ChatGPT Control`. Matching is
+case- and punctuation-insensitive but not fuzzy, so a similarly formatted
+existing Project opens automatically without colliding with unrelated names.
+The SDK chooses a deterministic icon and color from the name. Code-oriented
+workspaces use the purple `Code Brackets` icon.
+
+If no matching Project exists, `threads.new` returns a resumable
+`chatgpt_project_creation_confirmation_required` blocker. It does not create
+account state until the user approves and the caller retries with
+`workspaceProject: { path: workspacePath, confirmCreation: true }`. Pass
+`thread: { type: "new", project: false }` or `threads.new({ project: false })`
+to opt out for one new thread.
+
 Inspect and apply visible configuration:
 
 ```ts

@@ -25,6 +25,31 @@ describe("createChatGPT", () => {
     });
   });
 
+  it("routes new workflows into a workspace-named Project with an explicit opt-out", () => {
+    const chatgpt = createChatGPT({
+      workspaceProject: { path: String.raw`C:\Users\you\codex-chatgpt-control` }
+    });
+    const plan = chatgpt.plan("new-ask-read", { prompt: "reply with hi" });
+    const agent = chatgpt.agent({ name: "project-agent" });
+    const optedOut = chatgpt.runner.plan(agent, {
+      input: "reply with hi",
+      thread: { type: "new", project: false }
+    });
+
+    expect(plan?.steps[1]).toEqual({
+      id: "new",
+      command: "threads.new",
+      args: {
+        project: {
+          name: "Codex ChatGPT Control",
+          icon: "Code Brackets",
+          color: "purple"
+        }
+      }
+    });
+    expect(optedOut.steps[1]).toEqual({ id: "new", command: "threads.new" });
+  });
+
   it("preserves visible mode by default but honors explicit client mode defaults", () => {
     const preserving = createChatGPT();
     const configured = createChatGPT({ defaults: { mode: { effort: "Thinking" } } });

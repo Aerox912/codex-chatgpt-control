@@ -22,6 +22,7 @@ export * from "./commands/artifacts.js";
 export * from "./commands/sequence.js";
 export * from "./commands/files.js";
 export * from "./commands/project-sources.js";
+export * from "./commands/projects.js";
 export * from "./commands/modes.js";
 export * from "./commands/experience.js";
 export * from "./commands/configuration.js";

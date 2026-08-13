@@ -72,8 +72,19 @@ Then use the built bundle from a bridge-enabled host runtime:
 ```ts
 import { createChatGPT } from "/absolute/path/to/codex-chatgpt-control/packages/node/dist/codex-chatgpt-control.bundle.mjs";
 
-const chatgpt = createChatGPT({ agent: globalThis.agent });
+const workspacePath = typeof globalThis.nodeRepl?.cwd === "string"
+  ? globalThis.nodeRepl.cwd
+  : undefined;
+const chatgpt = createChatGPT({
+  agent: globalThis.agent,
+  ...(workspacePath === undefined ? {} : { workspaceProject: { path: workspacePath } })
+});
 ```
+
+This routes new Chat threads into a matching workspace-named ChatGPT Project.
+If the Project is missing, stop on the creation confirmation blocker. Set
+`confirmCreation: true` only after the user explicitly approves creating it.
+Use `project: false` on a new-thread selector when the user wants a global chat.
 
 Prefer normal package imports in projects that depend on the published npm package:
 

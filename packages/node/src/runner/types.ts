@@ -1,6 +1,7 @@
 import type {
   AttachedFile,
   ChatGPTExperience,
+  ChatGPTProjectTarget,
   CommandResult,
   CommandStatus,
   CompletionState,
@@ -24,7 +25,7 @@ import type { UntrustedOutputReturnEnvelope } from "../safety/untrusted-output.j
 import type { ChatGPTRunStream } from "./stream.js";
 
 export type ChatGPTThreadSelector =
-  | { type: "new" }
+  | { type: "new"; project?: ChatGPTProjectTarget | false }
   | { type: "current" }
   | { type: "url"; url: string }
   | { type: "conversationId"; conversationId: string }

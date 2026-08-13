@@ -772,22 +772,27 @@
       "summary": "Read the latest response from the current Work task."
     },
     {
-      "args": {},
+      "args": {
+        "project": "optional Project name, icon, color, and confirmCreation flag; false opts out of a configured workspace Project",
+        "timeoutMs": "optional Project lookup and navigation timeout"
+      },
       "blockers": [
         "browser_bridge_unavailable",
         "login_required",
-        "captcha",
-        "rate_limit",
-        "selector_drift"
+        "selector_drift",
+        "confirmation"
       ],
       "defaults": {},
       "defaultTimeoutMs": 30000,
-      "examples": [],
+      "examples": [
+        "await chatgpt.threads.new({ project: { name: \"Codex ChatGPT Control\" } });",
+        "await chatgpt.threads.new({ project: { name: \"Codex ChatGPT Control\", icon: \"Code Brackets\", color: \"purple\", confirmCreation: true } });"
+      ],
       "layer": "primitive",
       "name": "threads.new",
       "retryPolicy": "Return structured CommandResult failures; retry only when the blocker is recoverable and no duplicate prompt will be submitted.",
-      "risk": "low",
-      "summary": "Open a new ChatGPT thread."
+      "risk": "medium",
+      "summary": "Open a new ChatGPT thread, optionally inside a matching Project with confirmation-gated creation."
     },
     {
       "args": {

@@ -7,6 +7,7 @@ import type {
   AttachFilesArgs,
   BootstrapArgs,
   ChatGPTExperience,
+  ChatGPTProjectTarget,
   CommandResult,
   ConfigurationInspectionData,
   ConfigurationSelection,
@@ -49,11 +50,13 @@ import type {
   WorkStatusArgs,
   WorkStatusData,
   WorkWaitArgs,
-  WorkWaitData
+  WorkWaitData,
+  WorkspaceProjectOptions
 } from "./types.js";
 import { downloadLatestArtifact, listLatestArtifacts, waitForArtifact } from "./commands/artifacts.js";
 import { attachFiles, downloadLatestFile, preflightFiles } from "./commands/files.js";
 import { addProjectSources, buildProjectSourceAddPlan, listProjectSources } from "./commands/project-sources.js";
+import { workspaceProjectTarget } from "./commands/projects.js";
 import { doctor, type DoctorArgs, type DoctorReport } from "./commands/doctor.js";
 import { askMessage, composeMessage, messageStatus, readLatest, submitMessage, waitAndRead, waitForMessage } from "./commands/messages.js";
 import { getMode, selectTool, setMode } from "./commands/modes.js";
@@ -91,6 +94,7 @@ import { redactReportValue, type ReportRedactionOptions } from "./safety/report-
 import { explainCommandBlocker, type BlockerExplanation, type ExplainBlockerOptions } from "./diagnostics/blockers.js";
 
 export type ChatGPTClientOptions = RuntimeEnv & {
+  workspaceProject?: WorkspaceProjectOptions | false;
   defaults?: {
     experience?: Exclude<ChatGPTExperience, "unknown">;
     configuration?: ConfigurationSelection;
@@ -99,6 +103,7 @@ export type ChatGPTClientOptions = RuntimeEnv & {
     read?: boolean | ReadLatestArgs;
     existingTab?: BootstrapArgs["existingTab"];
     preferExistingTab?: boolean;
+    project?: ChatGPTProjectTarget | false;
   };
   limits?: Partial<RunLimits>;
   reporting?: RunReportOptions;
@@ -113,7 +118,7 @@ export type RunLimits = {
 };
 
 export type ThreadSelector =
-  | { type: "new" }
+  | { type: "new"; project?: ChatGPTProjectTarget | false }
   | { type: "current" }
   | { type: "url"; url: string }
   | { type: "conversationId"; conversationId: string }
@@ -274,13 +279,14 @@ export type ChatGPTClient = {
 export function createChatGPT(options: ChatGPTClientOptions = {}): ChatGPTClient {
   const env = runtimeEnv(options);
   const limits = normalizeLimits(options.limits);
+  const defaults = resolveClientDefaults(options);
   const runnerRun = ((agent, input, runnerOptions?: { stream?: boolean }) => {
-    const run = () => runAgentWorkflow(agent, input, env, limits, options.defaults, options.reporting);
+    const run = () => runAgentWorkflow(agent, input, env, limits, defaults, options.reporting);
     return runnerOptions?.stream === true ? streamFromRunResult(run) : run();
   }) as ChatGPTRunner["run"];
   const runner: ChatGPTRunner = {
     run: runnerRun,
-    plan: (agent, input) => planAgentWorkflow(agent, input, options.defaults)
+    plan: (agent, input) => planAgentWorkflow(agent, input, defaults)
   };
 
   return {
@@ -290,16 +296,16 @@ export function createChatGPT(options: ChatGPTClientOptions = {}): ChatGPTClient
     responses: {
       create: args => createResponse(args, runner, env.now)
     },
-    ask: args => runGuarded(planAskWorkflow(args, options.defaults), env, limits, reportOptions(args.report, options.reporting)),
-    askInThread: args => runGuarded(planAskWorkflow(args, options.defaults), env, limits, reportOptions(args.report, options.reporting)),
-    askWithFiles: args => runGuarded(planAskWorkflow(args, options.defaults), env, limits, reportOptions(args.report, options.reporting)),
-    askAndDownload: args => runGuarded(planAskWorkflow(args, options.defaults), env, limits, reportOptions(args.report, options.reporting)),
-    runMessages: args => runGuarded(planRunMessages(args, options.defaults), env, limits, reportOptions(args.report, options.reporting)),
-    openThread: thread => runSequence(planOpenThread(thread), env),
+    ask: args => runGuarded(planAskWorkflow(args, defaults), env, limits, reportOptions(args.report, options.reporting)),
+    askInThread: args => runGuarded(planAskWorkflow(args, defaults), env, limits, reportOptions(args.report, options.reporting)),
+    askWithFiles: args => runGuarded(planAskWorkflow(args, defaults), env, limits, reportOptions(args.report, options.reporting)),
+    askAndDownload: args => runGuarded(planAskWorkflow(args, defaults), env, limits, reportOptions(args.report, options.reporting)),
+    runMessages: args => runGuarded(planRunMessages(args, defaults), env, limits, reportOptions(args.report, options.reporting)),
+    openThread: thread => runSequence(planOpenThread(thread, defaults), env),
     readLatest: args => readLatest(env, args),
     copyLatest: args => copyResponse(env, args),
     downloadLatest: args => downloadLatestFile(env, args),
-    runPlan: plan => runPlanInvocation(plan, env, limits, options.defaults, options.reporting),
+    runPlan: plan => runPlanInvocation(plan, env, limits, defaults, options.reporting),
     doctor: args => doctor(env, args),
     createReport: (result, args) => createRunReport(env, result, args ?? options.reporting ?? {}),
     explainBlocker: (resultOrBlocker, args) => explainCommandBlocker(resultOrBlocker, args),
@@ -308,7 +314,7 @@ export function createChatGPT(options: ChatGPTClientOptions = {}): ChatGPTClient
       redact: async (value, args) => resultOk(redactReportValue(value, args), {}),
       summarize: async (result, args) => resultOk(redactReportValue(resultSummary(result), args), {})
     },
-    plan: (name, args) => planByName(name, args, options.defaults),
+    plan: (name, args) => planByName(name, args, defaults),
     commands: filter => commandDescriptors().filter(descriptor => filter?.layer === undefined || descriptor.layer === filter.layer),
     describe: name => describeCommand(name),
     help: topic => helpText(topic),
@@ -336,7 +342,7 @@ export function createChatGPT(options: ChatGPTClientOptions = {}): ChatGPTClient
       }
     },
     threads: {
-      new: args => newThread(env, args),
+      new: args => newThread(env, newThreadArgs(args, defaults.project)),
       search: args => searchThreads(env, args),
       open: args => openThread(env, args)
     },
@@ -634,7 +640,7 @@ function planAgentWorkflowFromNormalized<TOutput>(
       input.existingTab ?? agent.defaults.existingTab ?? defaults.existingTab,
       input.preferExistingTab ?? agent.defaults.preferExistingTab ?? defaults.preferExistingTab
     ),
-    ...threadSteps(thread)
+    ...threadSteps(thread, defaults.project)
   ];
 
   appendSurfaceConfigurationSteps(steps, {
@@ -848,7 +854,7 @@ function planAskWorkflow(args: AskWorkflowArgs, defaults: ChatGPTClientOptions["
       args.existingTab ?? defaults.existingTab,
       args.preferExistingTab ?? defaults.preferExistingTab
     ),
-    ...threadSteps(thread)
+    ...threadSteps(thread, defaults.project)
   ];
 
   appendSurfaceConfigurationSteps(steps, {
@@ -930,7 +936,7 @@ function planRunMessages(args: RunMessagesArgs, defaults: ChatGPTClientOptions["
       args.existingTab ?? defaults.existingTab,
       args.preferExistingTab ?? defaults.preferExistingTab
     ),
-    ...threadSteps(thread)
+    ...threadSteps(thread, defaults.project)
   ];
 
   appendSurfaceConfigurationSteps(steps, {
@@ -954,13 +960,13 @@ function planRunMessages(args: RunMessagesArgs, defaults: ChatGPTClientOptions["
   return { name: "run-messages", policy: { stopOnError: true, returnPartial: true }, steps };
 }
 
-function planOpenThread(thread: WorkflowThread): SequencePlan {
+function planOpenThread(thread: WorkflowThread, defaults: ChatGPTClientOptions["defaults"] = {}): SequencePlan {
   return {
     name: "open-thread",
     policy: { stopOnError: true, returnPartial: true },
     steps: [
       { id: "bootstrap", command: "session.bootstrap" },
-      ...threadSteps(thread)
+      ...threadSteps(thread, defaults.project)
     ]
   };
 }
@@ -1109,11 +1115,47 @@ function existingTabTargetFromThread(thread: WorkflowThread): ExistingTabPolicy[
   return undefined;
 }
 
-function threadSteps(thread: WorkflowThread): SequencePlan["steps"] {
+function resolveClientDefaults(options: ChatGPTClientOptions): NonNullable<ChatGPTClientOptions["defaults"]> {
+  const defaults = { ...(options.defaults ?? {}) };
+  if (defaults.project !== undefined || options.workspaceProject === undefined || options.workspaceProject === false) {
+    return defaults;
+  }
+  return { ...defaults, project: workspaceProjectTarget(options.workspaceProject) };
+}
+
+function newThreadArgs(
+  args: NewThreadArgs | undefined,
+  defaultProject?: ChatGPTProjectTarget | false
+): NewThreadArgs {
+  if (args?.project === false) {
+    const withoutProject = { ...args };
+    delete withoutProject.project;
+    return withoutProject;
+  }
+  if (args?.project !== undefined || defaultProject === undefined || defaultProject === false) {
+    return args ?? {};
+  }
+  return { ...(args ?? {}), project: defaultProject };
+}
+
+function newThreadStepArgs(
+  project: ChatGPTProjectTarget | false | undefined,
+  defaultProject: ChatGPTProjectTarget | false | undefined
+): { args: NewThreadArgs } | Record<string, never> {
+  const resolved = project === false
+    ? undefined
+    : project ?? (defaultProject === false ? undefined : defaultProject);
+  return resolved === undefined ? {} : { args: { project: resolved } };
+}
+
+function threadSteps(
+  thread: WorkflowThread,
+  defaultProject?: ChatGPTProjectTarget | false
+): SequencePlan["steps"] {
   if (isTypedThread(thread)) {
     switch (thread.type) {
       case "new":
-        return [{ id: "new", command: "threads.new" }];
+        return [{ id: "new", command: "threads.new", ...newThreadStepArgs(thread.project, defaultProject) }];
       case "current":
         return [];
       case "url":

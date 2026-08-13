@@ -560,9 +560,9 @@
     "threads.new": {
       "surface": "workflows-primitives-diagnostics",
       "fixtures": ["command-descriptors.json"],
-      "nodeTests": ["tests/unit/client.test.ts", "tests/unit/runner.test.ts"],
+      "nodeTests": ["tests/unit/client.test.ts", "tests/unit/projects.test.ts", "tests/unit/runner.test.ts"],
       "pythonTests": ["tests/test_primitives.py"],
-      "docs": ["references/backend-protocol.md", "references/troubleshooting.md", "../../README.md"]
+      "docs": ["references/backend-protocol.md", "references/python-parity.md", "references/troubleshooting.md", "../../README.md"]
     },
     "threads.search": {
       "surface": "workflows-primitives-diagnostics",

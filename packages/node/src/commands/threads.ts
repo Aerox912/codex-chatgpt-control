@@ -15,6 +15,7 @@ import type {
 } from "../types.js";
 import { contextFromPage } from "./context.js";
 import { ensureConversationTarget } from "./conversation.js";
+import { openOrCreateProjectForNewThread } from "./projects.js";
 import { ensurePage } from "./session.js";
 
 const CHATGPT_HOME = "https://chatgpt.com/";
@@ -89,10 +90,26 @@ export async function newThread(env: RuntimeEnv, args: NewThreadArgs = {}): Prom
 
   const page = env.page!;
   try {
-    try {
-      await newChatButton(page).click?.();
-    } catch {
-      await page.goto?.(CHATGPT_HOME, { waitUntil: "domcontentloaded", timeout: args.timeoutMs ?? 30000 });
+    if (args.project !== undefined && args.project !== false) {
+      const project = await openOrCreateProjectForNewThread(env, args.project, args.timeoutMs ?? 30000);
+      if (!project.ok) {
+        return project as CommandResult<OpenThreadData>;
+      }
+      if (project.data === undefined) {
+        return resultError(new Error("Project routing succeeded without a verified project result."), await contextFromPage(page));
+      }
+      const state = await readPageState(page);
+      return resultOk(
+        { ...openThreadData(state.url, state.conversationId, state.title), project: project.data },
+        await contextFromPage(page),
+        project.warnings
+      );
+    } else {
+      try {
+        await newChatButton(page).click?.();
+      } catch {
+        await page.goto?.(CHATGPT_HOME, { waitUntil: "domcontentloaded", timeout: args.timeoutMs ?? 30000 });
+      }
     }
     await page.waitForTimeout?.(500);
     const state = await readPageState(page);

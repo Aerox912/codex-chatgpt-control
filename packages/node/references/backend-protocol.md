@@ -134,6 +134,38 @@ Use `files.preflight` for non-mutating local validation before browser upload wo
 
 `files.attach` accepts `includeDiagnostics: true` to return metadata-only upload diagnostics in `data.diagnostics`: the preflight result plus the browser input's selected file names and sizes when the DOM exposes them. Pair `includeDiagnostics: true` with `includeHashes: true` when diagnosing whether a non-empty local file became an empty browser-side `File`; do not persist these diagnostics in public reports unless the user has approved content fingerprint metadata.
 
+## Workspace Project Routing
+
+`threads.new` accepts an optional `project` target:
+
+```json
+{
+  "project": {
+    "name": "Codex ChatGPT Control",
+    "icon": "Code Brackets",
+    "color": "purple",
+    "confirmCreation": false
+  }
+}
+```
+
+The TypeScript client can populate this target for all new-thread workflows
+with `createChatGPT({ workspaceProject: { path } })`. Workspace paths are
+converted locally to a display name before the visible browser flow. Existing
+Projects are matched by normalized name equality, opened through their visible
+sidebar entry, and verified by the Project new-chat composer. The implementation
+does not use fuzzy matching or private ChatGPT endpoints.
+
+When a match is absent, `threads.new` returns a resumable `needs_confirmation`
+result with blocker code `chatgpt_project_creation_confirmation_required`.
+Creation happens only when `confirmCreation: true` is supplied. Confirmed
+creation fills the visible Create project dialog, selects the requested icon
+and color, submits once, and verifies the resulting Project URL and composer.
+Selector drift returns `chatgpt_project_routing_selector_drift` instead of
+guessing. A successful `threads.new` result includes `data.project` with the
+verified name, URL, and `created` flag. A newly created Project also includes
+the icon and color selected by the visible creation flow.
+
 ## Project Sources
 
 Project Sources V1 is a narrow visible-UI surface for ChatGPT Project URLs such as `https://chatgpt.com/g/g-p-.../project`.

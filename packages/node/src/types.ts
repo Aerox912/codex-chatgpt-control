@@ -170,8 +170,71 @@ export type BootstrapData = {
   loggedIn: boolean;
 };
 
+export type ChatGPTProjectIcon =
+  | "Folder"
+  | "Currency Dollar"
+  | "Book"
+  | "Graduation Cap"
+  | "Pencil"
+  | "Writing"
+  | "Code Brackets"
+  | "Terminal"
+  | "Music"
+  | "Popcorn"
+  | "Customize"
+  | "Palette"
+  | "Stethoscope"
+  | "Health"
+  | "Lotus"
+  | "Suitcase"
+  | "Bar Chart"
+  | "Kettlebell"
+  | "Dumbbell"
+  | "Logs"
+  | "Balancing Scale"
+  | "Globe Spin"
+  | "Plane"
+  | "Globe"
+  | "Wrench"
+  | "Paw"
+  | "Flask"
+  | "Brain"
+  | "Heart"
+  | "Plant";
+
+export type ChatGPTProjectColor =
+  | "default"
+  | "red"
+  | "orange"
+  | "yellow"
+  | "green"
+  | "blue"
+  | "purple"
+  | "pink";
+
+export type ChatGPTProjectTarget = {
+  name: string;
+  icon?: ChatGPTProjectIcon;
+  color?: ChatGPTProjectColor;
+  confirmCreation?: boolean;
+};
+
+export type WorkspaceProjectOptions = Omit<ChatGPTProjectTarget, "name"> & {
+  name?: string;
+  path?: string;
+};
+
+export type ChatGPTProjectRef = {
+  name: string;
+  url: string;
+  created: boolean;
+  icon?: ChatGPTProjectIcon;
+  color?: ChatGPTProjectColor;
+};
+
 export type NewThreadArgs = {
   timeoutMs?: number;
+  project?: ChatGPTProjectTarget | false;
 };
 
 export type SearchThreadsArgs = {
@@ -205,6 +268,7 @@ export type OpenThreadData = {
   conversationId?: string;
   url: string;
   title?: string;
+  project?: ChatGPTProjectRef;
 };
 
 export type ComposeArgs = {
@@ -952,6 +1016,7 @@ export type LocatorLike = {
   textContent?: (options?: unknown) => Promise<string | null>;
   innerText?: (options?: unknown) => Promise<string>;
   innerHTML?: (options?: unknown) => Promise<string>;
+  getAttribute?: (name: string, options?: unknown) => Promise<string | null>;
   count?: () => Promise<number>;
   nth?: (index: number) => LocatorLike;
   first?: () => LocatorLike;
@@ -962,6 +1027,7 @@ export type LocatorLike = {
   filter?: (options: Record<string, unknown>) => LocatorLike;
   getByRole?: (role: string, options?: Record<string, unknown>) => LocatorLike;
   getByText?: (text: string | RegExp, options?: Record<string, unknown>) => LocatorLike;
+  press?: (key: string, options?: unknown) => Promise<void>;
   setInputFiles?: (paths: string[]) => Promise<void>;
 };
 

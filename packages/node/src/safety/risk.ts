@@ -13,7 +13,7 @@ export const commandRisk = {
   "work.readLatest": "medium",
   "threads.search": "medium",
   "threads.open": "medium",
-  "threads.new": "low",
+  "threads.new": "medium",
   "messages.compose": "low",
   "messages.submit": "medium",
   "messages.ask": "medium",

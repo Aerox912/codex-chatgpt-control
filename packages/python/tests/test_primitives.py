@@ -85,7 +85,27 @@ class PrimitiveFacadeTests(unittest.TestCase):
             (lambda: chatgpt.work.steer(prompt="Focus on deployment."), "work.steer", {"prompt": "Focus on deployment."}),
             (lambda: chatgpt.work.read_latest(format="markdown"), "work.readLatest", {"format": "markdown"}),
             (lambda: chatgpt.work.artifacts.list_latest(kind="image"), "artifacts.listLatest", {"kind": "image"}),
-            (lambda: chatgpt.threads.new(timeout_ms=100), "threads.new", {"timeoutMs": 100}),
+            (
+                lambda: chatgpt.threads.new(
+                    timeout_ms=100,
+                    project={
+                        "name": "Codex ChatGPT Control",
+                        "icon": "Code Brackets",
+                        "color": "purple",
+                        "confirm_creation": True,
+                    },
+                ),
+                "threads.new",
+                {
+                    "timeoutMs": 100,
+                    "project": {
+                        "name": "Codex ChatGPT Control",
+                        "icon": "Code Brackets",
+                        "color": "purple",
+                        "confirmCreation": True,
+                    },
+                },
+            ),
             (lambda: chatgpt.threads.search(query="sdk", limit=5), "threads.search", {"query": "sdk", "limit": 5}),
             (lambda: chatgpt.threads.open(conversation_id="abc"), "threads.open", {"conversationId": "abc"}),
             (lambda: chatgpt.messages.compose(text="hi"), "messages.compose", {"text": "hi"}),

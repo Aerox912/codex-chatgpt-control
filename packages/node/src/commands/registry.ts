@@ -91,7 +91,7 @@ const descriptors: CommandDescriptor[] = [
   primitive("work.wait", "Wait for the current Work task response to stabilize.", 120000),
   primitive("work.steer", "Submit a visible steering message to the current Work task without opening a new task.", 120000),
   primitive("work.readLatest", "Read the latest response from the current Work task.", 30000),
-  primitive("threads.new", "Open a new ChatGPT thread.", 30000),
+  primitive("threads.new", "Open a new ChatGPT thread, optionally inside a matching Project with confirmation-gated creation.", 30000),
   primitive("threads.search", "Search visible ChatGPT history by query.", 30000),
   primitive("threads.open", "Open a thread by URL, conversation id, title, or search result.", 30000),
   primitive("messages.compose", "Fill the composer without submitting.", 30000),
@@ -301,6 +301,10 @@ function primitiveArgs(name: string): Record<string, string> {
   if (name === "files.downloadLatest") return { destDir: "download destination directory", filenamePattern: "optional case-insensitive regular expression for the expected filename", from: "latest_assistant, visible_conversation, or assistantIndex" };
   if (name === "response.copy") return { prefer: "clipboard or dom", format: "markdown, normalized_text, visible_text, html, blocks, or all" };
   if (name.startsWith("threads.search")) return { query: "history search query" };
+  if (name === "threads.new") return {
+    project: "optional Project name, icon, color, and confirmCreation flag; false opts out of a configured workspace Project",
+    timeoutMs: "optional Project lookup and navigation timeout"
+  };
   if (name === "files.preflight") return {
     paths: "absolute local file paths",
     maxBytesPerFile: "optional local per-file byte limit",
@@ -357,6 +361,12 @@ function primitiveExamples(name: string): string[] {
   if (name === "work.wait") return [`await chatgpt.work.wait({ timeoutMs: 600000 });`];
   if (name === "work.steer") return [`await chatgpt.work.steer({ prompt: "Focus the comparison on deployment ergonomics." });`];
   if (name === "work.readLatest") return [`await chatgpt.work.readLatest({ format: "markdown" });`];
+  if (name === "threads.new") {
+    return [
+      `await chatgpt.threads.new({ project: { name: "Codex ChatGPT Control" } });`,
+      `await chatgpt.threads.new({ project: { name: "Codex ChatGPT Control", icon: "Code Brackets", color: "purple", confirmCreation: true } });`
+    ];
+  }
   if (name === "files.preflight") {
     return [
       `await chatgpt.files.preflight({ paths: ["/absolute/host/path.md"] });`,
@@ -388,6 +398,7 @@ function primitiveExamples(name: string): string[] {
 }
 
 function primitiveBlockers(name: string): string[] {
+  if (name === "threads.new") return ["browser_bridge_unavailable", "login_required", "selector_drift", "confirmation"];
   if (name === "files.preflight") return ["not_found", "permission", "upload_failed"];
   if (name.startsWith("files.attach")) return ["browser_bridge_unavailable", "login_required", "permission", "upload_failed"];
   if (name.startsWith("files.download")) return ["browser_bridge_unavailable", "login_required", "download_unavailable"];

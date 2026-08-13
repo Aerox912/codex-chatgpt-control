@@ -21,11 +21,20 @@ const loaderUrl = new URL(
 const { importChatGPTControl } = await import(`${loaderUrl.href}?t=${Date.now()}`);
 const { createChatGPT } = await importChatGPTControl();
 
+const workspacePath = typeof globalThis.nodeRepl?.cwd === "string"
+  ? globalThis.nodeRepl.cwd
+  : undefined;
 const chatgpt = createChatGPT({
   agent: globalThis.agent,
+  ...(workspacePath === undefined ? {} : { workspaceProject: { path: workspacePath } }),
   reporting: { enabled: true, includeContent: false }
 });
 ```
+
+New Chat threads use the matching workspace-named ChatGPT Project when Codex
+provides a workspace path. A missing Project must return a creation confirmation
+blocker. Set `confirmCreation: true` only after explicit user approval. Use
+`project: false` when the user specifically requests a global chat.
 
 If `globalThis.agent` is absent, use the bridge-bootstrap instructions in the broad `codex-chatgpt-control` skill. An ordinary-shell `browser_bridge_unavailable` result is expected and should be reported, not worked around.
 

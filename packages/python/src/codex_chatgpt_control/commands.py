@@ -13,6 +13,7 @@ _NESTED_WIRE_ALIASES = {
     "allow_prompt_resubmit": "allowPromptResubmit",
     "assistant_index": "assistantIndex",
     "batch_size": "batchSize",
+    "confirm_creation": "confirmCreation",
     "confirm_mutation": "confirmMutation",
     "conversation_id": "conversationId",
     "default_timeout_ms": "defaultTimeoutMs",
