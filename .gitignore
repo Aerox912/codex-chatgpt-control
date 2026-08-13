@@ -16,3 +16,6 @@ outputs/surface-profiles/
 .env
 .env.*
 !.env.example
+agent_docs/
+.codex_workflow_hidden_resources/
+AGENTS.md
