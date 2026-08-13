@@ -40,8 +40,8 @@ const descriptors: CommandDescriptor[] = [
   workflow("responses.create", "Narrow Responses-shaped adapter over the visible ChatGPT browser-control runner; rejects unsupported API-only fields before prompt submission.", [
     `await chatgpt.responses.create({ input: "Summarize.", thread: { type: "current" }, text: { format: "markdown" }, stream: false });`
   ]),
-  workflow("work.start", "Open Work, optionally apply model/effort/speed configuration, submit one task, and optionally wait/read without blind resubmission.", [
-    `await chatgpt.work.start({ prompt: "Analyze the attached package.", files: ["/absolute/path/package.tgz"], configuration: { model: "GPT-5.6 Sol", effort: "High", speed: "Fast" }, wait: true, read: { format: "markdown" } });`
+  workflow("work.start", "Open Work, optionally route a new task through a matching Project, apply model/effort/speed configuration, submit once, and optionally wait/read without blind resubmission.", [
+    `await chatgpt.work.start({ prompt: "Analyze the attached package.", project: { name: "Codex ChatGPT Control" }, files: ["/absolute/path/package.tgz"], configuration: { model: "GPT-5.6 Sol", effort: "High", speed: "Fast" }, wait: true, read: { format: "markdown" } });`
   ]),
   workflow("copyLatest", "Copy or DOM-read the latest assistant response with Markdown-first fidelity.", [
     `await chatgpt.copyLatest({ prefer: "clipboard" });`
@@ -225,6 +225,7 @@ function workflowArgs(name: string): Record<string, string> {
     return {
       prompt: "visible Work task prompt",
       newTask: "start from a blank Work task; defaults to true",
+      project: "optional Project name, icon, color, and confirmCreation flag; false keeps the new task global",
       files: "optional absolute local file paths",
       configuration: "optional Work model, effort, and speed values",
       wait: "optional wait behavior",

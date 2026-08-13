@@ -71,12 +71,14 @@ class PrimitiveFacadeTests(unittest.TestCase):
                 lambda: chatgpt.work.start(
                     prompt="Analyze.",
                     new_task=True,
+                    project={"name": "Codex ChatGPT Control", "confirm_creation": True},
                     configuration={"model": "GPT-5.6 Sol", "effort": "High"},
                 ),
                 "work.start",
                 {
                     "prompt": "Analyze.",
                     "newTask": True,
+                    "project": {"name": "Codex ChatGPT Control", "confirmCreation": True},
                     "configuration": {"model": "GPT-5.6 Sol", "effort": "High"},
                 },
             ),

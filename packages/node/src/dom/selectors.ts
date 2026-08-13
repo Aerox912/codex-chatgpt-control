@@ -51,11 +51,14 @@ export function composerTextbox(page: PageLike): LocatorLike {
   if (typeof page.getByRole !== "function") {
     return requiredLocator(page, "[contenteditable='true'], textarea");
   }
-  return page.getByRole("textbox", {
-    name: anyLabelPattern([
+  const standardComposer = anyLabelPattern([
       ...localeLabels.composerTextbox,
       ...localeLabels.workComposerTextbox
-    ])
+  ]);
+  return page.getByRole("textbox", {
+    // Project home uses a workspace-specific accessible name such as
+    // "New chat in Codex ChatGPT Control" instead of the global Chat label.
+    name: new RegExp(`${standardComposer.source}|^New chat in .+$`, "i")
   });
 }
 

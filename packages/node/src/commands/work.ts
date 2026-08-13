@@ -33,6 +33,7 @@ import {
   waitForMessage
 } from "./messages.js";
 import { ensurePage } from "./session.js";
+import { openOrCreateProjectForNewThread, projectContextMatches } from "./projects.js";
 
 const NEW_WORK_LABELS = localeLabels.newWork;
 
@@ -64,6 +65,21 @@ export async function startWork(
   const page = env.page!;
 
   try {
+    let project: StartWorkData["project"];
+    if (args.project !== undefined && args.project !== false) {
+      if (args.newTask === false) {
+        return resultError(
+          new Error("work.start project routing requires a new Work task; omit project when continuing with newTask: false."),
+          await contextFromPage(page)
+        );
+      }
+      const routed = await openOrCreateProjectForNewThread(env, args.project, args.timeoutMs);
+      if (!routed.ok || routed.data === undefined) {
+        return forwardCommandFailure(routed);
+      }
+      project = routed.data;
+    }
+
     const surface = await openExperience(env, {
       experience: "work",
       ...(args.timeoutMs === undefined ? {} : { timeoutMs: args.timeoutMs })
@@ -76,6 +92,32 @@ export async function startWork(
       const fresh = await ensureBlankWorkTask(env, args.timeoutMs);
       if (!fresh.ok) {
         return forwardCommandFailure(fresh);
+      }
+    }
+
+    if (project !== undefined) {
+      const currentUrl = await Promise.resolve(page.url?.()).catch(() => undefined);
+      if (!projectContextMatches(project.url, currentUrl)) {
+        return {
+          ok: false,
+          status: "unsupported",
+          warnings: [],
+          blocker: {
+            kind: "selector_drift",
+            code: "work_project_context_lost",
+            fieldPath: "project",
+            message: `ChatGPT left the selected Project "${project.name}" before the Work prompt was submitted.`,
+            remediation: [
+              {
+                label: "Review Project Work routing",
+                instruction: "Open the matching ChatGPT Project, select Work, and verify the Project identity remains visible before starting a task.",
+                userActionRequired: true
+              }
+            ],
+            resumable: false
+          },
+          context: await workContext(env, surface.data?.selectorProfile)
+        };
       }
     }
 
@@ -127,6 +169,7 @@ export async function startWork(
 
     const task = await workTaskRef(env, baselineTurnCount, baselineAssistantTurnCount);
     const data: StartWorkData = { task, submitted: submit.data };
+    if (project !== undefined) data.project = project;
     if (configuration !== undefined) data.configuration = configuration;
 
     let waitResult: CommandResult<WaitData> | undefined;

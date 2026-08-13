@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   openOrCreateProjectForNewThread,
+  projectContextMatches,
   projectNameFromWorkspacePath,
   projectNamesMatch,
   suggestProjectAppearance,
@@ -25,6 +26,15 @@ describe("ChatGPT Project routing", () => {
     expect(projectNamesMatch("codex-chatgpt-control", "Codex ChatGPT Control")).toBe(true);
     expect(projectNamesMatch("Codex ChatGPT Control", "Codex ChatGPT Controller")).toBe(false);
     expect(projectNamesMatch("プロジェクト", "项目")).toBe(false);
+  });
+
+  it("recognizes project home and project conversation URLs without prefix collisions", () => {
+    const project = "https://chatgpt.com/g/g-p-abc123/project";
+
+    expect(projectContextMatches(project, project)).toBe(true);
+    expect(projectContextMatches(project, "https://chatgpt.com/g/g-p-abc123-codex-control/c/conversation")).toBe(true);
+    expect(projectContextMatches(project, "https://chatgpt.com/g/g-p-abc1234/project")).toBe(false);
+    expect(projectContextMatches(project, "https://chatgpt.com/work")).toBe(false);
   });
 
   it("opens an existing matching project without creating account state", async () => {

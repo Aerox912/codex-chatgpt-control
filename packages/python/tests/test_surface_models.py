@@ -37,6 +37,11 @@ class SurfaceModelTests(unittest.TestCase):
 
     def test_work_models_capture_task_and_progress(self) -> None:
         started = StartWorkData.from_wire({
+            "project": {
+                "name": "Codex ChatGPT Control",
+                "url": "https://chatgpt.com/g/g-p-sanitized/project",
+                "created": False,
+            },
             "task": {
                 "url": "https://chatgpt.com/c/sanitized",
                 "conversationId": "sanitized",
@@ -56,6 +61,9 @@ class SurfaceModelTests(unittest.TestCase):
         })
 
         self.assertEqual(started.task.conversation_id, "sanitized")
+        self.assertIsNotNone(started.project)
+        assert started.project is not None
+        self.assertEqual(started.project.name, "Codex ChatGPT Control")
         self.assertEqual(status.experience, "work")
         self.assertTrue(status.message["generationActive"])
 

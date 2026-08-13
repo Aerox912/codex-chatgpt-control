@@ -17,6 +17,24 @@ describe("Work task orchestration", () => {
     expect(result.warnings.join(" ")).toContain("will not blindly resubmit");
   });
 
+  it("routes a new Work task through the requested Project before submission", async () => {
+    const page = workPage({ projectName: "Codex ChatGPT Control" });
+
+    const result = await startWork({ page }, {
+      prompt: "Review the project release.",
+      project: { name: "Codex ChatGPT Control" },
+      timeoutMs: 100
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.project).toMatchObject({
+      name: "Codex ChatGPT Control",
+      url: "https://chatgpt.com/g/g-p-test/project",
+      created: false
+    });
+    expect(page.sendClickCount()).toBe(1);
+  });
+
   it("blocks instead of submitting into an existing task when no new-task control is available", async () => {
     const page = workPage({ existingTurns: 2, existingAssistantTurns: 1 });
 
@@ -94,11 +112,13 @@ type TestWorkPage = PageLike & {
 function workPage({
   existingTurns = 0,
   existingAssistantTurns = 0,
-  partialAssistantText = ""
+  partialAssistantText = "",
+  projectName
 }: {
   existingTurns?: number;
   existingAssistantTurns?: number;
   partialAssistantText?: string;
+  projectName?: string;
 } = {}): TestWorkPage {
   let composerText = "";
   let submittedPrompt = "";
@@ -141,7 +161,9 @@ function workPage({
   return {
     sendClickCount: () => sendClicks,
     artifactScanCount: () => artifactScans,
-    url: () => "https://chatgpt.com/work",
+    url: () => projectName === undefined
+      ? "https://chatgpt.com/work"
+      : "https://chatgpt.com/g/g-p-test/project",
     title: async () => "ChatGPT Work",
     evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>, arg?: A): Promise<T> => {
       const source = String(fn);
@@ -207,6 +229,9 @@ function workPage({
     getByRole: (role, options = {}) => {
       const name = options.name;
       if (role === "textbox" && roleNameMatches(name, "Work on anything")) return textbox;
+      if (role === "textbox" && projectName !== undefined && roleNameMatches(name, `New chat in ${projectName}`)) {
+        return { count: async () => 1 };
+      }
       if (role === "button" && roleNameMatches(name, "Send prompt")) return send;
       return empty;
     },

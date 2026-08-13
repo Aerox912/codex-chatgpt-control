@@ -143,19 +143,97 @@ async function main() {
 
   await writeFile(
     path.join(root, "plugins/codex-chatgpt-control/runtime/import-chatgpt-control.mjs"),
-    `import { pathToFileURL } from "node:url";
+    `import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
-export async function importChatGPTControl({ cacheBust = true } = {}) {
+export function pluginPreferencesPath() {
+  return join(homedir(), ".codex", "codex-chatgpt-control", "preferences.json");
+}
+
+export async function loadPluginPreferences({ path = pluginPreferencesPath() } = {}) {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8"));
+    return parsed !== null && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function applyPluginPreferences(options = {}, preferences = {}) {
+  const workspaceProject = options.workspaceProject;
+  if (
+    workspaceProject === undefined
+    || workspaceProject === false
+    || workspaceProject === null
+    || typeof workspaceProject !== "object"
+    || workspaceProject.confirmCreation !== undefined
+    || preferences.workspaceProjects?.autoCreate !== true
+  ) {
+    return options;
+  }
+  return {
+    ...options,
+    workspaceProject: { ...workspaceProject, confirmCreation: true }
+  };
+}
+
+export async function importChatGPTControl({ cacheBust = true, preferencesPath } = {}) {
   const runtimeUrl = new URL("./node/codex-chatgpt-control.bundle.mjs", import.meta.url);
   const href = cacheBust
     ? \`\${runtimeUrl.href}?t=\${Date.now()}\`
     : runtimeUrl.href;
-  return import(href);
+  const [runtime, preferences] = await Promise.all([
+    import(href),
+    loadPluginPreferences(preferencesPath === undefined ? {} : { path: preferencesPath })
+  ]);
+  return {
+    ...runtime,
+    createChatGPT(options = {}) {
+      return runtime.createChatGPT(applyPluginPreferences(options, preferences));
+    }
+  };
 }
 
 export function backendBundleUrl() {
   return pathToFileURL(new URL("./node/codex-chatgpt-control-backend.mjs", import.meta.url).pathname).href;
 }
+`,
+    "utf8"
+  );
+
+  await writeFile(
+    path.join(root, "plugins/codex-chatgpt-control/runtime/import-chatgpt-control.d.mts"),
+    `export type PluginPreferences = {
+  workspaceProjects?: {
+    autoCreate?: boolean;
+  };
+};
+
+export type WorkspaceProjectClientOptions = {
+  workspaceProject?: false | {
+    confirmCreation?: boolean;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+export function pluginPreferencesPath(): string;
+
+export function loadPluginPreferences(options?: { path?: string }): Promise<PluginPreferences>;
+
+export function applyPluginPreferences<T extends WorkspaceProjectClientOptions>(
+  options?: T,
+  preferences?: PluginPreferences
+): T;
+
+export function importChatGPTControl(options?: {
+  cacheBust?: boolean;
+  preferencesPath?: string;
+}): Promise<Record<string, unknown> & { createChatGPT(options?: WorkspaceProjectClientOptions): unknown }>;
+
+export function backendBundleUrl(): string;
 `,
     "utf8"
   );

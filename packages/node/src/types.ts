@@ -874,6 +874,8 @@ export type StartWorkArgs = {
   prompt: string;
   /** Start from a blank Work task when possible. Defaults to true. */
   newTask?: boolean;
+  /** Route a new Work task through this visible ChatGPT Project. False keeps the task global. */
+  project?: ChatGPTProjectTarget | false;
   files?: string[];
   configuration?: ConfigurationSelection;
   wait?: boolean | WaitArgs;
@@ -884,6 +886,7 @@ export type StartWorkArgs = {
 export type StartWorkData = {
   task: WorkTaskRef;
   submitted: SubmitData;
+  project?: ChatGPTProjectRef;
   configuration?: ApplyConfigurationData;
   wait?: WaitData;
   response?: ReadLatestData;

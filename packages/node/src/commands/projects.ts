@@ -130,6 +130,16 @@ export function projectNamesMatch(expected: string, candidate: string): boolean 
   return normalizeProjectName(expected) === normalizeProjectName(candidate);
 }
 
+export function projectContextMatches(projectUrl: string, candidateUrl: string | undefined): boolean {
+  if (candidateUrl === undefined) return false;
+  const expected = projectHandleFromUrl(projectUrl);
+  const candidate = projectHandleFromUrl(candidateUrl);
+  if (expected === undefined || candidate === undefined) return false;
+  return expected === candidate
+    || candidate.startsWith(`${expected}-`)
+    || expected.startsWith(`${candidate}-`);
+}
+
 export async function openOrCreateProjectForNewThread(
   env: RuntimeEnv,
   input: ChatGPTProjectTarget,
@@ -418,6 +428,19 @@ function projectPageUrlFromHref(href: string): string | undefined {
     const handle = gIndex >= 0 ? segments[gIndex + 1] : undefined;
     if (handle === undefined || !handle.startsWith("g-p-")) return undefined;
     return `${CHATGPT_HOME}g/${handle}/project`;
+  } catch {
+    return undefined;
+  }
+}
+
+function projectHandleFromUrl(value: string): string | undefined {
+  try {
+    const parsed = new URL(value, CHATGPT_HOME);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "chatgpt.com") return undefined;
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const gIndex = segments.indexOf("g");
+    const handle = gIndex >= 0 ? segments[gIndex + 1]?.toLowerCase() : undefined;
+    return handle?.startsWith("g-p-") === true ? handle : undefined;
   } catch {
     return undefined;
   }

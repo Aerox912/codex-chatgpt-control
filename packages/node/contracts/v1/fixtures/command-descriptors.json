@@ -244,6 +244,7 @@
         "configuration": "optional Work model, effort, and speed values",
         "files": "optional absolute local file paths",
         "newTask": "start from a blank Work task; defaults to true",
+        "project": "optional Project name, icon, color, and confirmCreation flag; false keeps the new task global",
         "prompt": "visible Work task prompt",
         "read": "optional response capture behavior",
         "wait": "optional wait behavior"
@@ -263,13 +264,13 @@
       },
       "defaultTimeoutMs": 120000,
       "examples": [
-        "await chatgpt.work.start({ prompt: \"Analyze the attached package.\", files: [\"/absolute/path/package.tgz\"], configuration: { model: \"GPT-5.6 Sol\", effort: \"High\", speed: \"Fast\" }, wait: true, read: { format: \"markdown\" } });"
+        "await chatgpt.work.start({ prompt: \"Analyze the attached package.\", project: { name: \"Codex ChatGPT Control\" }, files: [\"/absolute/path/package.tgz\"], configuration: { model: \"GPT-5.6 Sol\", effort: \"High\", speed: \"Fast\" }, wait: true, read: { format: \"markdown\" } });"
       ],
       "layer": "workflow",
       "name": "work.start",
       "retryPolicy": "Return structured CommandResult failures; do not resubmit prompts unless the sequence policy permits unmatched-turn recovery.",
       "risk": "medium",
-      "summary": "Open Work, optionally apply model/effort/speed configuration, submit one task, and optionally wait/read without blind resubmission."
+      "summary": "Open Work, optionally route a new task through a matching Project, apply model/effort/speed configuration, submit once, and optionally wait/read without blind resubmission."
     },
     {
       "args": {

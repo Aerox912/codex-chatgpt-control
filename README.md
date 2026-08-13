@@ -139,7 +139,7 @@ const result = await chatgpt.runner.run(reviewer, {
 console.log(result.output_text);
 ```
 
-Route every new Chat workflow into a ChatGPT Project named after the current
+Route every new Chat workflow and direct new Work task into a ChatGPT Project named after the current
 Codex workspace:
 
 ```ts
@@ -160,12 +160,30 @@ existing Project opens automatically without colliding with unrelated names.
 The SDK chooses a deterministic icon and color from the name. Code-oriented
 workspaces use the purple `Code Brackets` icon.
 
-If no matching Project exists, `threads.new` returns a resumable
+If no matching Project exists, `threads.new` or `work.start` returns a resumable
 `chatgpt_project_creation_confirmation_required` blocker. It does not create
 account state until the user approves and the caller retries with
 `workspaceProject: { path: workspacePath, confirmCreation: true }`. Pass
 `thread: { type: "new", project: false }` or `threads.new({ project: false })`
-to opt out for one new thread.
+to opt out for one new Chat thread, or `work.start({ ..., project: false })` for
+one global Work task. A `newTask: false` continuation keeps the currently loaded
+Work task and does not apply the workspace default.
+
+The Codex plugin can record a user's explicit blanket approval without changing
+the public SDK default. Create `~/.codex/codex-chatgpt-control/preferences.json`:
+
+```json
+{
+  "workspaceProjects": {
+    "autoCreate": true
+  }
+}
+```
+
+The plugin loader then adds `confirmCreation: true` to derived workspace targets
+for current and future Codex projects. Explicit per-run `confirmCreation` and
+`project: false` choices still win. The same deterministic appearance resolver
+chooses the fitting icon and color for each newly created Project.
 
 Inspect and apply visible configuration:
 
@@ -208,6 +226,10 @@ await chatgpt.work.steer({
 });
 const latest = await chatgpt.work.readLatest({ format: "markdown" });
 ```
+
+With `createChatGPT({ workspaceProject })`, this direct call routes through the
+same matching Project as new Chat workflows. `work.start` also accepts an
+explicit `project` target for backend and Python parity clients.
 
 `newTask` defaults to true. If a current Work task is loaded and no unique
 new-task control can be verified, the SDK blocks instead of appending

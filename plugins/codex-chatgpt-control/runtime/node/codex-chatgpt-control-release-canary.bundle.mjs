@@ -7241,11 +7241,14 @@ function composerTextbox(page) {
   if (typeof page.getByRole !== "function") {
     return requiredLocator(page, "[contenteditable='true'], textarea");
   }
+  const standardComposer = anyLabelPattern([
+    ...localeLabels.composerTextbox,
+    ...localeLabels.workComposerTextbox
+  ]);
   return page.getByRole("textbox", {
-    name: anyLabelPattern([
-      ...localeLabels.composerTextbox,
-      ...localeLabels.workComposerTextbox
-    ])
+    // Project home uses a workspace-specific accessible name such as
+    // "New chat in Codex ChatGPT Control" instead of the global Chat label.
+    name: new RegExp(`${standardComposer.source}|^New chat in .+$`, "i")
   });
 }
 function sendButton(page) {
@@ -7906,6 +7909,13 @@ function suggestProjectAppearance(name) {
 function projectNamesMatch(expected, candidate) {
   return normalizeProjectName(expected) === normalizeProjectName(candidate);
 }
+function projectContextMatches(projectUrl, candidateUrl) {
+  if (candidateUrl === void 0) return false;
+  const expected = projectHandleFromUrl(projectUrl);
+  const candidate = projectHandleFromUrl(candidateUrl);
+  if (expected === void 0 || candidate === void 0) return false;
+  return expected === candidate || candidate.startsWith(`${expected}-`) || expected.startsWith(`${candidate}-`);
+}
 async function openOrCreateProjectForNewThread(env, input, timeoutMs = 3e4) {
   const page = env.page;
   if (page === void 0) {
@@ -8152,6 +8162,18 @@ function projectPageUrlFromHref(href) {
     const handle = gIndex >= 0 ? segments[gIndex + 1] : void 0;
     if (handle === void 0 || !handle.startsWith("g-p-")) return void 0;
     return `${CHATGPT_HOME5}g/${handle}/project`;
+  } catch {
+    return void 0;
+  }
+}
+function projectHandleFromUrl(value) {
+  try {
+    const parsed = new URL(value, CHATGPT_HOME5);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "chatgpt.com") return void 0;
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const gIndex = segments.indexOf("g");
+    const handle = gIndex >= 0 ? segments[gIndex + 1]?.toLowerCase() : void 0;
+    return handle?.startsWith("g-p-") === true ? handle : void 0;
   } catch {
     return void 0;
   }
@@ -11717,6 +11739,20 @@ async function startWork(env, args) {
   }
   const page = env.page;
   try {
+    let project;
+    if (args.project !== void 0 && args.project !== false) {
+      if (args.newTask === false) {
+        return resultError(
+          new Error("work.start project routing requires a new Work task; omit project when continuing with newTask: false."),
+          await contextFromPage(page)
+        );
+      }
+      const routed = await openOrCreateProjectForNewThread(env, args.project, args.timeoutMs);
+      if (!routed.ok || routed.data === void 0) {
+        return forwardCommandFailure(routed);
+      }
+      project = routed.data;
+    }
     const surface = await openExperience(env, {
       experience: "work",
       ...args.timeoutMs === void 0 ? {} : { timeoutMs: args.timeoutMs }
@@ -11728,6 +11764,31 @@ async function startWork(env, args) {
       const fresh = await ensureBlankWorkTask(env, args.timeoutMs);
       if (!fresh.ok) {
         return forwardCommandFailure(fresh);
+      }
+    }
+    if (project !== void 0) {
+      const currentUrl = await Promise.resolve(page.url?.()).catch(() => void 0);
+      if (!projectContextMatches(project.url, currentUrl)) {
+        return {
+          ok: false,
+          status: "unsupported",
+          warnings: [],
+          blocker: {
+            kind: "selector_drift",
+            code: "work_project_context_lost",
+            fieldPath: "project",
+            message: `ChatGPT left the selected Project "${project.name}" before the Work prompt was submitted.`,
+            remediation: [
+              {
+                label: "Review Project Work routing",
+                instruction: "Open the matching ChatGPT Project, select Work, and verify the Project identity remains visible before starting a task.",
+                userActionRequired: true
+              }
+            ],
+            resumable: false
+          },
+          context: await workContext(env, surface.data?.selectorProfile)
+        };
       }
     }
     const baselineTurnCount = await countPageMessages(page).catch(() => void 0);
@@ -11773,6 +11834,7 @@ async function startWork(env, args) {
     }
     const task = await workTaskRef(env, baselineTurnCount, baselineAssistantTurnCount);
     const data = { task, submitted: submit.data };
+    if (project !== void 0) data.project = project;
     if (configuration !== void 0) data.configuration = configuration;
     let waitResult;
     if (args.wait === true || typeof args.wait === "object") {
@@ -12861,8 +12923,8 @@ var descriptors = [
   workflow("responses.create", "Narrow Responses-shaped adapter over the visible ChatGPT browser-control runner; rejects unsupported API-only fields before prompt submission.", [
     `await chatgpt.responses.create({ input: "Summarize.", thread: { type: "current" }, text: { format: "markdown" }, stream: false });`
   ]),
-  workflow("work.start", "Open Work, optionally apply model/effort/speed configuration, submit one task, and optionally wait/read without blind resubmission.", [
-    `await chatgpt.work.start({ prompt: "Analyze the attached package.", files: ["/absolute/path/package.tgz"], configuration: { model: "GPT-5.6 Sol", effort: "High", speed: "Fast" }, wait: true, read: { format: "markdown" } });`
+  workflow("work.start", "Open Work, optionally route a new task through a matching Project, apply model/effort/speed configuration, submit once, and optionally wait/read without blind resubmission.", [
+    `await chatgpt.work.start({ prompt: "Analyze the attached package.", project: { name: "Codex ChatGPT Control" }, files: ["/absolute/path/package.tgz"], configuration: { model: "GPT-5.6 Sol", effort: "High", speed: "Fast" }, wait: true, read: { format: "markdown" } });`
   ]),
   workflow("copyLatest", "Copy or DOM-read the latest assistant response with Markdown-first fidelity.", [
     `await chatgpt.copyLatest({ prefer: "clipboard" });`
@@ -13036,6 +13098,7 @@ function workflowArgs(name) {
     return {
       prompt: "visible Work task prompt",
       newTask: "start from a blank Work task; defaults to true",
+      project: "optional Project name, icon, color, and confirmCreation flag; false keeps the new task global",
       files: "optional absolute local file paths",
       configuration: "optional Work model, effort, and speed values",
       wait: "optional wait behavior",
@@ -13862,7 +13925,7 @@ function createChatGPT(options = {}) {
       apply: (args) => applyConfiguration(env, args)
     },
     work: {
-      start: (args) => startWork(env, args),
+      start: (args) => startWork(env, workStartArgs(args, defaults.project)),
       status: (args) => workStatus(env, args),
       wait: (args) => waitForWork(env, args),
       steer: (args) => steerWork(env, args),
@@ -14524,6 +14587,12 @@ function newThreadArgs(args, defaultProject) {
     return args ?? {};
   }
   return { ...args ?? {}, project: defaultProject };
+}
+function workStartArgs(args, defaultProject) {
+  if (args.project !== void 0 || args.newTask === false || defaultProject === void 0 || defaultProject === false) {
+    return args;
+  }
+  return { ...args, project: defaultProject };
 }
 function newThreadStepArgs(project, defaultProject) {
   const resolved = project === false ? void 0 : project ?? (defaultProject === false ? void 0 : defaultProject);

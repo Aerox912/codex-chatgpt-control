@@ -122,7 +122,8 @@ discovery. `configuration.apply` is strict by default and must verify the final
 visible state. `work.start` defaults to a fresh task and must not append to a
 loaded task unless the caller explicitly passes `newTask: false`. A partial or
 timeout Work result is recovered through status/wait/read on the same task, not
-by resubmitting the original prompt.
+by resubmitting the original prompt. New Work tasks accept the same `project`
+target as `threads.new`; project routing is verified before prompt submission.
 
 `doctor` returns a normal `CommandResult` whose `data.checks` map is extensible. Scenario checks such as `existing_tab`, `artifacts`, `file_preflight`, `localization`, and `reports` may add optional `code`, `blockerKind`, `nextCommand`, and JSON `details` fields to individual check entries while preserving the existing `status`, `message`, and `remediation` fields.
 
@@ -149,7 +150,8 @@ Use `files.preflight` for non-mutating local validation before browser upload wo
 }
 ```
 
-The TypeScript client can populate this target for all new-thread workflows
+The TypeScript client can populate this target for all new Chat workflows and
+direct new Work tasks
 with `createChatGPT({ workspaceProject: { path } })`. Workspace paths are
 converted locally to a display name before the visible browser flow. Existing
 Projects are matched by normalized name equality, opened through their visible
@@ -162,9 +164,23 @@ Creation happens only when `confirmCreation: true` is supplied. Confirmed
 creation fills the visible Create project dialog, selects the requested icon
 and color, submits once, and verifies the resulting Project URL and composer.
 Selector drift returns `chatgpt_project_routing_selector_drift` instead of
-guessing. A successful `threads.new` result includes `data.project` with the
+guessing. A successful `threads.new` or project-routed `work.start` result
+includes `data.project` with the
 verified name, URL, and `created` flag. A newly created Project also includes
 the icon and color selected by the visible creation flow.
+
+`work.start({ project })` opens or creates the target Project, switches to Work,
+ensures a blank task, and verifies the Project context remains selected before
+submitting. `project: false` keeps a new Work task global. `newTask: false`
+continues the currently loaded task and does not inherit a client-level
+workspace Project default.
+
+The Codex plugin loader can consume the user-scoped
+`~/.codex/codex-chatgpt-control/preferences.json` setting
+`{ "workspaceProjects": { "autoCreate": true } }`. This is a durable user
+preapproval applied only by the plugin wrapper. The public Node and Python
+surfaces remain confirmation-gated unless callers explicitly pass
+`confirmCreation: true`.
 
 ## Project Sources
 

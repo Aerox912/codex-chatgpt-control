@@ -251,9 +251,18 @@ class WorkTaskRef(WireModel):
     baseline_assistant_turn_count: int | None = Field(default=None, alias="baselineAssistantTurnCount")
 
 
+class ChatGPTProjectRef(WireModel):
+    name: str
+    url: str
+    created: bool
+    icon: str | None = None
+    color: str | None = None
+
+
 class StartWorkData(WireModel):
     task: WorkTaskRef
     submitted: dict[str, Any]
+    project: ChatGPTProjectRef | None = None
     configuration: ApplyConfigurationData | None = None
     wait: dict[str, Any] | None = None
     response: dict[str, Any] | None = None

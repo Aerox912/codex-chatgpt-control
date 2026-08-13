@@ -63,10 +63,16 @@ const chatgpt = createChatGPT({
 });
 ```
 
-New Chat threads use the matching workspace-named ChatGPT Project when Codex
+New Chat threads and new Work tasks use the matching workspace-named ChatGPT Project when Codex
 provides a workspace path. A missing Project must return a creation confirmation
 blocker. Set `confirmCreation: true` only after explicit user approval. Use
 `project: false` when the user specifically requests a global chat.
+
+The plugin loader may persist an explicit blanket approval in
+`~/.codex/codex-chatgpt-control/preferences.json` as
+`{ "workspaceProjects": { "autoCreate": true } }`. Only record it after the
+user approves automatic creation for all current and future Codex workspaces.
+The public SDK remains confirmation-gated when that user preference is absent.
 
 Do not import from an older manually installed skill runtime; the plugin-bundled runtime is the intended source.
 

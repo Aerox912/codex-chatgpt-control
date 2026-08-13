@@ -330,7 +330,7 @@ export function createChatGPT(options: ChatGPTClientOptions = {}): ChatGPTClient
       apply: args => applyConfiguration(env, args)
     },
     work: {
-      start: args => startWork(env, args),
+      start: args => startWork(env, workStartArgs(args, defaults.project)),
       status: args => workStatus(env, args),
       wait: args => waitForWork(env, args),
       steer: args => steerWork(env, args),
@@ -1136,6 +1136,21 @@ function newThreadArgs(
     return args ?? {};
   }
   return { ...(args ?? {}), project: defaultProject };
+}
+
+function workStartArgs(
+  args: StartWorkArgs,
+  defaultProject?: ChatGPTProjectTarget | false
+): StartWorkArgs {
+  if (
+    args.project !== undefined
+    || args.newTask === false
+    || defaultProject === undefined
+    || defaultProject === false
+  ) {
+    return args;
+  }
+  return { ...args, project: defaultProject };
 }
 
 function newThreadStepArgs(
