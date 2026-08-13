@@ -93,6 +93,17 @@ async function copySanitizedRuntime(src, dest) {
   await writeFile(dest, sanitizeRuntime(text), "utf8");
 }
 
+function runNpmScript(packageDir, script) {
+  if (process.platform === "win32") {
+    execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "npm.cmd", "run", script], {
+      cwd: packageDir,
+      stdio: "inherit"
+    });
+    return;
+  }
+  execFileSync("npm", ["run", script], { cwd: packageDir, stdio: "inherit" });
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const root = detectRoot(args.root);
@@ -101,7 +112,7 @@ async function main() {
 
   if (!args.skipBuild) {
     for (const script of ["build", "bundle", "bundle:backend", "bundle:live-smoke", "bundle:release-canary"]) {
-      execFileSync("npm", ["run", script], { cwd: packageDir, stdio: "inherit" });
+      runNpmScript(packageDir, script);
     }
   }
 
