@@ -42,7 +42,7 @@ The plugin loader may persist an explicit blanket approval in
 user approves automatic creation for all current and future Codex workspaces.
 The public SDK remains confirmation-gated when that user preference is absent.
 
-If `globalThis.agent` is absent, use the bridge-bootstrap instructions in the broad `codex-chatgpt-control` skill. An ordinary-shell `browser_bridge_unavailable` result is expected and should be reported, not worked around.
+If `globalThis.agent` is absent, use the Browser-bootstrap instructions in the broad `codex-chatgpt-control` skill. Automatic discovery prefers the in-app browser and falls back to Chrome. Preserve an explicit user browser choice by passing that browser handle to `createChatGPT(...)`. An ordinary-shell `browser_bridge_unavailable` result is expected and should be reported, not worked around.
 
 ## Choose The Experience
 

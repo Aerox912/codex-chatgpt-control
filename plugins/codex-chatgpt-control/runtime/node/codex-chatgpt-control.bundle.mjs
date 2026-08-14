@@ -3269,7 +3269,7 @@ async function getBrowser(env) {
   const agent = env.agent ?? anyEnv.agent ?? globalThis.agent;
   const browsers = agent?.browsers;
   if (browsers !== void 0 && typeof browsers === "object") {
-    const maybeBrowser = await tryBrowserGetPreferredListed(browsers) ?? await tryBrowserGet(browsers, "extension") ?? await tryBrowserGet(browsers, "chrome");
+    const maybeBrowser = await tryBrowserGet(browsers, "iab") ?? await tryBrowserGetPreferredListed(browsers) ?? await tryBrowserGet(browsers, "extension") ?? await tryBrowserGet(browsers, "chrome");
     if (maybeBrowser !== void 0) {
       return maybeBrowser;
     }
@@ -3296,7 +3296,7 @@ async function tryBrowserGetPreferredListed(browsers) {
   }
   try {
     const available = await list.call(browsers);
-    const preferred = available.find((browser2) => browser2.type === "extension") ?? available.find((browser2) => typeof browser2.name === "string" && /chrome/i.test(browser2.name)) ?? available[0];
+    const preferred = available.find((browser2) => browser2.type === "iab") ?? available.find((browser2) => browser2.type === "extension") ?? available.find((browser2) => typeof browser2.name === "string" && /chrome/i.test(browser2.name)) ?? available[0];
     const id2 = preferred?.id;
     if (typeof id2 !== "string") {
       return void 0;

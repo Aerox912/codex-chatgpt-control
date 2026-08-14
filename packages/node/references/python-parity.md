@@ -224,14 +224,14 @@ CHATGPT_BROWSER_BACKEND_COMMAND="node /absolute/path/to/bridge-enabled-backend.m
 python scripts/live_smoke.py --mode browser-bridge
 ```
 
-### Codex Chrome Plugin Relay
+### Codex Browser Runtime Relay
 
-When the live backend is hosted inside the Codex Chrome plugin runtime, do not test bridge availability from a normal shell or an unbootstrapped Node REPL. First initialize the Chrome runtime:
+When the live backend is hosted inside a Codex Browser runtime, do not test bridge availability from a normal shell or an unbootstrapped host execution. First initialize the Browser runtime. Automatic SDK discovery prefers the in-app browser and falls back to Chrome:
 
 ```js
-const { setupBrowserRuntime } = await import("/example/user/.codex/plugins/cache/openai-bundled/chrome/latest/scripts/browser-client.mjs");
-await setupBrowserRuntime({ globals: globalThis });
-globalThis.browser = await agent.browsers.get("extension");
+const { setupBrowserRuntime } = await import("/absolute/path/to/browser-client.mjs");
+globalThis.agent = await setupBrowserRuntime();
+const chatgpt = createChatGPT({ agent: globalThis.agent });
 ```
 
 Then run the backend server inside that active JS execution context and point Python at the stdio-to-HTTP relay:
@@ -248,7 +248,7 @@ Create the backend server and wait on it in the **same** bridge-hosted JS execut
 This is the intended live test chain:
 
 ```text
-Python SDK -> scripts/http_stdio_relay.mjs -> bridge-hosted Node backend -> Codex Chrome bridge -> ChatGPT
+Python SDK -> scripts/http_stdio_relay.mjs -> bridge-hosted Node backend -> Codex Browser runtime -> ChatGPT
 ```
 
 Smoke output is a redacted JSON summary. It reports output matches and lengths, not raw prompts or raw responses. Exit codes are:

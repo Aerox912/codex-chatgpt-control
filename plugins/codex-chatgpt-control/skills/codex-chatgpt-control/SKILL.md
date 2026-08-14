@@ -13,7 +13,7 @@ This skill is for visible, user-directed ChatGPT workflows only. It is not an Op
 
 1. Prefer the plugin-bundled SDK facade from `createChatGPT({ agent })`.
 2. Use ChatGPT web through a compatible Codex/browser bridge. Do not use private ChatGPT network calls.
-3. Treat `globalThis.agent` as host-provided. If it is missing, bootstrap the Chrome plugin runtime when available; otherwise report a bridge blocker.
+3. Treat `globalThis.agent` as host-provided. If it is missing, bootstrap the installed Browser runtime when available; otherwise report a bridge blocker. Automatic SDK discovery prefers the in-app browser and falls back to Chrome.
 4. Stop on login, captcha, rate-limit, selector-drift, upload/download permission, or ambiguous confirmation blockers.
 5. Ask for explicit user confirmation before public, destructive, third-party, paid, account-level, or externally visible actions.
 6. Redact run reports by default. Raw prompt/response content is opt-in only.
@@ -75,11 +75,11 @@ runtime still derives a fitting icon and color from each project name.
 
 When using this installed plugin, do not import from an older manually installed skill runtime. Use the plugin-bundled runtime so the installed plugin and SDK stay in sync.
 
-## Bridge Bootstrap
+## Browser Bootstrap
 
 Ordinary shells should not have `globalThis.agent`. A `browser_bridge_unavailable` blocker from an ordinary shell is an expected safe result for browser-required calls.
 
-For a true live Chrome bridge run from Codex, initialize the Chrome plugin runtime before using the SDK if `globalThis.agent` is missing. See `references/bridge-bootstrap.md` when bootstrap details are needed.
+For a live Codex run, initialize the installed Browser runtime before using the SDK if `globalThis.agent` is missing. Automatic discovery prefers the in-app browser, then falls back to the Chrome extension. If the user explicitly requests a browser, obtain that browser through the Browser skill and pass its handle as `browser` to `createChatGPT(...)`. See `references/bridge-bootstrap.md` when bootstrap details are needed.
 
 Do not diagnose user-open Chrome tab availability with `browser.tabs.list()` or `browser.tabs.selected()` alone. When the user says a ChatGPT thread is already open, use `existingTab: true`, an exact `existingTab` policy, or the SDK's existing-tab helpers.
 
@@ -253,7 +253,7 @@ See `references/response-capture.md` for fidelity warnings and report handling.
 
 ## File Upload Permissions
 
-File attachment workflows need two separate permission gates:
+In-app-browser file attachment uses its visible file chooser and Codex confirmation flow. Chrome fallback additionally needs two separate permission gates:
 
 1. Chrome extension gate: open `chrome://extensions`, choose the Codex/browser bridge extension, open Details, and enable `Allow access to file URLs`.
 2. Codex app gate: in Codex settings, allow Google Chrome uploads under `Computer Use > Google Chrome > Permissions > Uploads`.

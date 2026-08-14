@@ -78,7 +78,7 @@ Do not import from an older manually installed skill runtime; the plugin-bundled
 
 ## Bridge Bootstrap Handoff
 
-This skill assumes the Codex Chrome bridge is already available in the JS runtime. If `globalThis.agent` is missing, do not stop after reporting `hasAgent: false`; initialize the Chrome plugin runtime using the bootstrap steps from the `codex-chatgpt-control` skill, then retry the consult.
+This skill assumes a Codex Browser runtime is already available. If `globalThis.agent` is missing, do not stop after reporting `hasAgent: false`; initialize the Browser runtime using the bootstrap steps from the `codex-chatgpt-control` skill, then retry the consult. Automatic discovery prefers the in-app browser and falls back to Chrome.
 
 After bootstrap, verify both values before using the snippets below:
 
@@ -275,14 +275,14 @@ if (isStillRunning(status.data)) {
 }
 ```
 
-If the browser bridge itself needs inspection after a timeout, bootstrap the Chrome runtime from the `codex-chatgpt-control` skill and use `browser.tabs.*`; the bridge does not expose top-level `browser.list` or `browser.selected`.
+If the browser bridge itself needs inspection after a timeout, bootstrap the Browser runtime from the `codex-chatgpt-control` skill and use `browser.tabs.*`; the bridge does not expose top-level `browser.list` or `browser.selected`.
 
 ## Blockers
 
 If a run fails, report the structured blocker instead of retrying blindly.
 
-- `browser_bridge_unavailable`: the active runtime does not expose the Codex Chrome bridge after running the browser-control bootstrap. Report the bootstrap error and whether `hasAgent` and `hasBrowser` are true.
-- `login_required`: ask the user to log in to ChatGPT in Chrome.
+- `browser_bridge_unavailable`: the active runtime does not expose a compatible Codex browser after running the browser-control bootstrap. Report the bootstrap error and whether `hasAgent` and `hasBrowser` are true.
+- `login_required`: ask the user to log in to ChatGPT in the selected browser.
 - `selector_drift` during configuration: report that the visible Pro setting was unavailable or unverified and include `candidates`.
 - `file_permission`: tell the user to enable both Codex Chrome upload permission and Chrome extension file URL access before retrying file attach.
 - `rate_limited`, `captcha`, or account-level confirmation: stop and ask the user to resolve it manually.

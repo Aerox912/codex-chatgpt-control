@@ -114,7 +114,7 @@ or ChatGPT UI is unavailable, report the SDK stop reason and do not retry
 blindly.
 ```
 
-The plugin and skill are agent-facing operating guides plus local runtime bundles. They do not bundle a browser bridge, credentials, or ChatGPT account access. Real browser workflows still require a compatible Codex/browser bridge and a visible signed-in ChatGPT web session.
+The plugin and skill are agent-facing operating guides plus local runtime bundles. They do not bundle a browser bridge, credentials, or ChatGPT account access. Real browser workflows still require a compatible Codex/browser bridge and a visible signed-in ChatGPT web session. When the host exposes multiple browsers and the caller does not supply one explicitly, the SDK prefers the Codex in-app browser and falls back to the Chrome extension.
 
 ## Node Quick Start
 
@@ -365,7 +365,7 @@ For deterministic tests and ordinary-shell protocol checks:
 
 For real ChatGPT browser control:
 
-- a signed-in ChatGPT web session in Chrome
+- a signed-in ChatGPT web session in the Codex in-app browser or Chrome
 - a compatible Codex/browser bridge that exposes `globalThis.agent`
 - a visible browser tab or permission to open one
 - user approval for prompts, files, downloads, and any account-affecting action
@@ -376,7 +376,7 @@ For real ChatGPT browser control:
 
 Attachment paths must be absolute on the machine running the Node backend. Use `/home/you/file.pdf` or `/mnt/c/work/file.pdf` for Linux/WSL backends. Use `C:\Users\you\file.pdf` or `\\server\share\file.pdf` for Windows backends. The backend rejects ambiguous Windows forms such as `C:Users\you\file.pdf` and rejects Windows-looking paths when the backend host is POSIX.
 
-File attachments need two separate permission gates:
+In-app-browser attachments use its visible file chooser and Codex confirmation flow. Chrome fallback additionally needs two separate permission gates:
 
 1. **Chrome extension gate:** open `chrome://extensions`, choose the Codex/browser bridge extension, open **Details**, and enable **Allow access to file URLs**.
 2. **Codex app gate:** in Codex settings, allow Google Chrome uploads under **Computer Use > Google Chrome > Permissions > Uploads**. Choose the most restrictive setting that still fits your workflow; for unattended local smoke tests, use the setting that always allows uploads.

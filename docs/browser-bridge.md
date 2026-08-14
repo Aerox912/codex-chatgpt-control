@@ -23,12 +23,14 @@ Deterministic tests and protocol checks need only local language runtimes:
 
 Real ChatGPT control additionally needs:
 
-- Chrome with a signed-in visible ChatGPT web session
+- a signed-in visible ChatGPT web session in the Codex in-app browser or Chrome
 - a compatible Codex/browser bridge exposing `globalThis.agent`
 - permission to operate or open a visible ChatGPT tab
 - explicit user approval for prompts, files, downloads, and account-affecting actions
 
 `globalThis.agent` is host-provided. The SDK does not create or fake a browser bridge from an ordinary shell.
+
+When the host exposes multiple compatible browsers and the caller does not pass an explicit `browser`, automatic discovery prefers the Codex in-app browser and falls back to the Chrome extension. A caller-supplied browser remains authoritative.
 
 ## Host-Local Attachment Paths
 
@@ -36,7 +38,7 @@ Attachment paths must be absolute on the machine running the Node backend. On Li
 
 ## File Upload Permissions
 
-File attachments require both permission gates:
+In-app-browser attachments use its visible file chooser and Codex confirmation flow. Chrome fallback requires both permission gates:
 
 1. Chrome extension gate: open `chrome://extensions`, select the Codex/browser bridge extension, open **Details**, and enable **Allow access to file URLs**.
 2. Codex app gate: in Codex settings, allow Google Chrome uploads under **Computer Use > Google Chrome > Permissions > Uploads**.

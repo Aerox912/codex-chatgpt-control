@@ -55,7 +55,8 @@ async function getBrowser(env: RuntimeEnv): Promise<BrowserLike> {
   const browsers = (agent as { browsers?: unknown } | undefined)?.browsers;
 
   if (browsers !== undefined && typeof browsers === "object") {
-    const maybeBrowser = await tryBrowserGetPreferredListed(browsers)
+    const maybeBrowser = await tryBrowserGet(browsers, "iab")
+      ?? await tryBrowserGetPreferredListed(browsers)
       ?? await tryBrowserGet(browsers, "extension")
       ?? await tryBrowserGet(browsers, "chrome");
 
@@ -112,7 +113,8 @@ async function tryBrowserGetPreferredListed(browsers: unknown): Promise<BrowserL
 
   try {
     const available = await list.call(browsers);
-    const preferred = available.find(browser => browser.type === "extension")
+    const preferred = available.find(browser => browser.type === "iab")
+      ?? available.find(browser => browser.type === "extension")
       ?? available.find(browser => typeof browser.name === "string" && /chrome/i.test(browser.name))
       ?? available[0];
     const id = preferred?.id;

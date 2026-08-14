@@ -26,19 +26,19 @@ This section is checked by `npm run docs:drift`. Keep it aligned with `BlockerKi
 
 The backend process does not have access to a browser bridge. This is expected when a live-smoke command runs from an ordinary shell: it proves the protocol stayed alive and surfaced a structured blocker.
 
-The structured blocker should include `code: "codex_chrome_bridge_unavailable"` plus `blocker.remediation[]`. Agents should read those remediation steps before asking the user to restart Chrome or change permissions.
+The structured blocker retains the V1-compatible `code: "codex_chrome_bridge_unavailable"` plus `blocker.remediation[]`. Agents should read those remediation steps before asking the user to restart a browser or change permissions.
 
 Use `chatgpt.explainBlocker(result)` or Python `explain_blocker(result)` when rendering a blocker in logs or CLI output. The explanation keeps the structured blocker intact and adds category, severity, conservative retry/resume guidance, next-command hints, and Markdown.
 
-Do not conclude that Chrome or the extension is broken from a plain shell result, or from checking `globalThis.agent` before the Chrome plugin runtime is initialized. For a true Codex Chrome-plugin live run, bootstrap the runtime first:
+Do not conclude that the in-app browser, Chrome, or ChatGPT is broken from a plain shell result, or from checking `globalThis.agent` before the Browser runtime is initialized. For a live Codex desktop run, initialize the installed Browser runtime first. Automatic SDK discovery then prefers the in-app browser and falls back to Chrome:
 
 ```js
-const { setupBrowserRuntime } = await import("/example/user/.codex/plugins/cache/openai-bundled/chrome/latest/scripts/browser-client.mjs");
-await setupBrowserRuntime({ globals: globalThis });
-globalThis.browser = await agent.browsers.get("extension");
+const { setupBrowserRuntime } = await import("/absolute/path/to/browser-client.mjs");
+globalThis.agent = await setupBrowserRuntime();
+const chatgpt = createChatGPT({ agent: globalThis.agent });
 ```
 
-If the command was intentionally running in a bridge-enabled host and still returns this blocker, verify that the Codex Chrome extension is installed and enabled, then restart Chrome or Codex if the backend is still unavailable. Do not keep retrying the same attach path indefinitely.
+If the command was intentionally running in a bridge-enabled host and still returns this blocker, verify that the Codex Browser plugin is enabled. When Chrome fallback is required, also verify its extension is installed and enabled. Restart Codex or Chrome only after checking the selected browser. Do not keep retrying the same attach path indefinitely.
 
 For Python live bridge smokes, a plain Python-spawned Node subprocess does not inherit Codex's in-process bridge. Use the relay into an active bridge-hosted backend:
 
@@ -53,7 +53,7 @@ Create the backend server and wait on it in the **same** bridge-hosted JS execut
 
 ## `login_required`
 
-The user needs to sign in to ChatGPT in Chrome. Stop and ask the user to complete login.
+The user needs to sign in to ChatGPT in the selected browser. Stop and ask the user to complete login there.
 
 ## `captcha`
 

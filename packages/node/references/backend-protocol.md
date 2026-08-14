@@ -275,14 +275,14 @@ For live browser control, the backend process must have access to a compatible b
 - Explicit `RuntimeEnv.browser` or `RuntimeEnv.page` in a future embedding.
 - A future Python-native/native-host/CDP backend that implements this same protocol.
 
-Important: in Codex, `globalThis.agent` is not present until the Chrome plugin runtime is bootstrapped. Do not diagnose bridge availability by checking `globalThis.agent` in an ordinary shell or before calling the Chrome plugin's `setupBrowserRuntime({ globals: globalThis })`.
+Important: in Codex, `globalThis.agent` is not present until a compatible Browser runtime is initialized. Do not diagnose bridge availability by checking `globalThis.agent` in an ordinary shell or before initializing the installed Browser runtime. Automatic SDK discovery prefers the in-app browser and falls back to Chrome unless the caller supplies an explicit browser.
 
-The live Chrome bootstrap is:
+The live Browser bootstrap is:
 
 ```js
-const { setupBrowserRuntime } = await import("/example/user/.codex/plugins/cache/openai-bundled/chrome/latest/scripts/browser-client.mjs");
-await setupBrowserRuntime({ globals: globalThis });
-globalThis.browser = await agent.browsers.get("extension");
+const { setupBrowserRuntime } = await import("/absolute/path/to/browser-client.mjs");
+globalThis.agent = await setupBrowserRuntime();
+const chatgpt = createChatGPT({ agent: globalThis.agent });
 ```
 
 ## Ordinary-Shell Smoke
@@ -328,7 +328,7 @@ python scripts/live_smoke.py \
 Create the backend server and wait on it in the **same** bridge-hosted JS execution. A server created in one Node REPL call cannot be kept bridge-capable by waiting in a second call. That single execution must remain active for the duration of the Python smoke. The relay path is:
 
 ```text
-Python SDK -> stdio relay -> bridge-hosted Node backend -> Codex Chrome bridge -> ChatGPT
+Python SDK -> stdio relay -> bridge-hosted Node backend -> Codex Browser runtime -> ChatGPT
 ```
 
 The smoke covers `runner.run`, `runner.run_streamed`, `responses.create`, named `run_plan`, and redacted `reports.create`. It writes redacted JSON summaries and does not persist raw prompt/response content by default.

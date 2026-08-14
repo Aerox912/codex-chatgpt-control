@@ -13,7 +13,7 @@ This skill is for visible, user-directed ChatGPT workflows only. It is not an Op
 
 1. Prefer the SDK facade from `createChatGPT({ agent })`.
 2. Use ChatGPT web through a compatible Codex/browser bridge. Do not use private ChatGPT network calls.
-3. Treat `globalThis.agent` as host-provided. If it is missing, report a bridge blocker rather than inventing browser state.
+3. Treat `globalThis.agent` as host-provided. If it is missing, initialize an installed Codex Browser runtime when available; otherwise report a bridge blocker. Automatic SDK discovery prefers the in-app browser and falls back to Chrome.
 4. Stop on login, captcha, rate-limit, selector-drift, upload/download permission, or ambiguous confirmation blockers.
 5. Ask for explicit user confirmation before public, destructive, third-party, paid, account-level, or externally visible actions.
 6. Redact run reports by default. Raw prompt/response content is opt-in only.
@@ -33,7 +33,7 @@ Deterministic local checks need:
 
 Real browser-control runs also need:
 
-- Chrome with a signed-in visible ChatGPT web session
+- a signed-in visible ChatGPT web session in the Codex in-app browser or Chrome
 - a compatible Codex/browser bridge exposing `globalThis.agent`
 - permission to use or open a visible ChatGPT tab
 
@@ -41,7 +41,7 @@ Ordinary shells should not have `globalThis.agent`. A `browser_bridge_unavailabl
 
 ## File Upload Permissions
 
-File attachment workflows need two separate permission gates:
+In-app-browser file attachment uses its visible file chooser and Codex confirmation flow. Chrome fallback additionally needs two separate permission gates:
 
 1. Chrome extension gate: open `chrome://extensions`, choose the Codex/browser bridge extension, open **Details**, and enable **Allow access to file URLs**.
 2. Codex app gate: in Codex settings, allow Google Chrome uploads under **Computer Use > Google Chrome > Permissions > Uploads**. Use the narrowest setting that fits the workflow; unattended smoke tests may need the always-allow setting.
