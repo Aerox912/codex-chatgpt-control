@@ -5,7 +5,7 @@ import type { BrowserLike, PageLike } from "../../src/types.js";
 describe("automatic browser selection", () => {
   it("prefers the in-app browser selector", async () => {
     const requested: string[] = [];
-    const inAppBrowser = fakeBrowser("Codex In-app Browser", "iab-tab");
+    const inAppBrowser = fakeBrowser(undefined, "iab-tab");
     const chrome = fakeBrowser("chrome", "chrome-tab");
     const agent = {
       browsers: {
@@ -21,14 +21,14 @@ describe("automatic browser selection", () => {
     const result = await bootstrap({ agent }, { preferExistingTab: false });
 
     expect(result.ok).toBe(true);
-    expect(result.data?.browserName).toBe("Codex In-app Browser");
+    expect(result.data?.browserName).toBe("iab");
     expect(result.context.tabId).toBe("iab-tab");
     expect(requested).toEqual(["iab"]);
   });
 
   it("prefers a listed in-app browser when the stable selector is unavailable", async () => {
     const requested: string[] = [];
-    const inAppBrowser = fakeBrowser("Codex In-app Browser", "listed-iab-tab");
+    const inAppBrowser = fakeBrowser(undefined, "listed-iab-tab");
     const chrome = fakeBrowser("chrome", "chrome-tab");
     const agent = {
       browsers: {
@@ -49,7 +49,7 @@ describe("automatic browser selection", () => {
     const result = await bootstrap({ agent }, { preferExistingTab: false });
 
     expect(result.ok).toBe(true);
-    expect(result.data?.browserName).toBe("Codex In-app Browser");
+    expect(result.data?.browserName).toBe("iab");
     expect(result.context.tabId).toBe("listed-iab-tab");
     expect(requested).toEqual(["iab", "iab-id"]);
   });
@@ -100,9 +100,9 @@ describe("automatic browser selection", () => {
   });
 });
 
-function fakeBrowser(name: string, tabId: string): BrowserLike {
+function fakeBrowser(name: string | undefined, tabId: string): BrowserLike {
   return {
-    name,
+    ...(name === undefined ? {} : { name }),
     tabs: {
       new: async (url?: string) => fakeChatGPTPage(tabId, url ?? "https://chatgpt.com/")
     }

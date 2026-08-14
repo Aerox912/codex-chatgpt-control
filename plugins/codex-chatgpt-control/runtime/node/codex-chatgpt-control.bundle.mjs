@@ -3244,7 +3244,8 @@ var CHATGPT_HOSTS = /* @__PURE__ */ new Set(["chatgpt.com", "www.chatgpt.com", "
 var MAX_EXISTING_TAB_DIAGNOSTIC_CANDIDATES = 10;
 var MAX_EXISTING_TAB_DIAGNOSTIC_FIELD_LENGTH = 240;
 async function attachChatGPTBrowser(env, args = {}) {
-  const browser = await getBrowser(env);
+  const selection = await getBrowser(env);
+  const browser = selection.browser;
   const page = await getOrCreateChatGPTPage(browser, env, args);
   const state = await readPageState(page);
   if (state.blocker?.kind === "login_required") {
@@ -3253,7 +3254,7 @@ async function attachChatGPTBrowser(env, args = {}) {
   const attached = {
     browser,
     page,
-    browserName: browser.name ?? "chrome"
+    browserName: browser.name ?? selection.browserName
   };
   const tabId = tabIdFromPage(page);
   if (tabId !== void 0) {
@@ -3263,7 +3264,10 @@ async function attachChatGPTBrowser(env, args = {}) {
 }
 async function getBrowser(env) {
   if (env.browser !== void 0) {
-    return env.browser;
+    return {
+      browser: env.browser,
+      browserName: env.browser.name ?? "browser"
+    };
   }
   const anyEnv = env;
   const agent = env.agent ?? anyEnv.agent ?? globalThis.agent;
@@ -3283,7 +3287,14 @@ async function tryBrowserGet(browsers, name) {
   }
   try {
     const browser = await get.call(browsers, name);
-    return normalizeBrowser(browser);
+    const normalized = normalizeBrowser(browser);
+    if (normalized === void 0) {
+      return void 0;
+    }
+    return {
+      browser: normalized,
+      browserName: normalized.name ?? browserNameFromSelector(name)
+    };
   } catch {
     return void 0;
   }
@@ -3302,10 +3313,24 @@ async function tryBrowserGetPreferredListed(browsers) {
       return void 0;
     }
     const browser = await get.call(browsers, id2);
-    return normalizeBrowser(browser);
+    const normalized = normalizeBrowser(browser);
+    if (normalized === void 0) {
+      return void 0;
+    }
+    const type = typeof preferred?.type === "string" ? preferred.type : void 0;
+    const name = typeof preferred?.name === "string" ? preferred.name : void 0;
+    return {
+      browser: normalized,
+      browserName: normalized.name ?? (type === void 0 ? name ?? "browser" : browserNameFromSelector(type))
+    };
   } catch {
     return void 0;
   }
+}
+function browserNameFromSelector(selector) {
+  if (selector === "iab") return "iab";
+  if (selector === "extension" || selector === "chrome") return "chrome";
+  return selector;
 }
 async function getOrCreateChatGPTPage(browser, env, args) {
   const targetUrl = args.url ?? CHATGPT_HOME;
