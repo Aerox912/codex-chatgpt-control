@@ -1,6 +1,6 @@
 # codex-chatgpt-control
 
-[![CI](https://img.shields.io/github/actions/workflow/status/adamallcock/codex-chatgpt-control/parity.yml?branch=main&label=CI&logo=github)](https://github.com/adamallcock/codex-chatgpt-control/actions/workflows/parity.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/Aerox912/codex-chatgpt-control/parity.yml?branch=main&label=CI&logo=github)](https://github.com/Aerox912/codex-chatgpt-control/actions/workflows/parity.yml)
 [![npm](https://img.shields.io/npm/v/codex-chatgpt-control?logo=npm)](https://www.npmjs.com/package/codex-chatgpt-control)
 [![PyPI](https://img.shields.io/pypi/v/codex-chatgpt-control?logo=pypi)](https://pypi.org/project/codex-chatgpt-control/)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
@@ -8,6 +8,10 @@
 ![Node](https://img.shields.io/badge/Node-20%2B-green)
 
 Unofficial alpha SDK for agents that need to delegate user-directed workflows to the visible ChatGPT Chat and Work experiences.
+
+This repository is the Aerox912 fork of Adam Allcock's upstream project. The
+plugin listing points to this fork while preserving the original authorship and
+MIT license provenance.
 
 https://github.com/user-attachments/assets/6ca38f2d-6646-490d-8e4d-8a6dc21e926f
 
@@ -78,7 +82,7 @@ This repo includes a Codex plugin at [plugins/codex-chatgpt-control](plugins/cod
 Install the repository as a Codex plugin marketplace and add the plugin:
 
 ```bash
-codex plugin marketplace add adamallcock/codex-chatgpt-control --ref main
+codex plugin marketplace add Aerox912/codex-chatgpt-control --ref main
 codex plugin add codex-chatgpt-control@codex-chatgpt-control
 ```
 
@@ -311,7 +315,7 @@ The Python package is a protocol client. The current browser runtime is still No
 Clone the repo and build the Node runtime:
 
 ```bash
-git clone https://github.com/adamallcock/codex-chatgpt-control.git
+git clone https://github.com/Aerox912/codex-chatgpt-control.git
 cd codex-chatgpt-control/packages/node
 npm ci
 npm test

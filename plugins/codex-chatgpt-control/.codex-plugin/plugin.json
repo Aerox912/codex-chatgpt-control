@@ -1,13 +1,13 @@
 {
   "name": "codex-chatgpt-control",
-  "version": "0.5.1-alpha.1+codex.20260814104233",
+  "version": "0.5.1-alpha.1+codex.20260815023536",
   "description": "Control visible ChatGPT Chat and Work from Codex with verified configuration, task progress, files, artifacts, and safe blockers.",
   "author": {
     "name": "Adam Allcock",
     "url": "https://github.com/adamallcock"
   },
-  "homepage": "https://github.com/adamallcock/codex-chatgpt-control",
-  "repository": "https://github.com/adamallcock/codex-chatgpt-control",
+  "homepage": "https://github.com/Aerox912/codex-chatgpt-control",
+  "repository": "https://github.com/Aerox912/codex-chatgpt-control",
   "license": "MIT",
   "keywords": [
     "codex",
@@ -20,19 +20,19 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "ChatGPT Surface Control",
+    "displayName": "ChatGPT Surface Control (Aerox912 Fork)",
     "shortDescription": "Delegate to visible ChatGPT Chat or Work with verified controls, progress, files, and artifacts",
     "longDescription": "ChatGPT Surface Control lets Codex agents work with the visible ChatGPT Chat and Work experiences. It supports surface detection, verified configuration, user-directed prompts, thread and Work-task continuation, progress polling, steering, file attachments, visible artifacts and downloads, Markdown response capture, redacted reports, and structured blockers. It retains legacy mode and Pro-consult aliases, but does not bypass ChatGPT login, call hidden endpoints, read cookies, or replace the OpenAI API or official Codex SDK.",
-    "developerName": "Adam Allcock",
+    "developerName": "Aerox912 (fork; upstream by Adam Allcock)",
     "category": "Developer Tools",
     "capabilities": [
       "Interactive",
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/adamallcock/codex-chatgpt-control",
-    "privacyPolicyURL": "https://github.com/adamallcock/codex-chatgpt-control/blob/main/docs/plugin-privacy.md",
-    "termsOfServiceURL": "https://github.com/adamallcock/codex-chatgpt-control/blob/main/docs/plugin-terms.md",
+    "websiteURL": "https://github.com/Aerox912/codex-chatgpt-control",
+    "privacyPolicyURL": "https://github.com/Aerox912/codex-chatgpt-control/blob/main/docs/plugin-privacy.md",
+    "termsOfServiceURL": "https://github.com/Aerox912/codex-chatgpt-control/blob/main/docs/plugin-terms.md",
     "defaultPrompt": [
       "Delegate this review to the most appropriate visible ChatGPT surface.",
       "Start a visible Work task and report progress without duplicate submission.",
