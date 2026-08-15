@@ -78,6 +78,44 @@ describe("ChatGPT Project routing", () => {
     expect(fake.actions).not.toContain("create-project");
   });
 
+  it("uses Show more until a compact-sidebar project becomes visible", async () => {
+    const fake = projectPage({
+      existingProject: true,
+      sidebarHidden: true,
+      directProjectSection: true,
+      projectRevealAfter: 2
+    });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Codex ChatGPT Control" },
+      250
+    );
+
+    expect(result).toMatchObject({ ok: true, data: { created: false } });
+    expect(fake.actions).toEqual(["open-sidebar", "show-more", "show-more"]);
+    expect(fake.actions).not.toContain("create-project");
+  });
+
+  it("blocks instead of creating a duplicate when Show more cannot be exhausted", async () => {
+    const fake = projectPage({ directProjectSection: true, projectRevealAfter: 101 });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Codex ChatGPT Control", confirmCreation: true },
+      250
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "unsupported",
+      blocker: {
+        kind: "selector_drift",
+        code: "chatgpt_project_routing_selector_drift"
+      }
+    });
+    expect(result.blocker?.message).toContain("stopped before treating");
+    expect(fake.actions).not.toContain("create-project");
+  });
+
   it("returns a resumable confirmation blocker before creating a missing project", async () => {
     const fake = projectPage();
     const result = await openOrCreateProjectForNewThread(
@@ -100,7 +138,7 @@ describe("ChatGPT Project routing", () => {
   });
 
   it("creates the confirmed project with the suggested icon and verifies its composer", async () => {
-    const fake = projectPage();
+    const fake = projectPage({ directProjectSection: true });
     const result = await openOrCreateProjectForNewThread(
       { page: fake.page },
       { name: "Codex ChatGPT Control", confirmCreation: true },
@@ -129,6 +167,7 @@ describe("ChatGPT Project routing", () => {
 function projectPage(options: {
   directProjectSection?: boolean;
   existingProject?: boolean;
+  projectRevealAfter?: number;
   sidebarHidden?: boolean;
 } = {}): { page: PageLike; actions: string[] } {
   const actions: string[] = [];
@@ -137,6 +176,12 @@ function projectPage(options: {
   let customizeDialogOpen = false;
   let projectName = "Codex ChatGPT Control";
   let sidebarOpen = options.sidebarHidden !== true;
+  let showMoreClicks = 0;
+
+  const projectVisible = (): boolean =>
+    sidebarOpen &&
+    options.existingProject === true &&
+    showMoreClicks >= (options.projectRevealAfter ?? 0);
 
   const empty = locator({ count: 0 });
   const projectLink = locator({ count: 1, href: "/g/g-p-test/c/example" });
@@ -145,12 +190,12 @@ function projectPage(options: {
     locator: selector => selector.includes('/g/g-p-') ? projectLink : empty
   });
   const projectRow = locator({
-    count: options.existingProject === true ? 1 : 0,
+    count: () => projectVisible() ? 1 : 0,
     text: "Codex ChatGPT Control",
     locator: selector => selector.includes("ancestor::li") ? projectItem : projectRow
   });
   const projectIcons = locator({
-    count: () => sidebarOpen && options.existingProject === true ? 1 : 0,
+    count: () => projectVisible() ? 1 : 0,
     nth: () => locator({ count: 1, locator: () => projectRow })
   });
 
@@ -227,8 +272,17 @@ function projectPage(options: {
       }
       if (role === "button" && name === "New project") {
         return locator({
-          count: () => sidebarOpen && options.directProjectSection !== true ? 1 : 0,
+          count: () => sidebarOpen ? 1 : 0,
           click: () => { createDialogOpen = true; }
+        });
+      }
+      if (role === "button" && name === "Show more") {
+        return locator({
+          count: () => sidebarOpen && showMoreClicks < (options.projectRevealAfter ?? 0) ? 1 : 0,
+          click: () => {
+            showMoreClicks += 1;
+            actions.push("show-more");
+          }
         });
       }
       if (role === "dialog" && name === "Create project") return createDialog;

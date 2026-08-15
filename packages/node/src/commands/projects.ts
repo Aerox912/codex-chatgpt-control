@@ -15,6 +15,7 @@ import { contextFromPage } from "./context.js";
 const CHATGPT_HOME = "https://chatgpt.com/";
 const PROJECT_ICON_SELECTOR = '[data-testid="project-folder-icon"]';
 const PROJECT_PAGE_PATTERN = /\/g\/(g-p-[^/]+)\/project(?:[/?#]|$)/i;
+const PROJECT_EXPANSION_LIMIT = 100;
 
 const COLOR_LABELS: Record<ChatGPTProjectColor, string> = {
   default: "Default color, black in light mode, white in dark mode",
@@ -283,7 +284,7 @@ async function revealProjectList(page: PageLike): Promise<boolean> {
 }
 
 async function findProjectRow(page: PageLike, name: string): Promise<LocatorLike | undefined> {
-  for (let pass = 0; pass < 8; pass += 1) {
+  for (let pass = 0; pass < PROJECT_EXPANSION_LIMIT; pass += 1) {
     const row = await findVisibleProjectRow(page, name);
     if (row !== undefined) return row;
 
@@ -292,7 +293,16 @@ async function findProjectRow(page: PageLike, name: string): Promise<LocatorLike
     await showMore?.last?.().click?.();
     await page.waitForTimeout?.(200);
   }
-  return findVisibleProjectRow(page, name);
+
+  const row = await findVisibleProjectRow(page, name);
+  if (row !== undefined) return row;
+  const showMore = page.getByRole?.("button", { name: "Show more", exact: true });
+  if (await locatorCount(showMore) > 0) {
+    throw new ProjectSelectorError(
+      `ChatGPT still exposed Show more after ${PROJECT_EXPANSION_LIMIT} Project-list expansions; stopped before treating "${name}" as missing.`
+    );
+  }
+  return undefined;
 }
 
 async function findVisibleProjectRow(page: PageLike, name: string): Promise<LocatorLike | undefined> {

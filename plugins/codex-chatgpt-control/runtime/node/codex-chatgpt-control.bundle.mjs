@@ -5517,6 +5517,7 @@ function ensureResult(navigated, targetUrl, expectedConversationId) {
 var CHATGPT_HOME3 = "https://chatgpt.com/";
 var PROJECT_ICON_SELECTOR = '[data-testid="project-folder-icon"]';
 var PROJECT_PAGE_PATTERN = /\/g\/(g-p-[^/]+)\/project(?:[/?#]|$)/i;
+var PROJECT_EXPANSION_LIMIT = 100;
 var COLOR_LABELS = {
   default: "Default color, black in light mode, white in dark mode",
   red: "Red",
@@ -5733,15 +5734,23 @@ async function revealProjectList(page) {
   return await locatorCount(newProject) > 0;
 }
 async function findProjectRow(page, name) {
-  for (let pass = 0; pass < 8; pass += 1) {
-    const row = await findVisibleProjectRow(page, name);
-    if (row !== void 0) return row;
-    const showMore = page.getByRole?.("button", { name: "Show more", exact: true });
-    if (await locatorCount(showMore) === 0) return void 0;
-    await showMore?.last?.().click?.();
+  for (let pass = 0; pass < PROJECT_EXPANSION_LIMIT; pass += 1) {
+    const row2 = await findVisibleProjectRow(page, name);
+    if (row2 !== void 0) return row2;
+    const showMore2 = page.getByRole?.("button", { name: "Show more", exact: true });
+    if (await locatorCount(showMore2) === 0) return void 0;
+    await showMore2?.last?.().click?.();
     await page.waitForTimeout?.(200);
   }
-  return findVisibleProjectRow(page, name);
+  const row = await findVisibleProjectRow(page, name);
+  if (row !== void 0) return row;
+  const showMore = page.getByRole?.("button", { name: "Show more", exact: true });
+  if (await locatorCount(showMore) > 0) {
+    throw new ProjectSelectorError(
+      `ChatGPT still exposed Show more after ${PROJECT_EXPANSION_LIMIT} Project-list expansions; stopped before treating "${name}" as missing.`
+    );
+  }
+  return void 0;
 }
 async function findVisibleProjectRow(page, name) {
   const icons = page.locator?.(PROJECT_ICON_SELECTOR);
