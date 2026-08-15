@@ -59,7 +59,7 @@ describe("ChatGPT Project routing", () => {
   });
 
   it("opens the compact sidebar before locating an existing project", async () => {
-    const fake = projectPage({ existingProject: true, sidebarHidden: true });
+    const fake = projectPage({ existingProject: true, sidebarHidden: true, directProjectSection: true });
     const result = await openOrCreateProjectForNewThread(
       { page: fake.page },
       { name: "Codex ChatGPT Control" },
@@ -74,7 +74,7 @@ describe("ChatGPT Project routing", () => {
         created: false
       }
     });
-    expect(fake.actions[0]).toBe("open-sidebar");
+    expect(fake.actions).toEqual(["open-sidebar"]);
     expect(fake.actions).not.toContain("create-project");
   });
 
@@ -126,7 +126,11 @@ describe("ChatGPT Project routing", () => {
   });
 });
 
-function projectPage(options: { existingProject?: boolean; sidebarHidden?: boolean } = {}): { page: PageLike; actions: string[] } {
+function projectPage(options: {
+  directProjectSection?: boolean;
+  existingProject?: boolean;
+  sidebarHidden?: boolean;
+} = {}): { page: PageLike; actions: string[] } {
   const actions: string[] = [];
   let currentUrl = "https://chatgpt.com/";
   let createDialogOpen = false;
@@ -201,7 +205,15 @@ function projectPage(options: { existingProject?: boolean; sidebarHidden?: boole
       if (selector === '[data-testid="project-folder-icon"]') return projectIcons;
       return empty;
     },
-    getByText: () => empty,
+    getByText: text => {
+      if (text === "Projects" && options.directProjectSection === true) {
+        return locator({ count: () => sidebarOpen ? 1 : 0, text: "Projects" });
+      }
+      if (text === "More" && options.directProjectSection === true) {
+        return locator({ count: () => sidebarOpen ? 1 : 0, click: () => actions.push("open-more") });
+      }
+      return empty;
+    },
     getByRole: (role, query) => {
       const name = query?.name;
       if (role === "button" && name === "Open sidebar") {
@@ -214,7 +226,10 @@ function projectPage(options: { existingProject?: boolean; sidebarHidden?: boole
         });
       }
       if (role === "button" && name === "New project") {
-        return locator({ count: () => sidebarOpen ? 1 : 0, click: () => { createDialogOpen = true; } });
+        return locator({
+          count: () => sidebarOpen && options.directProjectSection !== true ? 1 : 0,
+          click: () => { createDialogOpen = true; }
+        });
       }
       if (role === "dialog" && name === "Create project") return createDialog;
       if (role === "textbox" && name instanceof RegExp && name.test(`New chat in ${projectName}`)) {

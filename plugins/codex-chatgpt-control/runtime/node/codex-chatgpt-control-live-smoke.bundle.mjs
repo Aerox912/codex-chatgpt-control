@@ -5758,14 +5758,18 @@ function resolveProjectTarget(input) {
   };
 }
 async function revealProjectList(page) {
-  if (await locatorCount(page.getByRole?.("button", { name: "New project", exact: true })) === 0) {
-    const openSidebar = page.getByRole?.("button", { name: "Open sidebar", exact: true });
-    if (await locatorCount(openSidebar) > 0) {
-      await openSidebar?.first?.().click?.();
-      await page.waitForTimeout?.(200);
-    }
+  const openSidebar = page.getByRole?.("button", { name: "Open sidebar", exact: true });
+  if (await locatorCount(openSidebar) > 0) {
+    await openSidebar?.first?.().click?.();
+    await page.waitForTimeout?.(200);
   }
-  if (await locatorCount(page.getByRole?.("button", { name: "New project", exact: true })) === 0) {
+  const projects = page.getByRole?.("button", { name: "Projects", exact: true });
+  const directProjects = page.getByText?.("Projects", { exact: true });
+  if (await locatorCount(directProjects) > 0 && await locatorCount(projects) === 0) {
+    return true;
+  }
+  const newProject = page.getByRole?.("button", { name: "New project", exact: true });
+  if (await locatorCount(newProject) === 0) {
     const more = page.getByText?.("More", { exact: true });
     if (await locatorCount(more) > 0) {
       await more?.first?.().click?.();
@@ -5773,7 +5777,6 @@ async function revealProjectList(page) {
       await page.locator?.("body").press?.("Escape");
     }
   }
-  const projects = page.getByRole?.("button", { name: "Projects", exact: true });
   if (await locatorCount(projects) > 0) {
     const projectsButton = projects?.first?.();
     const expanded = await projectsButton?.getAttribute?.("aria-expanded");
@@ -5782,7 +5785,7 @@ async function revealProjectList(page) {
       await page.waitForTimeout?.(150);
     }
   }
-  return await locatorCount(page.getByRole?.("button", { name: "New project", exact: true })) > 0;
+  return await locatorCount(newProject) > 0;
 }
 async function findProjectRow(page, name) {
   for (let pass2 = 0; pass2 < 8; pass2 += 1) {
