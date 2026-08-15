@@ -6855,6 +6855,13 @@ function resolveProjectTarget(input) {
 }
 async function revealProjectList(page) {
   if (await locatorCount3(page.getByRole?.("button", { name: "New project", exact: true })) === 0) {
+    const openSidebar = page.getByRole?.("button", { name: "Open sidebar", exact: true });
+    if (await locatorCount3(openSidebar) > 0) {
+      await openSidebar?.first?.().click?.();
+      await page.waitForTimeout?.(200);
+    }
+  }
+  if (await locatorCount3(page.getByRole?.("button", { name: "New project", exact: true })) === 0) {
     const more = page.getByText?.("More", { exact: true });
     if (await locatorCount3(more) > 0) {
       await more?.first?.().click?.();

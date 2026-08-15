@@ -250,6 +250,14 @@ function resolveProjectTarget(input: ChatGPTProjectTarget): ResolvedProjectTarge
 
 async function revealProjectList(page: PageLike): Promise<boolean> {
   if (await locatorCount(page.getByRole?.("button", { name: "New project", exact: true })) === 0) {
+    const openSidebar = page.getByRole?.("button", { name: "Open sidebar", exact: true });
+    if (await locatorCount(openSidebar) > 0) {
+      await openSidebar?.first?.().click?.();
+      await page.waitForTimeout?.(200);
+    }
+  }
+
+  if (await locatorCount(page.getByRole?.("button", { name: "New project", exact: true })) === 0) {
     const more = page.getByText?.("More", { exact: true });
     if (await locatorCount(more) > 0) {
       await more?.first?.().click?.();

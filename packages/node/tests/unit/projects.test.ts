@@ -58,6 +58,26 @@ describe("ChatGPT Project routing", () => {
     expect(fake.actions).not.toContain("create-project");
   });
 
+  it("opens the compact sidebar before locating an existing project", async () => {
+    const fake = projectPage({ existingProject: true, sidebarHidden: true });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Codex ChatGPT Control" },
+      250
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        name: "Codex ChatGPT Control",
+        url: "https://chatgpt.com/g/g-p-test/project",
+        created: false
+      }
+    });
+    expect(fake.actions[0]).toBe("open-sidebar");
+    expect(fake.actions).not.toContain("create-project");
+  });
+
   it("returns a resumable confirmation blocker before creating a missing project", async () => {
     const fake = projectPage();
     const result = await openOrCreateProjectForNewThread(
@@ -106,12 +126,13 @@ describe("ChatGPT Project routing", () => {
   });
 });
 
-function projectPage(options: { existingProject?: boolean } = {}): { page: PageLike; actions: string[] } {
+function projectPage(options: { existingProject?: boolean; sidebarHidden?: boolean } = {}): { page: PageLike; actions: string[] } {
   const actions: string[] = [];
   let currentUrl = "https://chatgpt.com/";
   let createDialogOpen = false;
   let customizeDialogOpen = false;
   let projectName = "Codex ChatGPT Control";
+  let sidebarOpen = options.sidebarHidden !== true;
 
   const empty = locator({ count: 0 });
   const projectLink = locator({ count: 1, href: "/g/g-p-test/c/example" });
@@ -125,7 +146,7 @@ function projectPage(options: { existingProject?: boolean } = {}): { page: PageL
     locator: selector => selector.includes("ancestor::li") ? projectItem : projectRow
   });
   const projectIcons = locator({
-    count: options.existingProject === true ? 1 : 0,
+    count: () => sidebarOpen && options.existingProject === true ? 1 : 0,
     nth: () => locator({ count: 1, locator: () => projectRow })
   });
 
@@ -183,8 +204,17 @@ function projectPage(options: { existingProject?: boolean } = {}): { page: PageL
     getByText: () => empty,
     getByRole: (role, query) => {
       const name = query?.name;
+      if (role === "button" && name === "Open sidebar") {
+        return locator({
+          count: () => sidebarOpen ? 0 : 1,
+          click: () => {
+            sidebarOpen = true;
+            actions.push("open-sidebar");
+          }
+        });
+      }
       if (role === "button" && name === "New project") {
-        return locator({ count: 1, click: () => { createDialogOpen = true; } });
+        return locator({ count: () => sidebarOpen ? 1 : 0, click: () => { createDialogOpen = true; } });
       }
       if (role === "dialog" && name === "Create project") return createDialog;
       if (role === "textbox" && name instanceof RegExp && name.test(`New chat in ${projectName}`)) {
