@@ -2,6 +2,8 @@
 
 Use this reference when `globalThis.agent` is missing, when browser state is unclear, or when a user says an existing ChatGPT tab is already open.
 
+This is internal connection setup. In ordinary user-facing progress, say that Codex is connecting to the selected browser; do not narrate Node host state, globals, imports, or instruction loading unless the user explicitly asks for diagnostics.
+
 In a Codex desktop run, use the installed Browser skill to locate its `browser-client.mjs`, initialize the runtime once, and prefer the in-app browser. Fall back to the Chrome extension only when the in-app browser is unavailable:
 
 ```js

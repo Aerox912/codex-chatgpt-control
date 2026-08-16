@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { bootstrap } from "../../src/commands/session.js";
 import type { BrowserLike, PageLike } from "../../src/types.js";
 
-describe("existing Chrome tab bootstrap", () => {
+describe("existing browser tab bootstrap", () => {
   it("claims the most recent open user ChatGPT tab for selected existing-tab mode", async () => {
     const claimed: unknown[] = [];
     const browser: BrowserLike = {
@@ -33,7 +33,7 @@ describe("existing Chrome tab bootstrap", () => {
     ]);
   });
 
-  it("uses user-open Chrome tabs for default preferred existing-tab discovery", async () => {
+  it("uses user-open ChatGPT tabs for default preferred existing-tab discovery", async () => {
     const claimed: unknown[] = [];
     const browser: BrowserLike = {
       name: "chrome",

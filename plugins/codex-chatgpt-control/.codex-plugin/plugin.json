@@ -1,6 +1,6 @@
 {
   "name": "codex-chatgpt-control",
-  "version": "0.5.1-alpha.1+codex.20260815023536",
+  "version": "0.5.1-alpha.1+codex.20260816113419",
   "description": "Control visible ChatGPT Chat and Work from Codex with verified configuration, task progress, files, artifacts, and safe blockers.",
   "author": {
     "name": "Adam Allcock",
@@ -36,7 +36,7 @@
     "defaultPrompt": [
       "Delegate this review to the most appropriate visible ChatGPT surface.",
       "Start a visible Work task and report progress without duplicate submission.",
-      "Continue the ChatGPT thread open in Chrome."
+      "Continue the ChatGPT thread already open in the selected browser."
     ],
     "brandColor": "#10A37F",
     "composerIcon": "./assets/composer-icon.png",

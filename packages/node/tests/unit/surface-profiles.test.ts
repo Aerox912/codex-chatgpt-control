@@ -132,13 +132,24 @@ describe("sanitized Chat and Work surface profiles", () => {
     expect(page.requestedRoles()).toEqual(["radio", "button"]);
   });
 
-  it("waits for the Chat and Work surface radio to hydrate after bootstrap", async () => {
-    const page = surfaceSwitchPage("radio", 1);
+  it("keeps discovering the surface radio on home after the conversation grace", async () => {
+    const page = surfaceSwitchPage("radio", 5);
+
+    const result = await openExperience({ page }, { experience: "work", timeoutMs: 2000 });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({ experience: "work", changed: true });
+    expect(page.switchClickCount()).toBe(1);
+  });
+
+  it("waits for a conversation surface control before navigating home", async () => {
+    const page = surfaceSwitchPage("radio", 1, true);
 
     const result = await openExperience({ page }, { experience: "work", timeoutMs: 1000 });
 
     expect(result.ok).toBe(true);
     expect(result.data).toMatchObject({ experience: "work", changed: true });
+    expect(page.homeNavigationCount()).toBe(0);
     expect(page.switchClickCount()).toBe(1);
   });
 
@@ -515,15 +526,19 @@ async function readSurfaceFixture(name: string): Promise<TestSurfaceProfileFixtu
 }
 
 type SurfaceSwitchPage = PageLike & {
+  homeNavigationCount: () => number;
   switchClickCount: () => number;
   requestedRoles: () => string[];
 };
 
 function surfaceSwitchPage(
   controlRole: "radio" | "button" | undefined,
-  delayedControlMisses = 0
+  delayedControlMisses = 0,
+  startInConversation = false
 ): SurfaceSwitchPage {
+  let atHome = !startInConversation;
   let experience: "chat" | "work" = "chat";
+  let homeNavigations = 0;
   let switchClicks = 0;
   let controlChecks = 0;
   const requestedRoles: string[] = [];
@@ -543,9 +558,17 @@ function surfaceSwitchPage(
   };
 
   return {
+    homeNavigationCount: () => homeNavigations,
     switchClickCount: () => switchClicks,
     requestedRoles: () => [...requestedRoles],
-    url: () => experience === "work" ? "https://chatgpt.com/work" : "https://chatgpt.com/",
+    url: () => experience === "work"
+      ? "https://chatgpt.com/work"
+      : atHome ? "https://chatgpt.com/" : "https://chatgpt.com/c/sanitized-chat",
+    goto: async url => {
+      expect(url).toBe("https://chatgpt.com/");
+      homeNavigations += 1;
+      atHome = true;
+    },
     title: async () => "ChatGPT",
     getByRole: (role, options = {}) => {
       if (options.name === "Work") requestedRoles.push(role);

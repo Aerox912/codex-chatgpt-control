@@ -387,7 +387,8 @@ describe("createChatGPT", () => {
       status: "blocked",
       message: expect.stringContaining("ordinary shell")
     });
-    expect(result.data?.checks.bridge?.message).toContain("setupBrowserRuntime");
+    expect(result.data?.checks.bridge?.message).toContain("installed Browser runtime");
+    expect(result.data?.checks.bridge?.remediation?.join(" ")).toContain("setupBrowserRuntime");
     expect(result.data?.checks.bridge?.remediation?.join(" ")).toContain("scripts/http_stdio_relay.mjs");
   });
 

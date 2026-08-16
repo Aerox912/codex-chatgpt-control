@@ -234,12 +234,13 @@ describe("ChatGPT runner facade", () => {
       code: "codex_chrome_bridge_unavailable",
       message: expect.stringContaining("ordinary shell")
     });
-    expect(result.blocker?.message).toContain("setupBrowserRuntime");
+    expect(result.blocker?.message).toContain("installed Browser runtime");
+    expect(result.blocker?.remediation?.map(step => step.instruction).join(" ")).toContain("setupBrowserRuntime");
     expect(result.blocker?.remediation?.map(step => step.label)).toEqual([
       "Ordinary shell",
-      "Codex Chrome bootstrap",
+      "Codex Browser bootstrap",
       "Python live bridge",
-      "Extension availability"
+      "Browser availability"
     ]);
     expect(result.interruptions[0]?.fix?.steps.join(" ")).toContain("scripts/http_stdio_relay.mjs");
   });

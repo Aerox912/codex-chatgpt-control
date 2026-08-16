@@ -1,7 +1,7 @@
 {
   "args": {
     "configuration": "optional surface-aware visible configuration",
-    "existingTab": "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+    "existingTab": "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
     "experience": "optional chat or work surface",
     "mode": "legacy visible mode preference",
     "prompt": "message to send or workflow-specific input",

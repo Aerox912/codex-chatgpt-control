@@ -77,7 +77,7 @@ const PROFILES: Record<BlockerKind, BlockerProfile> = {
     category: "environment",
     severity: "blocked",
     userActionRequired: false,
-    defaultRetryReason: "Retry only after changing the execution environment or bootstrapping the Codex Chrome bridge."
+    defaultRetryReason: "Retry only after changing the execution environment or connecting through the Codex Browser runtime."
   },
   login_required: {
     title: "Login required",

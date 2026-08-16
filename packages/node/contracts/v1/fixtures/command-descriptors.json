@@ -5,7 +5,7 @@
     {
       "args": {
         "configuration": "optional surface-aware visible configuration",
-        "existingTab": "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+        "existingTab": "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
         "experience": "optional chat or work surface",
         "mode": "legacy visible mode preference",
         "prompt": "message to send or workflow-specific input",
@@ -38,7 +38,7 @@
     {
       "args": {
         "configuration": "optional surface-aware visible configuration",
-        "existingTab": "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+        "existingTab": "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
         "experience": "optional chat or work surface",
         "mode": "legacy visible mode preference",
         "prompt": "message to send or workflow-specific input",
@@ -72,7 +72,7 @@
     {
       "args": {
         "configuration": "optional strict visible configuration such as { intelligence: \"Pro\" } or Work model/effort/speed",
-        "existingTab": "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+        "existingTab": "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
         "experience": "optional chat or work surface",
         "files": "absolute local file paths to attach before submitting",
         "mode": "optional visible mode selection, e.g. { model: \"Pro\" } or { intelligence: \"Pro\", modelVersion: \"5.4\" }",
@@ -109,7 +109,7 @@
     {
       "args": {
         "configuration": "optional surface-aware visible configuration",
-        "existingTab": "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+        "existingTab": "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
         "experience": "optional chat or work surface",
         "mode": "legacy visible mode preference",
         "prompt": "message to send or workflow-specific input",
@@ -142,7 +142,7 @@
     {
       "args": {
         "configuration": "optional surface-aware visible configuration",
-        "existingTab": "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+        "existingTab": "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
         "experience": "optional chat or work surface",
         "mode": "legacy visible mode preference",
         "prompt": "message to send or workflow-specific input",
@@ -175,7 +175,7 @@
     {
       "args": {
         "configuration": "optional surface-aware visible configuration",
-        "existingTab": "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+        "existingTab": "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
         "experience": "optional chat or work surface",
         "mode": "legacy visible mode preference",
         "prompt": "message to send or workflow-specific input",
@@ -209,7 +209,7 @@
     {
       "args": {
         "configuration": "optional surface-aware visible configuration",
-        "existingTab": "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+        "existingTab": "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
         "experience": "optional chat or work surface",
         "mode": "legacy visible mode preference",
         "prompt": "message to send or workflow-specific input",
@@ -275,7 +275,7 @@
     {
       "args": {
         "configuration": "optional surface-aware visible configuration",
-        "existingTab": "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+        "existingTab": "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
         "experience": "optional chat or work surface",
         "mode": "legacy visible mode preference",
         "prompt": "message to send or workflow-specific input",
@@ -306,7 +306,7 @@
     {
       "args": {
         "configuration": "optional surface-aware visible configuration",
-        "existingTab": "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+        "existingTab": "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
         "experience": "optional chat or work surface",
         "mode": "legacy visible mode preference",
         "prompt": "message to send or workflow-specific input",
@@ -598,7 +598,7 @@
       "name": "session.bootstrap",
       "retryPolicy": "Return structured CommandResult failures; retry only when the blocker is recoverable and no duplicate prompt will be submitted.",
       "risk": "low",
-      "summary": "Attach to ChatGPT in Chrome and detect login/blocker state."
+      "summary": "Attach to ChatGPT in the selected browser and detect login/blocker state."
     },
     {
       "args": {

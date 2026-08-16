@@ -11,7 +11,7 @@ BLOCKER_PROFILES: dict[str, dict[str, Any]] = {
         "category": "environment",
         "severity": "blocked",
         "userActionRequired": False,
-        "retryReason": "Retry only after changing the execution environment or bootstrapping the Codex Chrome bridge.",
+        "retryReason": "Retry only after changing the execution environment or connecting through the Codex Browser runtime.",
     },
     "login_required": {
         "title": "Login required",

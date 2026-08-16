@@ -81,7 +81,9 @@ Ordinary shells should not have `globalThis.agent`. A `browser_bridge_unavailabl
 
 For a live Codex run, initialize the installed Browser runtime before using the SDK if `globalThis.agent` is missing. Automatic discovery prefers the in-app browser, then falls back to the Chrome extension. If the user explicitly requests a browser, obtain that browser through the Browser skill and pass its handle as `browser` to `createChatGPT(...)`. See `references/bridge-bootstrap.md` when bootstrap details are needed.
 
-Do not diagnose user-open Chrome tab availability with `browser.tabs.list()` or `browser.tabs.selected()` alone. When the user says a ChatGPT thread is already open, use `existingTab: true`, an exact `existingTab` policy, or the SDK's existing-tab helpers.
+Treat Browser bootstrap and instruction loading as internal setup. User-facing progress should say that Codex is connecting to the selected browser; do not narrate Node hosts, globals, runtime imports, or guidance loading unless the user explicitly asks for diagnostics.
+
+Do not diagnose user-open ChatGPT tab availability with `browser.tabs.list()` or `browser.tabs.selected()` alone. When the user says a ChatGPT thread is already open, use `existingTab: true`, an exact `existingTab` policy, or the SDK's existing-tab helpers.
 
 ## Basic Runner Flow
 
@@ -142,7 +144,8 @@ await chatgpt.configuration.apply({
 The current home UI may expose Chat and Work as radios in a `Select chat
 surface` group. An active Work task may hide that group. Use
 `experience.open` in both cases: it verifies the checked pane, returns home
-when necessary, and retains legacy button/menu/tab/link fallbacks.
+only after a bounded current-page hydration grace when necessary, and retains
+legacy button/menu/tab/link fallbacks.
 
 Selector profiles describe observed UI shapes (`chat_legacy_v1`, `chat_simplified_v1`, `work_basic_v1`, and `work_advanced_v1`). They are not plan or entitlement labels. Treat unavailable controls and rollout differences as structured results instead of guessing.
 

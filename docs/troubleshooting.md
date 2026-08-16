@@ -35,8 +35,8 @@ Expected from ordinary shells. Use it as a diagnostic that the command failed sa
 
 For a real browser run, verify:
 
-- Chrome is open and signed in to ChatGPT.
-- The host runtime exposes `globalThis.agent`.
+- The selected browser is available and signed in to ChatGPT.
+- The installed Browser runtime has been initialized for the live Codex run.
 - The browser bridge can claim or open a visible ChatGPT tab.
 
 ## Python Backend Bundle Missing

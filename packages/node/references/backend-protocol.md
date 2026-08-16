@@ -225,7 +225,7 @@ reported as structured blockers such as
 `artifact_unavailable`, `artifact_selector_drift`, or
 `artifact_download_unavailable`, not protocol errors.
 
-`session.bootstrap` accepts `existingTab` for explicit reuse of a user-open Chrome tab before any read or prompt step. The wire shape is shared by TypeScript and Python:
+`session.bootstrap` accepts `existingTab` for explicit reuse of a user-open ChatGPT tab before any read or prompt step. The wire shape is shared by TypeScript and Python:
 
 ```json
 {
@@ -316,7 +316,7 @@ CHATGPT_BROWSER_BACKEND_COMMAND="node /absolute/path/to/bridge-enabled-backend.m
 python scripts/live_smoke.py --mode browser-bridge
 ```
 
-When the bridge-enabled backend is running inside an active Codex Chrome-plugin JS execution rather than a standalone process, run Python through the stdio relay:
+When the bridge-enabled backend is running inside an active Codex Browser execution rather than a standalone process, run Python through the stdio relay:
 
 ```bash
 CHATGPT_BROWSER_BACKEND_HTTP_URL=http://127.0.0.1:<relay-port> \

@@ -92,7 +92,7 @@ export async function doctor(env: RuntimeEnv, args: DoctorArgs = {}): Promise<Co
     switch (check) {
       case "bridge":
         checks.bridge = boot?.ok
-          ? ok("Chrome bridge is available.")
+          ? ok("Browser bridge is available.")
           : bridgeCheck(boot);
         break;
       case "login":
@@ -149,20 +149,20 @@ function bridgeCheck(boot: CommandResult<unknown> | undefined): CapabilityCheck 
   }
 
   if (boot.blocker?.kind === "login_required") {
-    return ok("Chrome bridge is available; ChatGPT login is required before browser-control commands can continue.");
+    return ok("Browser bridge is available; ChatGPT login is required before browser-control commands can continue.");
   }
 
   if (boot.blocker !== undefined) {
-    return unknown(`Chrome bridge responded, but bootstrap is blocked by ${boot.blocker.kind}: ${boot.blocker.message}`);
+    return unknown(`Browser bridge responded, but bootstrap is blocked by ${boot.blocker.kind}: ${boot.blocker.message}`);
   }
 
-  return blocked(boot.error?.message ?? "Chrome bridge is unavailable.");
+  return blocked(boot.error?.message ?? "Browser bridge is unavailable.");
 }
 
 async function loginCheck(env: RuntimeEnv, boot: CommandResult<unknown> | undefined): Promise<CapabilityCheck> {
   if (boot !== undefined && !boot.ok && boot.blocker?.kind === "login_required") {
     return withBlockerDetails(
-      blocked("ChatGPT login is required.", ["Ask the user to sign in to ChatGPT in Chrome, then retry."]),
+      blocked("ChatGPT login is required.", ["Ask the user to sign in to ChatGPT in the selected browser, then retry."]),
       boot,
       "session.bootstrap"
     );
@@ -172,7 +172,7 @@ async function loginCheck(env: RuntimeEnv, boot: CommandResult<unknown> | undefi
   }
   const state = await readPageState(env.page).catch(() => undefined);
   if (state?.blocker?.kind === "login_required") {
-    return blocked("ChatGPT login is required.", ["Ask the user to sign in to ChatGPT in Chrome, then retry."]);
+    return blocked("ChatGPT login is required.", ["Ask the user to sign in to ChatGPT in the selected browser, then retry."]);
   }
   return state?.signedIn === true ? ok("ChatGPT appears signed in.") : unknown("Could not prove signed-in state from the visible page.");
 }

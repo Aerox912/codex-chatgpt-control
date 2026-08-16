@@ -82,7 +82,7 @@ const descriptors: CommandDescriptor[] = [
   report("createReport", "Write a durable redacted run report for a command result.", [
     `await chatgpt.createReport(result, { destDir: "/absolute/host/reports" });`
   ]),
-  primitive("session.bootstrap", "Attach to ChatGPT in Chrome and detect login/blocker state.", 30000),
+  primitive("session.bootstrap", "Attach to ChatGPT in the selected browser and detect login/blocker state.", 30000),
   primitive("experience.detect", "Detect whether the scoped visible composer is Chat, Work, or unknown and return its selector profile.", 30000),
   primitive("experience.open", "Open Chat or Work and verify the target surface from scoped composer evidence.", 30000),
   primitive("configuration.inspect", "Inspect the active Chat or Work selector profile, axes, options, and selected values.", 30000),
@@ -237,7 +237,7 @@ function workflowArgs(name: string): Record<string, string> {
       files: "absolute local file paths to attach before submitting",
       prompt: "message to send after files are attached",
       thread: "optional thread selector",
-      existingTab: "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+      existingTab: "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
       experience: "optional chat or work surface",
       configuration: "optional strict visible configuration such as { intelligence: \"Pro\" } or Work model/effort/speed",
       mode: "optional visible mode selection, e.g. { model: \"Pro\" } or { intelligence: \"Pro\", modelVersion: \"5.4\" }",
@@ -249,7 +249,7 @@ function workflowArgs(name: string): Record<string, string> {
   return {
     prompt: "message to send or workflow-specific input",
     thread: "optional thread selector",
-    existingTab: "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+    existingTab: "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
     experience: "optional chat or work surface",
     configuration: "optional surface-aware visible configuration",
     mode: "legacy visible mode preference",

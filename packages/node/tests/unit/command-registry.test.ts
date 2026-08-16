@@ -8,7 +8,7 @@ describe("command registry descriptors", () => {
     expect(descriptor?.args).toMatchObject({
       files: "absolute local file paths to attach before submitting",
       mode: "optional visible mode selection, e.g. { model: \"Pro\" } or { intelligence: \"Pro\", modelVersion: \"5.4\" }",
-      existingTab: "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement"
+      existingTab: "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement"
     });
     expect(descriptor?.examples.join("\n")).toContain("mode: { model: \"Pro\" }");
     expect(descriptor?.examples.join("\n")).toContain("files:");

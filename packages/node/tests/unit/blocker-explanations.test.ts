@@ -192,16 +192,16 @@ describe("blocker explanations", () => {
     const explanation = explainCommandBlocker({
       kind: "browser_bridge_unavailable",
       code: "codex_chrome_bridge_unavailable",
-      message: "Codex cannot access the ChatGPT browser bridge from this backend process.",
+      message: "Codex cannot access a compatible browser-control runtime from this process.",
       remediation: BROWSER_BRIDGE_REMEDIATION
     }, { command: "session.bootstrap" });
 
     expect(explanation.category).toBe("environment");
     expect(explanation.remediation.map(step => step.label)).toEqual([
       "Ordinary shell",
-      "Codex Chrome bootstrap",
+      "Codex Browser bootstrap",
       "Python live bridge",
-      "Extension availability"
+      "Browser availability"
     ]);
     expect(explanation.markdown).toContain("Ordinary shell");
     expect(explanation.markdown).toContain("setupBrowserRuntime");

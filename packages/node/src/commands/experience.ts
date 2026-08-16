@@ -28,6 +28,7 @@ type SurfaceSnapshot = {
 
 const CHATGPT_HOME = "https://chatgpt.com/";
 const EXPERIENCE_CONTROL_DISCOVERY_TIMEOUT_MS = 15_000;
+const EXPERIENCE_CURRENT_PAGE_GRACE_MS = 1_000;
 const EXPERIENCE_POLL_MS = 250;
 
 export async function detectExperience(
@@ -84,30 +85,53 @@ export async function openExperience(
       Math.min(timeoutMs, EXPERIENCE_CONTROL_DISCOVERY_TIMEOUT_MS),
       EXPERIENCE_POLL_MS
     );
-    let observed = before;
-    let controlClicked = await clickUniqueExperienceControl(page, labels);
-    if (!controlClicked && await navigateConversationToSurfaceHome(page, args.timeoutMs)) {
-      observed = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
-      if (observed.experience === args.experience) {
-        return resultOk({
-          experience: args.experience,
-          previousExperience: before.experience,
-          changed: true,
-          selectorProfile: observed.selectorProfile
-        }, await contextFromPage(page, {
-          experience: observed.experience,
-          selectorProfile: observed.selectorProfile
-        }));
-      }
-      controlClicked = await clickUniqueExperienceControl(page, labels);
+    const currentPageAttempts = pollAttempts(
+      Math.min(timeoutMs, EXPERIENCE_CURRENT_PAGE_GRACE_MS),
+      EXPERIENCE_POLL_MS
+    );
+    let { observed, controlClicked } = await discoverExperienceControl(
+      page,
+      labels,
+      args.experience,
+      currentPageAttempts,
+      before
+    );
+    if (observed.experience === args.experience) {
+      return resultOk({
+        experience: args.experience,
+        previousExperience: before.experience,
+        changed: true,
+        selectorProfile: observed.selectorProfile
+      }, await contextFromPage(page, {
+        experience: observed.experience,
+        selectorProfile: observed.selectorProfile
+      }));
     }
 
-    // session.bootstrap can verify the composer before the Chat/Work radio has
-    // hydrated. Give the scoped surface control a short bounded discovery
-    // window instead of reporting selector drift from that transient state.
-    for (let attempt = 1; !controlClicked && attempt < discoveryAttempts; attempt += 1) {
-      await page.waitForTimeout?.(EXPERIENCE_POLL_MS);
-      observed = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
+    if (!controlClicked) {
+      if (await navigateConversationToSurfaceHome(page, args.timeoutMs)) {
+        observed = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
+        if (observed.experience === args.experience) {
+          return resultOk({
+            experience: args.experience,
+            previousExperience: before.experience,
+            changed: true,
+            selectorProfile: observed.selectorProfile
+          }, await contextFromPage(page, {
+            experience: observed.experience,
+            selectorProfile: observed.selectorProfile
+          }));
+        }
+      }
+      const finalDiscovery = await discoverExperienceControl(
+        page,
+        labels,
+        args.experience,
+        discoveryAttempts,
+        observed
+      );
+      observed = finalDiscovery.observed;
+      controlClicked = finalDiscovery.controlClicked;
       if (observed.experience === args.experience) {
         return resultOk({
           experience: args.experience,
@@ -119,7 +143,6 @@ export async function openExperience(
           selectorProfile: observed.selectorProfile
         }));
       }
-      controlClicked = await clickUniqueExperienceControl(page, labels);
     }
     if (!controlClicked) {
       return experienceSelectorDrift(
@@ -166,6 +189,24 @@ export async function openExperience(
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
   }
+}
+
+async function discoverExperienceControl(
+  page: PageLike,
+  labels: string[],
+  experience: OpenExperienceArgs["experience"],
+  attempts: number,
+  initial: DetectExperienceData
+): Promise<{ observed: DetectExperienceData; controlClicked: boolean }> {
+  let observed = initial;
+  let controlClicked = await clickUniqueExperienceControl(page, labels);
+  for (let attempt = 1; !controlClicked && attempt < attempts; attempt += 1) {
+    await page.waitForTimeout?.(EXPERIENCE_POLL_MS);
+    observed = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
+    if (observed.experience === experience) break;
+    controlClicked = await clickUniqueExperienceControl(page, labels);
+  }
+  return { observed, controlClicked };
 }
 
 function pollAttempts(timeoutMs: number, pollMs: number): number {

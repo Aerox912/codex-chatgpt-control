@@ -1,14 +1,14 @@
 // src/errors.ts
-var BROWSER_BRIDGE_UNAVAILABLE_MESSAGE = "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.";
+var BROWSER_BRIDGE_UNAVAILABLE_MESSAGE = "Codex cannot access a compatible browser-control runtime from this process. In an ordinary shell this is expected; for a live Codex run, connect through the installed Browser runtime before using ChatGPT control.";
 var BROWSER_BRIDGE_REMEDIATION = [
   {
     label: "Ordinary shell",
-    instruction: "Treat browser_bridge_unavailable from a plain shell as an expected protocol/blocker-path result, not proof that Chrome, ChatGPT, or the Codex extension is broken.",
+    instruction: "Treat browser_bridge_unavailable from a plain shell as an expected protocol/blocker-path result, not proof that the in-app browser, Chrome, ChatGPT, or the Codex browser integration is broken.",
     userActionRequired: false
   },
   {
-    label: "Codex Chrome bootstrap",
-    instruction: 'For a live run, initialize the Chrome plugin runtime in node_repl with setupBrowserRuntime({ globals: globalThis }), then set globalThis.browser = await agent.browsers.get("extension") before calling createChatGPT({ agent: globalThis.agent }).',
+    label: "Codex Browser bootstrap",
+    instruction: "For a live run, initialize the installed Browser runtime with setupBrowserRuntime(), then select the in-app browser unless the user explicitly requested another browser. Pass the selected browser or host-provided agent to createChatGPT(...).",
     userActionRequired: false
   },
   {
@@ -17,8 +17,8 @@ var BROWSER_BRIDGE_REMEDIATION = [
     userActionRequired: false
   },
   {
-    label: "Extension availability",
-    instruction: "If this command was already running inside a bootstrapped bridge host, verify the Codex Chrome extension is installed and enabled, then restart Chrome or Codex before retrying.",
+    label: "Browser availability",
+    instruction: "If this command was already running inside a bootstrapped Browser host, verify the requested browser is available. Check the browser extension only for an explicitly selected external browser, and restart Codex only after the selected browser connection is confirmed unavailable.",
     userActionRequired: true
   }
 ];
@@ -4907,7 +4907,7 @@ var PROFILES = {
     category: "environment",
     severity: "blocked",
     userActionRequired: false,
-    defaultRetryReason: "Retry only after changing the execution environment or bootstrapping the Codex Chrome bridge."
+    defaultRetryReason: "Retry only after changing the execution environment or connecting through the Codex Browser runtime."
   },
   login_required: {
     title: "Login required",
@@ -7956,6 +7956,7 @@ function findUniqueMenuItem(items, wanted) {
 // src/commands/experience.ts
 var CHATGPT_HOME5 = "https://chatgpt.com/";
 var EXPERIENCE_CONTROL_DISCOVERY_TIMEOUT_MS = 15e3;
+var EXPERIENCE_CURRENT_PAGE_GRACE_MS = 1e3;
 var EXPERIENCE_POLL_MS = 250;
 async function detectExperience(env, args = {}) {
   void args;
@@ -7999,26 +8000,52 @@ async function openExperience(env, args) {
       Math.min(timeoutMs, EXPERIENCE_CONTROL_DISCOVERY_TIMEOUT_MS),
       EXPERIENCE_POLL_MS
     );
-    let observed = before;
-    let controlClicked = await clickUniqueExperienceControl(page, labels);
-    if (!controlClicked && await navigateConversationToSurfaceHome(page, args.timeoutMs)) {
-      observed = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
-      if (observed.experience === args.experience) {
-        return resultOk({
-          experience: args.experience,
-          previousExperience: before.experience,
-          changed: true,
-          selectorProfile: observed.selectorProfile
-        }, await contextFromPage(page, {
-          experience: observed.experience,
-          selectorProfile: observed.selectorProfile
-        }));
-      }
-      controlClicked = await clickUniqueExperienceControl(page, labels);
+    const currentPageAttempts = pollAttempts(
+      Math.min(timeoutMs, EXPERIENCE_CURRENT_PAGE_GRACE_MS),
+      EXPERIENCE_POLL_MS
+    );
+    let { observed, controlClicked } = await discoverExperienceControl(
+      page,
+      labels,
+      args.experience,
+      currentPageAttempts,
+      before
+    );
+    if (observed.experience === args.experience) {
+      return resultOk({
+        experience: args.experience,
+        previousExperience: before.experience,
+        changed: true,
+        selectorProfile: observed.selectorProfile
+      }, await contextFromPage(page, {
+        experience: observed.experience,
+        selectorProfile: observed.selectorProfile
+      }));
     }
-    for (let attempt = 1; !controlClicked && attempt < discoveryAttempts; attempt += 1) {
-      await page.waitForTimeout?.(EXPERIENCE_POLL_MS);
-      observed = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
+    if (!controlClicked) {
+      if (await navigateConversationToSurfaceHome(page, args.timeoutMs)) {
+        observed = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
+        if (observed.experience === args.experience) {
+          return resultOk({
+            experience: args.experience,
+            previousExperience: before.experience,
+            changed: true,
+            selectorProfile: observed.selectorProfile
+          }, await contextFromPage(page, {
+            experience: observed.experience,
+            selectorProfile: observed.selectorProfile
+          }));
+        }
+      }
+      const finalDiscovery = await discoverExperienceControl(
+        page,
+        labels,
+        args.experience,
+        discoveryAttempts,
+        observed
+      );
+      observed = finalDiscovery.observed;
+      controlClicked = finalDiscovery.controlClicked;
       if (observed.experience === args.experience) {
         return resultOk({
           experience: args.experience,
@@ -8030,7 +8057,6 @@ async function openExperience(env, args) {
           selectorProfile: observed.selectorProfile
         }));
       }
-      controlClicked = await clickUniqueExperienceControl(page, labels);
     }
     if (!controlClicked) {
       return experienceSelectorDrift(
@@ -8075,6 +8101,17 @@ async function openExperience(env, args) {
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
   }
+}
+async function discoverExperienceControl(page, labels, experience, attempts, initial) {
+  let observed = initial;
+  let controlClicked = await clickUniqueExperienceControl(page, labels);
+  for (let attempt = 1; !controlClicked && attempt < attempts; attempt += 1) {
+    await page.waitForTimeout?.(EXPERIENCE_POLL_MS);
+    observed = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
+    if (observed.experience === experience) break;
+    controlClicked = await clickUniqueExperienceControl(page, labels);
+  }
+  return { observed, controlClicked };
 }
 function pollAttempts(timeoutMs, pollMs) {
   return Math.max(1, Math.ceil(Math.max(0, timeoutMs) / pollMs));
@@ -12169,7 +12206,7 @@ async function doctor(env, args = {}) {
   for (const check of wanted) {
     switch (check) {
       case "bridge":
-        checks.bridge = boot?.ok ? ok("Chrome bridge is available.") : bridgeCheck(boot);
+        checks.bridge = boot?.ok ? ok("Browser bridge is available.") : bridgeCheck(boot);
         break;
       case "login":
         checks.login = await loginCheck(env, boot);
@@ -12220,17 +12257,17 @@ function bridgeCheck(boot) {
     return withBlockerDetails(blocked(boot.blocker.message, bridgeRemediation(boot)), boot, "session.bootstrap");
   }
   if (boot.blocker?.kind === "login_required") {
-    return ok("Chrome bridge is available; ChatGPT login is required before browser-control commands can continue.");
+    return ok("Browser bridge is available; ChatGPT login is required before browser-control commands can continue.");
   }
   if (boot.blocker !== void 0) {
-    return unknown(`Chrome bridge responded, but bootstrap is blocked by ${boot.blocker.kind}: ${boot.blocker.message}`);
+    return unknown(`Browser bridge responded, but bootstrap is blocked by ${boot.blocker.kind}: ${boot.blocker.message}`);
   }
-  return blocked(boot.error?.message ?? "Chrome bridge is unavailable.");
+  return blocked(boot.error?.message ?? "Browser bridge is unavailable.");
 }
 async function loginCheck(env, boot) {
   if (boot !== void 0 && !boot.ok && boot.blocker?.kind === "login_required") {
     return withBlockerDetails(
-      blocked("ChatGPT login is required.", ["Ask the user to sign in to ChatGPT in Chrome, then retry."]),
+      blocked("ChatGPT login is required.", ["Ask the user to sign in to ChatGPT in the selected browser, then retry."]),
       boot,
       "session.bootstrap"
     );
@@ -12240,7 +12277,7 @@ async function loginCheck(env, boot) {
   }
   const state = await readPageState(env.page).catch(() => void 0);
   if (state?.blocker?.kind === "login_required") {
-    return blocked("ChatGPT login is required.", ["Ask the user to sign in to ChatGPT in Chrome, then retry."]);
+    return blocked("ChatGPT login is required.", ["Ask the user to sign in to ChatGPT in the selected browser, then retry."]);
   }
   return state?.signedIn === true ? ok("ChatGPT appears signed in.") : unknown("Could not prove signed-in state from the visible page.");
 }
@@ -12722,7 +12759,7 @@ var descriptors = [
   report("createReport", "Write a durable redacted run report for a command result.", [
     `await chatgpt.createReport(result, { destDir: "/absolute/host/reports" });`
   ]),
-  primitive("session.bootstrap", "Attach to ChatGPT in Chrome and detect login/blocker state.", 3e4),
+  primitive("session.bootstrap", "Attach to ChatGPT in the selected browser and detect login/blocker state.", 3e4),
   primitive("experience.detect", "Detect whether the scoped visible composer is Chat, Work, or unknown and return its selector profile.", 3e4),
   primitive("experience.open", "Open Chat or Work and verify the target surface from scoped composer evidence.", 3e4),
   primitive("configuration.inspect", "Inspect the active Chat or Work selector profile, axes, options, and selected values.", 3e4),
@@ -12867,7 +12904,7 @@ function workflowArgs(name) {
       files: "absolute local file paths to attach before submitting",
       prompt: "message to send after files are attached",
       thread: "optional thread selector",
-      existingTab: "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+      existingTab: "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
       experience: "optional chat or work surface",
       configuration: 'optional strict visible configuration such as { intelligence: "Pro" } or Work model/effort/speed',
       mode: 'optional visible mode selection, e.g. { model: "Pro" } or { intelligence: "Pro", modelVersion: "5.4" }',
@@ -12879,7 +12916,7 @@ function workflowArgs(name) {
   return {
     prompt: "message to send or workflow-specific input",
     thread: "optional thread selector",
-    existingTab: "true or explicit policy to claim a user-open Chrome tab instead of opening a replacement",
+    existingTab: "true or explicit policy to claim a user-open ChatGPT tab instead of opening a replacement",
     experience: "optional chat or work surface",
     configuration: "optional surface-aware visible configuration",
     mode: "legacy visible mode preference",

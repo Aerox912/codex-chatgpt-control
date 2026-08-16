@@ -3,17 +3,17 @@ import type { BlockerKind, CommandContext, CommandResult } from "./types.js";
 type BlockerDetails = Partial<Omit<NonNullable<CommandResult["blocker"]>, "kind" | "message" | "visibleText">>;
 
 export const BROWSER_BRIDGE_UNAVAILABLE_MESSAGE =
-  "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.";
+  "Codex cannot access a compatible browser-control runtime from this process. In an ordinary shell this is expected; for a live Codex run, connect through the installed Browser runtime before using ChatGPT control.";
 
 export const BROWSER_BRIDGE_REMEDIATION: NonNullable<NonNullable<CommandResult["blocker"]>["remediation"]> = [
   {
     label: "Ordinary shell",
-    instruction: "Treat browser_bridge_unavailable from a plain shell as an expected protocol/blocker-path result, not proof that Chrome, ChatGPT, or the Codex extension is broken.",
+    instruction: "Treat browser_bridge_unavailable from a plain shell as an expected protocol/blocker-path result, not proof that the in-app browser, Chrome, ChatGPT, or the Codex browser integration is broken.",
     userActionRequired: false
   },
   {
-    label: "Codex Chrome bootstrap",
-    instruction: "For a live run, initialize the Chrome plugin runtime in node_repl with setupBrowserRuntime({ globals: globalThis }), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
+    label: "Codex Browser bootstrap",
+    instruction: "For a live run, initialize the installed Browser runtime with setupBrowserRuntime(), then select the in-app browser unless the user explicitly requested another browser. Pass the selected browser or host-provided agent to createChatGPT(...).",
     userActionRequired: false
   },
   {
@@ -22,8 +22,8 @@ export const BROWSER_BRIDGE_REMEDIATION: NonNullable<NonNullable<CommandResult["
     userActionRequired: false
   },
   {
-    label: "Extension availability",
-    instruction: "If this command was already running inside a bootstrapped bridge host, verify the Codex Chrome extension is installed and enabled, then restart Chrome or Codex before retrying.",
+    label: "Browser availability",
+    instruction: "If this command was already running inside a bootstrapped Browser host, verify the requested browser is available. Check the browser extension only for an explicitly selected external browser, and restart Codex only after the selected browser connection is confirmed unavailable.",
     userActionRequired: true
   }
 ];

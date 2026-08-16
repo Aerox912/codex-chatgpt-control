@@ -39,6 +39,8 @@ Real browser-control runs also need:
 
 Ordinary shells should not have `globalThis.agent`. A `browser_bridge_unavailable` blocker from an ordinary shell is an expected safe result for browser-required calls.
 
+Treat Browser bootstrap and instruction loading as internal setup. User-facing progress should say that Codex is connecting to the selected browser; do not narrate Node hosts, globals, runtime imports, or guidance loading unless the user explicitly asks for diagnostics.
+
 ## File Upload Permissions
 
 In-app-browser file attachment uses its visible file chooser and Codex confirmation flow. Chrome fallback additionally needs two separate permission gates:
@@ -143,8 +145,8 @@ await chatgpt.experience.open({ experience: "work" });
 
 Current ChatGPT can expose Chat and Work as radios in a `Select chat surface`
 group and can hide that group inside an active Work task. The SDK verifies the
-checked pane, returns to home when required, and retains older selector
-fallbacks.
+checked pane, gives the current conversation a bounded hydration grace before
+returning home when required, and retains older selector fallbacks.
 
 Apply strict Work configuration and start a task once:
 
