@@ -186,7 +186,7 @@ export const requiredScenarios: LiveSmokeScenario[] = [
         chatConfiguration.ok
         && chatConfiguration.data?.experience === "chat"
         && chatConfiguration.data.verified === true);
-      const chatDesired = activeSelection(chatConfiguration.data!, ["intelligence", "model", "modelVersion"]);
+      const chatDesired = chatActiveSelection(chatConfiguration.data!);
       requireLiveCommand("configuration.inspect.chat.active", chatConfiguration,
         Object.keys(chatDesired).length > 0);
 
@@ -1103,6 +1103,12 @@ function activeSelection(
     }
   }
   return selection;
+}
+
+export function chatActiveSelection(
+  inspection: ConfigurationInspectionData
+): ConfigurationSelection {
+  return activeSelection(inspection, ["intelligence", "model", "modelVersion", "effort"]);
 }
 
 function hasAxes(inspection: ConfigurationInspectionData, axes: ConfigurationAxis[]): boolean {

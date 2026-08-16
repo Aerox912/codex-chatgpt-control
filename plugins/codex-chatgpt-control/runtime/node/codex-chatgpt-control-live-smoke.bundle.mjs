@@ -11638,15 +11638,13 @@ async function tryGeneratedFilePreviewDownload(page, args) {
     }
     await affordance.click({ timeoutMs: localGuardTimeout(timeoutMs, 1e4) });
     const labelledPreview = requiredLocator(page, `section[aria-label="${escapeCssAttribute(selected.filename)}"]`);
-    const labelledPreviewCount = typeof labelledPreview.count === "function" ? await locatorCountWithTimeout(
-      labelledPreview,
-      localGuardTimeout(timeoutMs, 2e3),
-      "generated_file_labelled_preview_count_timeout"
-    ) : void 0;
     const workbookPreviews = requiredLocator(page, "section[data-testid^='popcorn-']");
     const workbookPreview = workbookPreviews.filter?.({ hasText: selected.filename }) ?? workbookPreviews;
-    const preview = labelledPreviewCount === 0 ? workbookPreview : labelledPreview;
-    const download = await waitForPreviewDownloadControl(page, preview, timeoutMs);
+    const download = await waitForPreviewDownloadControl(
+      page,
+      [labelledPreview, workbookPreview],
+      timeoutMs
+    );
     if (download === void 0) {
       throw new Error(`The artifact preview for ${selected.filename} did not expose a visible Download control.`);
     }
@@ -11765,13 +11763,15 @@ function filenameMatches(filename, pattern) {
     return filename.toLocaleLowerCase().includes(pattern.toLocaleLowerCase());
   }
 }
-async function waitForPreviewDownloadControl(page, preview, timeoutMs) {
-  const deadline = Date.now() + Math.min(timeoutMs, 15e3);
+async function waitForPreviewDownloadControl(page, previews, timeoutMs) {
+  const deadline = Date.now() + Math.min(timeoutMs, 6e4);
   while (Date.now() < deadline) {
-    for (const label of localeLabels.download) {
-      const control = preview.getByRole?.("button", { name: label, exact: true }) ?? preview.locator?.(`button[aria-label="${escapeCssAttribute(label)}"]`);
-      if (await locatorCountWithTimeout(control, localGuardTimeout(timeoutMs, 2e3), "artifact_preview_download_count_timeout") === 1) {
-        return control;
+    for (const preview of previews) {
+      for (const label of localeLabels.download) {
+        const control = preview.getByRole?.("button", { name: label, exact: true }) ?? preview.locator?.(`button[aria-label="${escapeCssAttribute(label)}"]`);
+        if (await locatorCountWithTimeout(control, localGuardTimeout(timeoutMs, 2e3), "artifact_preview_download_count_timeout") === 1) {
+          return control;
+        }
       }
     }
     if (typeof page.waitForTimeout === "function") {
@@ -15661,7 +15661,7 @@ var requiredScenarios = [
         chatConfiguration,
         chatConfiguration.ok && chatConfiguration.data?.experience === "chat" && chatConfiguration.data.verified === true
       );
-      const chatDesired = activeSelection(chatConfiguration.data, ["intelligence", "model", "modelVersion"]);
+      const chatDesired = chatActiveSelection(chatConfiguration.data);
       requireLiveCommand(
         "configuration.inspect.chat.active",
         chatConfiguration,
@@ -16485,6 +16485,9 @@ function activeSelection(inspection, axes) {
     }
   }
   return selection;
+}
+function chatActiveSelection(inspection) {
+  return activeSelection(inspection, ["intelligence", "model", "modelVersion", "effort"]);
 }
 function hasAxes(inspection, axes) {
   return axes.every((axis) => inspection.availableAxes.includes(axis));

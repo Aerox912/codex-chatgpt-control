@@ -8,6 +8,9 @@
 - Hardens file attachment around a single composer-scoped input, fresh visible
   evidence, one shared timeout, approved chooser APIs, and localized upload and
   download labels; removes the page-script `DataTransfer` fallback.
+- Recognizes effort-only simplified Chat configuration during live release
+  qualification and follows asynchronously mounted, filename-scoped artifact
+  previews until their verified Download control is ready.
 - Enforces strict HTTPS ChatGPT origins before and after navigation, honors
   user-open tabs for explicit reuse, and scopes lifecycle, blocker, and mode
   evidence away from hidden or quoted content.
