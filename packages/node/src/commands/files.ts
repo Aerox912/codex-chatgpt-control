@@ -196,6 +196,7 @@ export async function attachFiles(
   env: RuntimeEnv,
   args: AttachFilesArgs
 ): Promise<CommandResult<AttachFilesData>> {
+  const deadline = createDeadline(Math.max(1, args.timeoutMs ?? 30_000));
   const preflightArgs: FilePreflightArgs = { paths: args.paths };
   if (args.includeDiagnostics === true && args.includeHashes !== undefined) {
     preflightArgs.includeHashes = args.includeHashes;
@@ -205,13 +206,24 @@ export async function attachFiles(
     return preflight as CommandResult<AttachFilesData>;
   }
 
-  const boot = await ensurePage(env);
+  let boot: CommandResult<unknown>;
+  try {
+    boot = await withinAttachmentDeadline(
+      deadline,
+      () => ensurePage(env, { minimalContext: true }),
+      "ChatGPT page verification"
+    );
+  } catch (error) {
+    if (error instanceof AttachmentDeadlineError || remainingMs(deadline) <= 0) {
+      return attachmentDeadlineResult(error);
+    }
+    return resultError(error instanceof Error ? error : new Error(String(error)));
+  }
   if (!boot.ok) {
     return boot as CommandResult<AttachFilesData>;
   }
 
   const page = env.page!;
-  const deadline = createDeadline(Math.max(1, args.timeoutMs ?? 30_000));
   const mutationState: AttachmentMutationState = { handoffStarted: false };
 
   try {
@@ -220,10 +232,11 @@ export async function attachFiles(
       name: file.name,
       bytes: file.bytes
     }));
-    const rawBaseline = await withinAttachmentDeadline(
+    const rawBaseline = await withinNativeAttachmentDeadline(
       deadline,
-      () => readAttachmentEvidenceBaseline(page),
-      "Pre-upload attachment baseline"
+      timeoutMs => readAttachmentEvidenceBaseline(page, timeoutMs),
+      "Pre-upload attachment baseline",
+      2_000
     ).catch(() => ({ supported: false, inputFiles: [], attachmentLabels: [] }));
     const baseline: AttachmentEvidenceBaseline = rawBaseline !== null
       && typeof rawBaseline === "object"
@@ -234,10 +247,11 @@ export async function attachFiles(
 
     await uploadFiles(page, files, deadline, mutationState);
     const browserInput = args.includeDiagnostics === true
-      ? await withinAttachmentDeadline(
+      ? await withinNativeAttachmentDeadline(
           deadline,
-          () => readBrowserInputDiagnostic(page),
-          "Browser input diagnostic"
+          timeoutMs => readBrowserInputDiagnostic(page, timeoutMs),
+          "Browser input diagnostic",
+          2_000
         ).catch(() => undefined)
       : undefined;
 
@@ -275,18 +289,7 @@ export async function attachFiles(
       );
     }
     if (error instanceof AttachmentDeadlineError || remainingMs(deadline) <= 0) {
-      return {
-        ok: false,
-        status: "timeout",
-        warnings: error instanceof Error ? [error.message] : [],
-        blocker: {
-          kind: "upload_failed",
-          code: "attachment_deadline_exhausted",
-          message: "ChatGPT file attachment did not complete before the caller's single operation deadline. The prompt was not submitted.",
-          resumable: true
-        },
-        context: { timestamp: new Date().toISOString() }
-      };
+      return attachmentDeadlineResult(error);
     }
     if (isUploadTransportFailure(error)) {
       return {
@@ -357,6 +360,21 @@ export async function attachFiles(
   }
 }
 
+function attachmentDeadlineResult(error?: unknown): CommandResult<AttachFilesData> {
+  return {
+    ok: false,
+    status: "timeout",
+    warnings: error === undefined ? [] : [error instanceof Error ? error.message : String(error)],
+    blocker: {
+      kind: "upload_failed",
+      code: "attachment_deadline_exhausted",
+      message: "ChatGPT file attachment did not complete before the caller's single operation deadline. The prompt was not submitted.",
+      resumable: true
+    },
+    context: { timestamp: new Date().toISOString() }
+  };
+}
+
 function attachmentOutcomeIndeterminate(
   files: readonly AttachedFile[],
   warnings: string[],
@@ -367,7 +385,7 @@ function attachmentOutcomeIndeterminate(
   const blocker: NonNullable<CommandResult<AttachFilesData>["blocker"]> = {
     kind: "upload_failed",
     code: "attachment_outcome_indeterminate",
-    message: "The native file handoff started, but its outcome could not be verified. Inspect the current composer; do not submit or retry automatically because the original attachment may still complete or already be present.",
+    message: "The native file handoff started, but its outcome could not be verified. The browser request is no longer in flight, though the file may already be present. Inspect the current composer; do not submit or retry automatically.",
     resumable: false
   };
   if (visibleText !== undefined) blocker.visibleText = visibleText;
@@ -514,7 +532,10 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
 }
 
-async function readAttachmentEvidenceBaseline(page: PageLike): Promise<AttachmentEvidenceBaseline> {
+async function readAttachmentEvidenceBaseline(
+  page: PageLike,
+  timeoutMs: number
+): Promise<AttachmentEvidenceBaseline> {
   if (typeof page.evaluate !== "function") {
     return { supported: false, inputFiles: [], attachmentLabels: [] };
   }
@@ -571,7 +592,7 @@ async function readAttachmentEvidenceBaseline(page: PageLike): Promise<Attachmen
       inputFiles: Array.from(inputs[0]!.files ?? []).map(file => `${file.name.toLocaleLowerCase()}\u0000${file.size}`),
       attachmentLabels: labels
     };
-  });
+  }, undefined, { timeoutMs });
 }
 
 async function waitForAttachedFilesReady(
@@ -584,10 +605,11 @@ async function waitForAttachedFilesReady(
   let sawProcessing = false;
 
   while (remainingMs(deadline) > 0) {
-    const snapshot = await withinAttachmentDeadline(
+    const snapshot = await withinNativeAttachmentDeadline(
       deadline,
-      () => readAttachmentReadiness(page, files, baseline),
-      "Attachment readiness inspection"
+      timeoutMs => readAttachmentReadiness(page, files, baseline, timeoutMs),
+      "Attachment readiness inspection",
+      2_000
     ).catch(() => undefined);
     if (snapshot === undefined || snapshot.supported === false) {
       return { ready: false, reason: "unverified" };
@@ -620,7 +642,8 @@ async function waitForAttachedFilesReady(
 async function readAttachmentReadiness(
   page: PageLike,
   files: AttachedFile[],
-  baseline: AttachmentEvidenceBaseline
+  baseline: AttachmentEvidenceBaseline,
+  timeoutMs: number
 ): Promise<AttachmentReadinessSnapshot | undefined> {
   if (typeof page.evaluate !== "function") {
     return undefined;
@@ -736,7 +759,7 @@ async function readAttachmentReadiness(
   }, {
     expectedFiles: files.map(file => ({ name: file.name, bytes: file.bytes })),
     baseline
-  });
+  }, { timeoutMs });
 }
 
 async function uploadFiles(
@@ -760,12 +783,7 @@ async function uploadFiles(
     attempts.push({
       name: "visible-chatgpt-file-input",
       run: async () => {
-        if (resolvedInput.isVisible !== undefined
-          && !await withinAttachmentDeadline(
-            deadline,
-            () => resolvedInput.isVisible!({ timeoutMs: Math.min(attachmentBudget(deadline), 1000) }),
-            "Active-composer file-input visibility check"
-          )) {
+        if (!await locatorIsRendered(resolvedInput, deadline)) {
           throw new Error("The active-composer upload target is hidden.");
         }
         await clickFileChooserLocator(page, resolvedInput, paths, deadline, mutationState);
@@ -839,15 +857,16 @@ async function clickChatGPTAddPhotosMenuItem(
 
   if (menuItem === undefined) {
     const plusButton = requiredLocator(page, "#composer-plus-btn, button[aria-label='Add files and more']");
-    if (await withinAttachmentDeadline(deadline, () => locatorCount(plusButton), "Add files control enumeration") !== 1) {
+    if (await locatorCount(plusButton, deadline) !== 1) {
       throw new Error("ChatGPT Add files button was not uniquely available.");
     }
     await assertControlInUniqueActiveComposer(plusButton, deadline, "ChatGPT Add files control");
     if (plusButton.click === undefined) throw new Error("ChatGPT Add files button does not expose click().");
-    await withinAttachmentDeadline(
+    await withinNativeAttachmentDeadline(
       deadline,
-      () => plusButton.click!({ timeoutMs: Math.min(attachmentBudget(deadline), 10000) }),
-      "ChatGPT Add files control click"
+      timeoutMs => plusButton.click!({ timeoutMs }),
+      "ChatGPT Add files control click",
+      10_000
     );
     await attachmentDelay(page, deadline, 250);
   }
@@ -869,11 +888,7 @@ async function findChatGPTUploadMenuItem(
   // with tabindex=0 and no ARIA menuitem role.
   const pattern = new RegExp(addPhotosFilesLabels.map(escapeRegExp).join("|"), "i");
   const candidate = requiredLocator(page, "div[tabindex='0']").filter?.({ hasText: pattern });
-  return await withinAttachmentDeadline(
-    deadline,
-    () => locatorCount(candidate),
-    "Upload menu-item enumeration"
-  ) === 1 ? candidate : undefined;
+  return await locatorCount(candidate, deadline) === 1 ? candidate : undefined;
 }
 
 async function clickFileChooserLocator(
@@ -902,10 +917,11 @@ async function clickFileChooserLocator(
     error => ({ ok: false as const, error })
   );
   try {
-    await withinAttachmentDeadline(
+    await withinNativeAttachmentDeadline(
       deadline,
-      () => locator.click!({ timeoutMs: Math.min(attachmentBudget(deadline), 10000) }),
-      "ChatGPT upload-control click"
+      timeoutMs => locator.click!({ timeoutMs }),
+      "ChatGPT upload-control click",
+      10_000
     );
   } catch (error) {
     await chooserPromise;
@@ -917,7 +933,7 @@ async function clickFileChooserLocator(
     throw chooserResult.error;
   }
   const chooser = chooserResult.chooser;
-  await validateChooserTarget(chooser, deadline);
+  await validateChooserTarget(chooser, deadline, "scoped-composer-trigger");
   await withinAttachmentDeadline(
     deadline,
     () => validateChooserMultiplicity(chooser, paths),
@@ -925,10 +941,11 @@ async function clickFileChooserLocator(
   );
   try {
     mutationState.handoffStarted = true;
-    await withinAttachmentDeadline(
+    await withinNativeAttachmentDeadline(
       deadline,
-      () => chooser.setFiles(paths),
-      "File-chooser handoff"
+      timeoutMs => chooser.setFiles(paths, { timeoutMs }),
+      "File-chooser handoff",
+      15_000
     );
   } catch (error) {
     throw new Error(`fileChooser.setFiles failed. ${error instanceof Error ? error.message : String(error)}`);
@@ -965,7 +982,7 @@ async function clickHiddenFileInputWithCdp(
     error => ({ ok: false as const, error })
   );
   try {
-    const evaluation = await withinAttachmentDeadline(deadline, () => Promise.resolve(cdp.send!("Runtime.evaluate", {
+    const evaluation = await withinNativeAttachmentDeadline(deadline, timeoutMs => Promise.resolve(cdp.send!("Runtime.evaluate", {
       expression: `(() => {
         const visible = element => {
           if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']")) return false;
@@ -995,8 +1012,8 @@ async function clickHiddenFileInputWithCdp(
       awaitPromise: true,
       returnByValue: true
     }, {
-      timeoutMs: Math.min(attachmentBudget(deadline), 10000)
-    })), "Scoped CDP file-input click");
+      timeoutMs
+    })), "Scoped CDP file-input click", 10_000);
     const wrappedValue = (evaluation as { result?: { value?: unknown } } | undefined)?.result?.value;
     const value = (wrappedValue ?? evaluation) as { ok?: boolean; reason?: string } | undefined;
     if (value?.ok !== true) {
@@ -1011,7 +1028,7 @@ async function clickHiddenFileInputWithCdp(
   if (!chooserResult.ok) {
     throw chooserResult.error;
   }
-  await validateChooserTarget(chooserResult.chooser, deadline);
+  await validateChooserTarget(chooserResult.chooser, deadline, "scoped-cdp-input");
   await withinAttachmentDeadline(
     deadline,
     () => validateChooserMultiplicity(chooserResult.chooser, paths),
@@ -1019,10 +1036,11 @@ async function clickHiddenFileInputWithCdp(
   );
   try {
     mutationState.handoffStarted = true;
-    await withinAttachmentDeadline(
+    await withinNativeAttachmentDeadline(
       deadline,
-      () => chooserResult.chooser.setFiles(paths),
-      "File-chooser handoff"
+      timeoutMs => chooserResult.chooser.setFiles(paths, { timeoutMs }),
+      "File-chooser handoff",
+      15_000
     );
   } catch (error) {
     throw new Error(`fileChooser.setFiles failed. ${error instanceof Error ? error.message : String(error)}`);
@@ -1030,11 +1048,11 @@ async function clickHiddenFileInputWithCdp(
 }
 
 async function waitForFileChooser(page: PageLike, deadline: Deadline): Promise<FileChooserLike> {
-  const timeoutMs = attachmentBudget(deadline);
-  const rawChooser = await withinAttachmentDeadline(deadline, () => Promise.resolve(page.waitForEvent?.("filechooser", {
-    timeout: timeoutMs,
-    timeoutMs
-  })), "File-chooser event wait");
+  const rawChooser = await withinNativeAttachmentDeadline(
+    deadline,
+    timeoutMs => Promise.resolve(page.waitForEvent?.("filechooser", { timeoutMs })),
+    "File-chooser event wait"
+  );
 
   if (!isFileChooserLike(rawChooser)) {
     throw new Error("File chooser event did not return a setFiles-capable chooser.");
@@ -1060,9 +1078,19 @@ function isFileChooserLike(value: unknown): value is FileChooserLike {
     && typeof (value as FileChooserLike).setFiles === "function";
 }
 
-async function validateChooserTarget(chooser: FileChooserLike, deadline: Deadline): Promise<void> {
+type ChooserTriggerProof = "scoped-composer-trigger" | "scoped-cdp-input";
+
+async function validateChooserTarget(
+  chooser: FileChooserLike,
+  deadline: Deadline,
+  _triggerProof: ChooserTriggerProof
+): Promise<void> {
   if (typeof chooser.element !== "function") {
-    throw new Error("The file chooser did not expose its backing input, so its active-composer identity could not be verified.");
+    // The Codex Chrome bridge deliberately exposes only isMultiple/setFiles.
+    // This function is reachable only after the initiating input/control has
+    // already been proven to belong to the unique active composer (or after
+    // the scoped CDP expression proved and clicked that exact input).
+    return;
   }
   const element = await withinAttachmentDeadline(
     deadline,
@@ -1072,7 +1100,7 @@ async function validateChooserTarget(chooser: FileChooserLike, deadline: Deadlin
   if (typeof element?.evaluate !== "function") {
     throw new Error("The file chooser backing input could not be inspected safely.");
   }
-  const scoped = await withinAttachmentDeadline(deadline, () => element.evaluate!((candidate: Element) => {
+  const scoped = await withinNativeAttachmentDeadline(deadline, timeoutMs => element.evaluate!((candidate: Element) => {
     const visible = (node: HTMLElement) => {
       if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
       const style = window.getComputedStyle(node);
@@ -1096,17 +1124,45 @@ async function validateChooserTarget(chooser: FileChooserLike, deadline: Deadlin
     const nonImage = all.filter(input => input.getAttribute("accept") !== "image/*");
     const resolved = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : all;
     return resolved.length === 1 && resolved[0] === candidate;
-  }), "File-chooser active-composer identity check");
+  }, undefined, { timeoutMs }), "File-chooser active-composer identity check", 2_000);
   if (!scoped) {
     throw new Error("The file chooser backing input was not the unique active-composer upload target.");
   }
 }
 
-async function locatorCount(locator: LocatorLike | undefined): Promise<number> {
-  if (locator === undefined || typeof locator.count !== "function") {
+async function locatorCount(locator: LocatorLike | undefined, deadline?: Deadline): Promise<number> {
+  if (locator === undefined) {
     return 0;
   }
+  if (deadline !== undefined && typeof locator.allTextContents === "function") {
+    const values = await withinNativeAttachmentDeadline(
+      deadline,
+      timeoutMs => locator.allTextContents!({ timeoutMs }),
+      "Locator enumeration",
+      2_000
+    );
+    return values.length;
+  }
+  if (typeof locator.count !== "function") return 0;
+  if (deadline !== undefined) {
+    return withinAttachmentDeadline(deadline, () => locator.count!(), "Locator enumeration");
+  }
   return locator.count();
+}
+
+async function locatorIsRendered(locator: LocatorLike, deadline: Deadline): Promise<boolean> {
+  if (typeof locator.evaluate !== "function") return false;
+  return withinNativeAttachmentDeadline(deadline, timeoutMs => locator.evaluate!((element: Element) => {
+    const node = element as HTMLElement;
+    if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+    const style = window.getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== "none"
+      && style.visibility !== "hidden"
+      && style.opacity !== "0"
+      && style.pointerEvents !== "none"
+      && (rect.width > 0 || rect.height > 0);
+  }, undefined, { timeoutMs }), "Active-composer file-input visibility check", 1_000);
 }
 
 function attachmentBudget(deadline: Deadline): number {
@@ -1141,22 +1197,38 @@ async function withinAttachmentDeadline<T>(
   }
 }
 
-async function attachmentDelay(page: PageLike, deadline: Deadline, requestedMs: number): Promise<void> {
+async function withinNativeAttachmentDeadline<T>(
+  deadline: Deadline,
+  operation: (timeoutMs: number) => Promise<T>,
+  label: string,
+  capMs = Number.POSITIVE_INFINITY
+): Promise<T> {
+  const timeoutMs = Math.min(capMs, attachmentBudget(deadline));
+  try {
+    // Browser-native timeoutMs is the cancellation boundary. Do not wrap this
+    // promise in Promise.race: abandoning a mutation promise lets it fire later.
+    return await operation(timeoutMs);
+  } catch (error) {
+    if (remainingMs(deadline) <= 0) {
+      throw new AttachmentDeadlineError(label);
+    }
+    throw error;
+  }
+}
+
+async function attachmentDelay(_page: PageLike, deadline: Deadline, requestedMs: number): Promise<void> {
   const budget = attachmentBudget(deadline);
   const delayMs = Math.min(Math.max(0, requestedMs), Math.max(0, budget - 1));
   if (delayMs <= 0) {
     if (requestedMs > 0) throw new AttachmentDeadlineError("Attachment settling delay");
     return;
   }
-  const delay = page.waitForTimeout?.(delayMs) ?? new Promise<void>(resolve => setTimeout(resolve, delayMs));
-  await withinAttachmentDeadline(deadline, () => delay, "Attachment settling delay");
+  // A host timer cannot strand a browser request and is sufficient for polling.
+  await new Promise<void>(resolve => setTimeout(resolve, delayMs));
 }
 
-async function attachmentContext(page: PageLike, deadline: Deadline) {
-  const budget = Math.min(250, remainingMs(deadline));
-  if (budget <= 0) return { timestamp: new Date().toISOString() };
-  return withTimeout(contextFromPage(page), budget, "Attachment-result context capture timed out.")
-    .catch(() => ({ timestamp: new Date().toISOString() }));
+async function attachmentContext(page: PageLike, _deadline: Deadline) {
+  return contextFromPage(page, {}, { minimal: true });
 }
 
 export async function downloadLatestFile(
@@ -1494,12 +1566,12 @@ async function resolveUniqueActiveComposerFileInput(
   if (typeof candidates.count !== "function") {
     throw new Error("ChatGPT file inputs could not be enumerated safely.");
   }
-  const count = await withinAttachmentDeadline(deadline, () => candidates.count!(), "File-input enumeration");
+  const count = await locatorCount(candidates, deadline);
   const eligible: LocatorLike[] = [];
   for (let index = 0; index < count; index += 1) {
     const input = count === 1 ? candidates : candidates.nth?.(index);
     if (input === undefined || typeof input.evaluate !== "function") continue;
-    const scoped = await withinAttachmentDeadline(deadline, () => input.evaluate!((element: Element) => {
+    const scoped = await withinNativeAttachmentDeadline(deadline, timeoutMs => input.evaluate!((element: Element) => {
       const candidate = element as HTMLInputElement;
       const visible = (node: HTMLElement) => {
         if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
@@ -1524,7 +1596,7 @@ async function resolveUniqueActiveComposerFileInput(
       const nonImage = all.filter(input => input.getAttribute("accept") !== "image/*");
       const resolved = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : all;
       return resolved.length === 1 && resolved[0] === candidate;
-    }), `File-input ${index + 1} scope check`);
+    }, undefined, { timeoutMs }), `File-input ${index + 1} scope check`, 2_000);
     if (scoped) eligible.push(input);
   }
   if (eligible.length !== 1) {
@@ -1541,7 +1613,7 @@ async function assertControlInUniqueActiveComposer(
   if (control === undefined || typeof control.evaluate !== "function") {
     throw new Error(`${label} could not be scoped to the active composer.`);
   }
-  const scoped = await withinAttachmentDeadline(deadline, () => control.evaluate!((element: Element) => {
+  const scoped = await withinNativeAttachmentDeadline(deadline, timeoutMs => control.evaluate!((element: Element) => {
     const visible = (node: HTMLElement) => {
       if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
       const style = window.getComputedStyle(node);
@@ -1559,7 +1631,7 @@ async function assertControlInUniqueActiveComposer(
         ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
       .filter((value): value is HTMLElement => value !== null))];
     return composers.length === 1 && composers[0]!.contains(element);
-  }), `${label} scope check`);
+  }, undefined, { timeoutMs }), `${label} scope check`, 2_000);
   if (!scoped) throw new Error(`${label} was outside the unique active composer.`);
 }
 
@@ -1573,14 +1645,18 @@ async function setResolvedFileInput(
     throw new Error("The active browser exposes no sanctioned native file handoff for ChatGPT's file input.");
   }
   mutationState.handoffStarted = true;
-  await withinAttachmentDeadline(
+  await withinNativeAttachmentDeadline(
     deadline,
-    () => input.setInputFiles!(files.map(file => file.path)),
-    "Direct file-input handoff"
+    timeoutMs => input.setInputFiles!(files.map(file => file.path), { timeoutMs }),
+    "Direct file-input handoff",
+    15_000
   );
 }
 
-async function readBrowserInputDiagnostic(page: PageLike): Promise<BrowserInputDiagnostic | undefined> {
+async function readBrowserInputDiagnostic(
+  page: PageLike,
+  timeoutMs: number
+): Promise<BrowserInputDiagnostic | undefined> {
   if (typeof page.evaluate !== "function") {
     return undefined;
   }
@@ -1625,7 +1701,7 @@ async function readBrowserInputDiagnostic(page: PageLike): Promise<BrowserInputD
         return diagnostic;
       })
     };
-  });
+  }, undefined, { timeoutMs });
 }
 
 function guessMimeType(name: string): string {

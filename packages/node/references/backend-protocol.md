@@ -73,7 +73,7 @@ Use `messages.status({ maxPreviewChars })` for a compact latest-assistant progre
 
 Use `messages.stop({ confirmStop: true })` only after the caller explicitly decides that the current visible response should stop. It clicks one uniquely scoped, visible stop control and succeeds only after generation is observed inactive. Without the exact boolean `confirmStop: true`, it returns `needs_confirmation`; if generation is observably inactive, it is a no-op. An unavailable or ambiguous control, an uninspectable generation state, or an unverified postcondition fails closed.
 
-If the Stop activation starts but its completion races the command deadline, the result is `status: "timeout"` with blocker code `stop_generation_unverified` and `resumable: false`. The click may still complete after the result. Inspect the current visible generation state and never retry Stop automatically.
+If the Stop activation starts but its completion races the command deadline, the result is `status: "timeout"` with blocker code `stop_generation_unverified` and `resumable: false`. The browser-native deadline terminates the request before the command returns, so it cannot click later; the click may already have taken effect before termination. Inspect the current visible generation state and never retry Stop automatically.
 
 ## Streaming
 
@@ -138,7 +138,9 @@ Use `files.preflight` for non-mutating local validation before browser upload wo
 
 `files.attach` accepts `includeDiagnostics: true` to return metadata-only upload diagnostics in `data.diagnostics`: the preflight result plus the browser input's selected file names and sizes when the DOM exposes them. Pair `includeDiagnostics: true` with `includeHashes: true` when diagnosing whether a non-empty local file became an empty browser-side `File`; do not persist these diagnostics in public reports unless the user has approved content fingerprint metadata.
 
-Once the native file handoff starts, any timeout, bridge error, or missing post-handoff composer evidence is indeterminate: `files.attach` returns `status: "partial"`, blocker code `attachment_outcome_indeterminate`, and `resumable: false`. The file may still appear or may already be present. Inspect the current composer, do not submit, and never retry the attachment automatically.
+Once the native file handoff starts, any timeout, bridge error, or missing post-handoff composer evidence is indeterminate: `files.attach` returns `status: "partial"`, blocker code `attachment_outcome_indeterminate`, and `resumable: false`. Browser-native deadlines terminate the handoff request before the command returns, so it cannot mutate later; the file may already be present. Inspect the current composer, do not submit, and never retry the attachment automatically.
+
+The Codex Chrome chooser intentionally exposes `isMultiple()` and `setFiles()` but no backing-element accessor. Before accepting that opaque chooser, the Node runtime proves the initiating input or control belongs to the unique active composer; the CDP fallback independently resolves and clicks that exact unique input. Browser providers that expose a chooser backing element receive an additional identity cross-check before handoff.
 
 ## Project Sources
 

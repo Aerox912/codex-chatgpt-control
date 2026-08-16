@@ -36,7 +36,7 @@ For long-answer polling, Python forwards `response_content="metadata"` to the sh
 
 Python exposes the explicit stop primitive as `chatgpt.messages.stop(confirm_stop=True)`, mapping to `messages.stop` with `confirmStop: true`. The TypeScript backend owns visible-control selection, the single operation deadline, and inactive-state verification; Python adds no independent browser behavior.
 
-Python preserves the backend's indeterminate Stop result exactly: `status == "timeout"`, blocker code `stop_generation_unverified`, and `resumable == False`. Because the original click may still complete, Python callers must inspect the visible state and must not retry automatically.
+Python preserves the backend's indeterminate Stop result exactly: `status == "timeout"`, blocker code `stop_generation_unverified`, and `resumable == False`. The browser request is terminated at its native deadline and cannot click later, but the click may already have taken effect. Python callers must inspect the visible state and must not retry automatically.
 
 Generated-image behavior stays owned by the TypeScript runtime. Python exposes
 the same backend commands through `chatgpt.artifacts.list_latest(...)`,

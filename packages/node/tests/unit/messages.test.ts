@@ -13,7 +13,7 @@ import {
   readLatestMessageText,
   readLatestMessageTextSnapshot
 } from "../../src/dom/messages.js";
-import type { LocatorLike, PageLike } from "../../src/types.js";
+import type { BrowserOperationOptions, LocatorLike, PageLike } from "../../src/types.js";
 
 describe("extractMessagesFromHtml", () => {
   it("keeps every shipped Stop label disjoint from every Send label", () => {
@@ -48,6 +48,7 @@ describe("extractMessagesFromHtml", () => {
   it("clicks the visible Stop control once and verifies generation became inactive", async () => {
     let generating = true;
     let clicks = 0;
+    let titleCalls = 0;
     const locator: LocatorLike = {
       count: async () => 1,
       last: () => locator,
@@ -61,6 +62,10 @@ describe("extractMessagesFromHtml", () => {
         ? '<form><textarea></textarea><button aria-label="Stop answering">Stop answering</button></form>'
         : '<main>Partial answer preserved.</main>',
       getByRole: () => locator,
+      title: async () => {
+        titleCalls += 1;
+        return "ChatGPT";
+      },
       waitForTimeout: async () => undefined
     };
     const result = await stopGeneration({ page }, { confirmStop: true, timeoutMs: 250 });
@@ -70,6 +75,7 @@ describe("extractMessagesFromHtml", () => {
       data: { wasGenerating: true, stopped: true }
     });
     expect(clicks).toBe(1);
+    expect(titleCalls).toBe(0);
   });
 
   it("treats an observed inactive page as a successful no-op", async () => {
@@ -268,12 +274,55 @@ describe("extractMessagesFromHtml", () => {
     expect(state.signals).toContain("stop answering");
   });
 
+  it("shares one native timeout budget across generation-state fallbacks", async () => {
+    vi.useFakeTimers();
+    try {
+      let evaluateTimeoutMs: number | undefined;
+      let contentTimeoutMs: number | undefined;
+      const resultPromise = readAssistantGenerationState({
+        evaluate: async <T, A = unknown>(
+          _fn: (arg: A) => T | Promise<T>,
+          _arg?: A,
+          options?: BrowserOperationOptions
+        ): Promise<T> => {
+          evaluateTimeoutMs = options?.timeoutMs;
+          await new Promise<void>((_resolve, reject) => setTimeout(
+            () => reject(new Error("evaluate timed out")),
+            12
+          ));
+          throw new Error("unreachable");
+        },
+        content: async options => {
+          contentTimeoutMs = options?.timeoutMs;
+          throw new Error("content unavailable");
+        }
+      }, { timeoutMs: 20 });
+
+      await vi.advanceTimersByTimeAsync(12);
+      const result = await resultPromise;
+
+      expect(result).toEqual(EMPTY_GENERATION_STATE);
+      expect(evaluateTimeoutMs).toBe(20);
+      expect(contentTimeoutMs).toBeGreaterThan(0);
+      expect(contentTimeoutMs).toBeLessThan(evaluateTimeoutMs!);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bounds a stalled generation-state probe with the single stop deadline", async () => {
     const startedAt = Date.now();
+    let nativeTimeoutMs: number | undefined;
     const result = await stopGeneration({
       page: {
         url: () => "https://chatgpt.com/c/test",
-        content: async () => new Promise<string>(() => {})
+        content: async (options?: BrowserOperationOptions) => {
+          nativeTimeoutMs = options?.timeoutMs;
+          return new Promise<string>((_resolve, reject) => setTimeout(
+            () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms reading page content.`)),
+            options?.timeoutMs ?? 0
+          ));
+        }
       }
     }, { confirmStop: true, timeoutMs: 250 });
 
@@ -282,6 +331,8 @@ describe("extractMessagesFromHtml", () => {
       status: "timeout",
       blocker: { code: "stop_generation_deadline_exhausted" }
     });
+    expect(nativeTimeoutMs).toBeGreaterThan(0);
+    expect(nativeTimeoutMs).toBeLessThanOrEqual(250);
     expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
@@ -297,9 +348,10 @@ describe("extractMessagesFromHtml", () => {
     const result = await stopGeneration({
       page: {
         url: () => "https://chatgpt.com/c/test",
-        content: async () => new Promise<string>(resolve => setTimeout(() => resolve(
-          '<form><textarea></textarea><button aria-label="Stop answering"></button></form>'
-        ), 50)),
+        content: async options => new Promise<string>((_resolve, reject) => setTimeout(
+          () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms reading page content.`)),
+          options?.timeoutMs ?? 0
+        )),
         getByRole: () => candidate
       }
     }, { confirmStop: true, timeoutMs: 10 });
@@ -315,6 +367,7 @@ describe("extractMessagesFromHtml", () => {
 
   it("times out when generation remains active after one confirmed click", async () => {
     let clicks = 0;
+    let browserWaitCalls = 0;
     const candidate: LocatorLike = {
       count: async () => 1,
       isVisible: async () => true,
@@ -326,7 +379,7 @@ describe("extractMessagesFromHtml", () => {
         url: () => "https://chatgpt.com/c/test",
         content: async () => '<form><textarea></textarea><button aria-label="Stop answering"></button></form>',
         getByRole: () => candidate,
-        waitForTimeout: async () => undefined
+        waitForTimeout: async () => { browserWaitCalls += 1; }
       }
     }, { confirmStop: true, timeoutMs: 250 });
 
@@ -337,22 +390,27 @@ describe("extractMessagesFromHtml", () => {
       blocker: { code: "stop_generation_unverified" }
     });
     expect(clicks).toBe(1);
+    expect(browserWaitCalls).toBe(0);
   });
 
-  it("marks a timed-out in-flight Stop click indeterminate and non-resumable", async () => {
+  it("cancels a timed-out in-flight Stop click before it can mutate later", async () => {
     vi.useFakeTimers();
     try {
       let clicks = 0;
+      let nativeTimeoutMs: number | undefined;
       let markClickStarted: (() => void) | undefined;
       const clickStarted = new Promise<void>(resolve => { markClickStarted = resolve; });
       const candidate: LocatorLike = {
         count: async () => 1,
         isVisible: async () => true,
         evaluate: async <T>(): Promise<T> => true as T,
-        click: async () => {
+        click: async options => {
           markClickStarted?.();
-          await new Promise<void>(resolve => setTimeout(resolve, 40));
-          clicks += 1;
+          nativeTimeoutMs = options?.timeoutMs;
+          await new Promise<void>((_resolve, reject) => setTimeout(
+            () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms clicking Stop.`)),
+            options?.timeoutMs ?? 0
+          ));
         }
       };
       const resultPromise = stopGeneration({
@@ -374,9 +432,11 @@ describe("extractMessagesFromHtml", () => {
         blocker: { code: "stop_generation_unverified", resumable: false }
       });
       expect(clicks).toBe(0);
+      expect(nativeTimeoutMs).toBeGreaterThan(0);
+      expect(nativeTimeoutMs).toBeLessThanOrEqual(10);
 
       await vi.advanceTimersByTimeAsync(40);
-      expect(clicks).toBe(1);
+      expect(clicks).toBe(0);
     } finally {
       vi.useRealTimers();
     }

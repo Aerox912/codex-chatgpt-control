@@ -72,13 +72,13 @@
       "schema": "backendResponse"
     },
     {
-      "case": "messages_stop_needs_confirmation",
-      "file": "messages-stop-needs-confirmation.json",
+      "case": "messages_stop_indeterminate",
+      "file": "messages-stop-indeterminate.json",
       "schema": "backendResponse"
     },
     {
-      "case": "messages_stop_indeterminate",
-      "file": "messages-stop-indeterminate.json",
+      "case": "messages_stop_needs_confirmation",
+      "file": "messages-stop-needs-confirmation.json",
       "schema": "backendResponse"
     },
     {

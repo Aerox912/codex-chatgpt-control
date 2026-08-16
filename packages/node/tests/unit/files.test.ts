@@ -6,7 +6,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { describe, expect, it, vi } from "vitest";
 import { attachFiles, downloadLatestFile, preflightFiles, stripLocalizedDownloadPrefix, validateAttachPaths } from "../../src/commands/files.js";
-import type { LocatorLike, PageLike } from "../../src/types.js";
+import type { BrowserOperationOptions, LocatorLike, PageLike, WaitForEventOptions } from "../../src/types.js";
 
 describe("preflightFiles", () => {
   it("requires absolute paths and returns a structured blocker", async () => {
@@ -238,6 +238,7 @@ describe("attachFiles", () => {
     await writeFile(file, "hello");
 
     let uploadedPaths: string[] = [];
+    let titleCalls = 0;
     const visibleInput: LocatorLike = {
       count: async () => 1,
       isVisible: async () => true,
@@ -274,7 +275,10 @@ describe("attachFiles", () => {
         } as T;
       },
       waitForTimeout: async () => {},
-      title: async () => "ChatGPT",
+      title: async () => {
+        titleCalls += 1;
+        return "ChatGPT";
+      },
       url: () => "https://chatgpt.com/"
     };
 
@@ -286,6 +290,7 @@ describe("attachFiles", () => {
 
     expect(result.ok).toBe(true);
     expect(uploadedPaths).toEqual([file]);
+    expect(titleCalls).toBe(0);
     expect(result.data?.diagnostics?.preflight.files[0]).toMatchObject({
       name: "notes.txt",
       bytes: 5,
@@ -493,7 +498,7 @@ describe("attachFiles", () => {
       url: () => "https://chatgpt.com/"
     };
 
-    const result = await attachFiles({ page }, { paths: [file], timeoutMs: 100 });
+    const result = await attachFiles({ page }, { paths: [file], timeoutMs: 500 });
 
     expect(result.ok).toBe(false);
     expect(result.blocker?.code).toBe("upload_path_unavailable");
@@ -507,9 +512,7 @@ describe("attachFiles", () => {
     await writeFile(file, "hello");
 
     let uploadedPaths: string[] = [];
-    let processing = true;
     let readinessChecks = 0;
-    let waitCalls = 0;
 
     const visibleInput: LocatorLike = {
       count: async () => 1,
@@ -534,8 +537,12 @@ describe("attachFiles", () => {
           uploadedPaths = paths;
         }
       }),
-      evaluate: async <T, A = unknown>(_fn: (arg: A) => T | Promise<T>, _arg?: A): Promise<T> => {
+      evaluate: async <T, A = unknown>(_fn: (arg: A) => T | Promise<T>, arg?: A): Promise<T> => {
+        if (arg === null || typeof arg !== "object" || !("expectedFiles" in arg)) {
+          return { supported: true, inputFiles: [], attachmentLabels: [] } as T;
+        }
         readinessChecks += 1;
+        const processing = readinessChecks === 1;
         return {
           files: [
             { name: "notes.txt", visible: !processing }
@@ -543,12 +550,6 @@ describe("attachFiles", () => {
           processing,
           processingText: processing ? "Uploading notes.txt" : undefined
         } as T;
-      },
-      waitForTimeout: async () => {
-        waitCalls += 1;
-        if (waitCalls > 1) {
-          processing = false;
-        }
       },
       title: async () => "ChatGPT",
       url: () => "https://chatgpt.com/"
@@ -559,7 +560,6 @@ describe("attachFiles", () => {
     expect(result.ok).toBe(true);
     expect(uploadedPaths).toEqual([file]);
     expect(readinessChecks).toBeGreaterThan(1);
-    expect(waitCalls).toBeGreaterThan(1);
   });
 
   it("uses scoped CDP only to open the hidden input's approved file chooser", async () => {
@@ -581,15 +581,21 @@ describe("attachFiles", () => {
     let uploadedPaths: string[] = [];
     let sentMethod: string | undefined;
     let sentParams: Record<string, unknown> | undefined;
+    let sentOptions: Record<string, unknown> | undefined;
+    let chooserTimeoutMs: number | undefined;
+    let eventTimeoutMs: number | undefined;
     const page: PageLike = {
       locator: selector => selector.includes("input[type='file']") ? hiddenInput : missing,
-      waitForEvent: async () => ({
-        element: () => boundChooserElement(),
-        isMultiple: async () => true,
-        setFiles: async (paths: string[]) => {
-          uploadedPaths = paths;
-        }
-      }),
+      waitForEvent: async (_event, options) => {
+        eventTimeoutMs = (options as WaitForEventOptions | undefined)?.timeoutMs;
+        return {
+          isMultiple: async () => true,
+          setFiles: async (paths: string[], chooserOptions?: BrowserOperationOptions) => {
+            uploadedPaths = paths;
+            chooserTimeoutMs = chooserOptions?.timeoutMs;
+          }
+        };
+      },
       evaluate: async <T>(): Promise<T> => ({
         supported: true,
         files: [
@@ -600,9 +606,10 @@ describe("attachFiles", () => {
       }) as T,
       capabilities: {
         get: async id => id === "cdp" ? {
-          send: async (method: string, params: Record<string, unknown>) => {
+          send: async (method: string, params: Record<string, unknown>, options?: Record<string, unknown>) => {
             sentMethod = method;
             sentParams = params;
+            sentOptions = options;
             return { result: { value: { ok: true } } };
           }
         } : undefined
@@ -624,6 +631,11 @@ describe("attachFiles", () => {
     });
     expect(sentParams?.expression).toContain('input.id === "upload-files"');
     expect(sentParams?.expression).toContain("active composer file input was not unique");
+    // Match the real Codex Chrome chooser, which intentionally has no
+    // backing-element accessor. The scoped CDP trigger is the identity proof.
+    expect(sentOptions?.timeoutMs).toEqual(expect.any(Number));
+    expect(eventTimeoutMs).toEqual(expect.any(Number));
+    expect(chooserTimeoutMs).toEqual(expect.any(Number));
   });
 
   it("does not hand files to a chooser when scoped CDP reports ambiguous composer inputs", async () => {
@@ -678,6 +690,7 @@ describe("attachFiles", () => {
     let wrongClicks = 0;
     let chooserCalls = 0;
     let directPaths: string[] = [];
+    let directTimeoutMs: number | undefined;
     const wrongVisibleInput: LocatorLike = {
       count: async () => 1,
       isVisible: async () => true,
@@ -688,7 +701,10 @@ describe("attachFiles", () => {
       count: async () => 1,
       isVisible: async () => false,
       evaluate: async <T>() => true as T,
-      setInputFiles: async paths => { directPaths = paths; }
+      setInputFiles: async (paths, options) => {
+        directPaths = paths;
+        directTimeoutMs = options?.timeoutMs;
+      }
     };
     const candidates: LocatorLike = {
       count: async () => 2,
@@ -722,6 +738,7 @@ describe("attachFiles", () => {
     expect(wrongClicks).toBe(0);
     expect(chooserCalls).toBe(0);
     expect(directPaths).toEqual([file]);
+    expect(directTimeoutMs).toEqual(expect.any(Number));
   });
 
   it("marks a timed-out in-flight chooser handoff indeterminate and non-resumable", async () => {
@@ -739,16 +756,20 @@ describe("attachFiles", () => {
     vi.useFakeTimers();
     try {
       let handoffs = 0;
+      let nativeTimeoutMs: number | undefined;
       let markHandoffStarted: (() => void) | undefined;
       const handoffStarted = new Promise<void>(resolve => { markHandoffStarted = resolve; });
       const page: PageLike = {
         locator: selector => selector.includes("input[type='file']") ? visibleInput : missing,
         waitForEvent: async () => ({
           element: () => boundChooserElement(),
-          setFiles: async () => {
+          setFiles: async (_paths: string[], options?: BrowserOperationOptions) => {
             markHandoffStarted?.();
-            await new Promise<void>(resolve => setTimeout(resolve, 100));
-            handoffs += 1;
+            nativeTimeoutMs = options?.timeoutMs;
+            await new Promise<void>((_resolve, reject) => setTimeout(
+              () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms setting chooser files.`)),
+              options?.timeoutMs ?? 0
+            ));
           }
         }),
         evaluate: async <T>(): Promise<T> => ({
@@ -772,10 +793,12 @@ describe("attachFiles", () => {
         blocker: { code: "attachment_outcome_indeterminate", resumable: false }
       });
       expect(handoffs).toBe(0);
+      expect(nativeTimeoutMs).toBeGreaterThan(0);
+      expect(nativeTimeoutMs).toBeLessThanOrEqual(50);
       expect(Date.now() - startedAt).toBeLessThanOrEqual(50);
 
       await vi.advanceTimersByTimeAsync(100);
-      expect(handoffs).toBe(1);
+      expect(handoffs).toBe(0);
     } finally {
       vi.useRealTimers();
     }
@@ -815,7 +838,7 @@ describe("attachFiles", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("bounds a stalled attachment settling helper with the single deadline", async () => {
+  it("uses a host timer for settling so no browser wait remains in flight", async () => {
     const dir = await mkdtemp(join(tmpdir(), "chatgpt-control-attach-stalled-delay-"));
     const file = join(dir, "notes.txt");
     await writeFile(file, "hello");
@@ -829,13 +852,14 @@ describe("attachFiles", () => {
     const missing: LocatorLike = { count: async () => 0, filter: () => missing };
     vi.useFakeTimers();
     try {
-      let markDelayStarted: (() => void) | undefined;
-      const delayStarted = new Promise<void>(resolve => { markDelayStarted = resolve; });
+      let browserWaitCalls = 0;
+      let markHandoffStarted: (() => void) | undefined;
+      const handoffStarted = new Promise<void>(resolve => { markHandoffStarted = resolve; });
       const page: PageLike = {
         locator: selector => selector.includes("input[type='file']") ? visibleInput : missing,
         waitForEvent: async () => ({
           element: () => boundChooserElement(),
-          setFiles: async () => {}
+          setFiles: async () => { markHandoffStarted?.(); }
         }),
         evaluate: async <T>(): Promise<T> => ({
           supported: true,
@@ -843,7 +867,7 @@ describe("attachFiles", () => {
           attachmentLabels: []
         }) as T,
         waitForTimeout: async () => {
-          markDelayStarted?.();
+          browserWaitCalls += 1;
           return new Promise<void>(() => {});
         },
         title: async () => "ChatGPT",
@@ -852,7 +876,7 @@ describe("attachFiles", () => {
       const startedAt = Date.now();
       const resultPromise = attachFiles({ page }, { paths: [file], timeoutMs: 10 });
 
-      await delayStarted;
+      await handoffStarted;
       await vi.advanceTimersByTimeAsync(10);
       const result = await resultPromise;
 
@@ -862,6 +886,7 @@ describe("attachFiles", () => {
         blocker: { code: "attachment_outcome_indeterminate", resumable: false }
       });
       expect(Date.now() - startedAt).toBeLessThanOrEqual(10);
+      expect(browserWaitCalls).toBe(0);
     } finally {
       vi.useRealTimers();
     }

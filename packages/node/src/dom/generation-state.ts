@@ -2,6 +2,10 @@ import type { PageLike } from "../types.js";
 import { copyResponseButtons } from "./selectors.js";
 import { localeLabels } from "./locale-labels.js";
 
+export type GenerationStateReadOptions = {
+  timeoutMs?: number;
+};
+
 export type AssistantGenerationState = {
   /** True only when the page DOM was inspected successfully. */
   observed: boolean;
@@ -23,8 +27,16 @@ export const EMPTY_GENERATION_STATE: AssistantGenerationState = {
   signals: []
 };
 
-export async function readAssistantGenerationState(page: PageLike): Promise<AssistantGenerationState> {
+export async function readAssistantGenerationState(
+  page: PageLike,
+  options: GenerationStateReadOptions = {}
+): Promise<AssistantGenerationState> {
+  const expiresAtMs = options.timeoutMs === undefined
+    ? undefined
+    : Date.now() + Math.max(1, options.timeoutMs);
   if (typeof page.evaluate === "function") {
+    const evaluateOptions = remainingGenerationStateOptions(expiresAtMs);
+    if (expiresAtMs !== undefined && evaluateOptions === undefined) return EMPTY_GENERATION_STATE;
     try {
       return await page.evaluate((args: { stop: string[]; stopped: string[]; send: string[] }) => {
       const normalize = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -95,7 +107,7 @@ export async function readAssistantGenerationState(page: PageLike): Promise<Assi
       stop: [...localeLabels.stopControl],
       stopped: [...localeLabels.stoppedAssistant],
       send: [...localeLabels.sendButton]
-      });
+      }, evaluateOptions);
     } catch {
       // Fall through to the serialized-DOM fallback when available. A failed
       // evaluate with no fallback remains explicitly unobserved.
@@ -103,14 +115,24 @@ export async function readAssistantGenerationState(page: PageLike): Promise<Assi
   }
 
   if (typeof page.content === "function") {
+    const contentOptions = remainingGenerationStateOptions(expiresAtMs);
+    if (expiresAtMs !== undefined && contentOptions === undefined) return EMPTY_GENERATION_STATE;
     try {
-      return generationStateFromHtml(await page.content());
+      return generationStateFromHtml(await page.content(contentOptions));
     } catch {
       return EMPTY_GENERATION_STATE;
     }
   }
 
   return EMPTY_GENERATION_STATE;
+}
+
+function remainingGenerationStateOptions(
+  expiresAtMs: number | undefined
+): { timeoutMs: number } | undefined {
+  if (expiresAtMs === undefined) return undefined;
+  const timeoutMs = expiresAtMs - Date.now();
+  return timeoutMs > 0 ? { timeoutMs } : undefined;
 }
 
 export async function latestAssistantTurnHasResponseActions(page: PageLike): Promise<boolean> {

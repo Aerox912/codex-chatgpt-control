@@ -244,21 +244,23 @@ export async function stopGeneration(
 
   let boot: CommandResult<unknown>;
   try {
-    boot = await withinStopDeadline(deadline, () => ensurePage(env), "ChatGPT page verification");
+    boot = await withinStopDeadline(
+      deadline,
+      () => ensurePage(env, { minimalContext: true }),
+      "ChatGPT page verification"
+    );
   } catch (error) {
     return stopDeadlineResult(error);
   }
   if (!boot.ok) return boot as CommandResult<StopGenerationData>;
   const page = env.page!;
-  const generationProbe = createSingleFlightProbe("generation state", readAssistantGenerationState);
   const warnings = new Set<string>();
   let stopActivationStarted = false;
   let beforeActivation: AssistantGenerationState | undefined;
 
   try {
-    const beforeResult = await generationProbe(page, deadline, {
-      timeoutMs: Math.min(1_000, Math.max(1, remainingMs(deadline)))
-    });
+    const beforeProbeTimeoutMs = Math.min(1_000, Math.max(1, remainingMs(deadline)));
+    const beforeResult = await readStopGenerationState(page, deadline, beforeProbeTimeoutMs);
     addWarnings(warnings, beforeResult.warnings);
     if (!beforeResult.ok || !beforeResult.value.observed) {
       if (remainingMs(deadline) <= 0) {
@@ -306,18 +308,17 @@ export async function stopGeneration(
     }
 
     stopActivationStarted = true;
-    await withinStopDeadline(
+    await withinNativeStopDeadline(
       deadline,
-      () => resolution.control.click?.({ timeout: Math.min(2_000, remainingMs(deadline)) })
+      timeoutMs => resolution.control.click?.({ timeoutMs })
         ?? Promise.reject(new Error("The resolved Stop control does not support click().")),
       "Stop control click"
     );
 
     let after = EMPTY_GENERATION_STATE;
     while (remainingMs(deadline) > 0) {
-      const afterResult = await generationProbe(page, deadline, {
-        timeoutMs: Math.min(1_000, Math.max(1, remainingMs(deadline)))
-      });
+      const afterProbeTimeoutMs = Math.min(1_000, Math.max(1, remainingMs(deadline)));
+      const afterResult = await readStopGenerationState(page, deadline, afterProbeTimeoutMs);
       addWarnings(warnings, afterResult.warnings);
       if (afterResult.ok) {
         after = afterResult.value;
@@ -359,6 +360,33 @@ type StopControlResolution =
   | { ok: true; control: NonNullable<ReturnType<typeof stopGenerationButton>> }
   | { ok: false; code: "stop_generation_control_unavailable" | "stop_generation_control_ambiguous"; message: string };
 
+async function readStopGenerationState(
+  page: PageLike,
+  deadline: Deadline,
+  capMs: number
+): Promise<ProbeResult<AssistantGenerationState>> {
+  const timeoutMs = Math.min(capMs, remainingMs(deadline));
+  if (timeoutMs <= 0) {
+    return {
+      ok: false,
+      timedOut: true,
+      warnings: ["Skipped generation state DOM probe because no deadline budget remained."]
+    };
+  }
+  try {
+    // readAssistantGenerationState propagates this one budget through its
+    // evaluate/content fallbacks. Await it directly so no browser request is
+    // abandoned behind an SDK-side Promise.race.
+    const value = await readAssistantGenerationState(page, { timeoutMs });
+    return { ok: true, value, warnings: [] };
+  } catch (error) {
+    return {
+      ok: false,
+      warnings: [`generation state DOM probe failed: ${error instanceof Error ? error.message : String(error)}`]
+    };
+  }
+}
+
 async function resolveStopControl(page: PageLike, deadline: Deadline): Promise<StopControlResolution> {
   const candidates = stopGenerationButton(page);
   if (typeof candidates.count !== "function") {
@@ -368,7 +396,7 @@ async function resolveStopControl(page: PageLike, deadline: Deadline): Promise<S
       message: "ChatGPT is generating, but the Stop-control candidate set could not be enumerated safely."
     };
   }
-  const count = await withinStopDeadline(deadline, () => candidates.count!(), "Stop control enumeration");
+  const count = await stopControlCount(candidates, deadline);
   if (count === 0) {
     return {
       ok: false,
@@ -391,16 +419,11 @@ async function resolveStopControl(page: PageLike, deadline: Deadline): Promise<S
       : typeof candidates.nth === "function"
         ? candidates.nth(index)
         : undefined;
-    if (control === undefined || typeof control.isVisible !== "function" || typeof control.evaluate !== "function") {
+    if (control === undefined || typeof control.evaluate !== "function") {
       continue;
     }
-    const visible = await withinStopDeadline(
-      deadline,
-      () => control.isVisible!({ timeout: Math.min(1_000, remainingMs(deadline)) }),
-      `Stop control ${index + 1} visibility check`
-    );
-    if (!visible) continue;
-    const scoped = await withinStopDeadline(deadline, () => control.evaluate!((element: Element) => {
+    const evaluationTimeoutMs = Math.min(1_000, Math.max(1, remainingMs(deadline)));
+    const scoped = await withinNativeStopDeadline(deadline, timeoutMs => control.evaluate!((element: Element) => {
       const button = element as HTMLButtonElement;
       if (button.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
       if (button.disabled || button.getAttribute("aria-disabled") === "true") return false;
@@ -424,7 +447,7 @@ async function resolveStopControl(page: PageLike, deadline: Deadline): Promise<S
           ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
         .filter((value): value is HTMLElement => value !== null))];
       return activeComposers.length === 1 && activeComposers[0]!.contains(button);
-    }), `Stop control ${index + 1} scope check`);
+    }, undefined, { timeoutMs }), `Stop control ${index + 1} visibility and scope check`, evaluationTimeoutMs);
     if (scoped) eligible.push(control);
   }
 
@@ -445,6 +468,22 @@ async function resolveStopControl(page: PageLike, deadline: Deadline): Promise<S
   };
 }
 
+async function stopControlCount(
+  candidates: NonNullable<ReturnType<typeof stopGenerationButton>>,
+  deadline: Deadline
+): Promise<number> {
+  if (typeof candidates.allTextContents === "function") {
+    const values = await withinNativeStopDeadline(
+      deadline,
+      timeoutMs => candidates.allTextContents!({ timeoutMs }),
+      "Stop control enumeration",
+      1_000
+    );
+    return values.length;
+  }
+  return withinStopDeadline(deadline, () => candidates.count!(), "Stop control enumeration");
+}
+
 async function withinStopDeadline<T>(
   deadline: Deadline,
   operation: () => Promise<T>,
@@ -460,18 +499,40 @@ async function withinStopDeadline<T>(
   }
 }
 
-async function sleepWithinDeadline(page: PageLike, deadline: Deadline, requestedMs: number): Promise<void> {
-  const waitMs = Math.min(requestedMs, Math.max(0, remainingMs(deadline) - 1));
-  if (waitMs <= 0) return;
-  const wait = page.waitForTimeout?.(waitMs) ?? new Promise<void>(resolve => setTimeout(resolve, waitMs));
-  await withinStopDeadline(deadline, () => wait, "Generation-state polling delay");
+async function withinNativeStopDeadline<T>(
+  deadline: Deadline,
+  operation: (timeoutMs: number) => Promise<T>,
+  label: string,
+  capMs = 2_000
+): Promise<T> {
+  const timeoutMs = Math.min(capMs, remainingMs(deadline));
+  if (timeoutMs <= 0) throw new StopDeadlineError(label);
+  try {
+    // The Chrome bridge owns this timeout. Unlike Promise.race, a native
+    // timeout terminates the browser request instead of abandoning it in flight.
+    return await operation(timeoutMs);
+  } catch (error) {
+    if (remainingMs(deadline) <= 0 || isNativeBrowserTimeout(error)) {
+      throw new StopDeadlineError(label);
+    }
+    throw error;
+  }
 }
 
-async function stopContext(page: PageLike, deadline: Deadline) {
-  const budget = Math.min(250, remainingMs(deadline));
-  if (budget <= 0) return { timestamp: new Date().toISOString() };
-  return withTimeout(contextFromPage(page), budget, "Stop-result context capture timed out.")
-    .catch(() => ({ timestamp: new Date().toISOString() }));
+function isNativeBrowserTimeout(error: unknown): boolean {
+  return error instanceof Error && /timed?\s*out|timeout/i.test(error.message);
+}
+
+async function sleepWithinDeadline(_page: PageLike, deadline: Deadline, requestedMs: number): Promise<void> {
+  const waitMs = Math.min(requestedMs, Math.max(0, remainingMs(deadline) - 1));
+  if (waitMs <= 0) return;
+  // Polling does not require a browser round trip. A host timer cannot leave a
+  // bridge request stranded after the Stop deadline.
+  await new Promise<void>(resolve => setTimeout(resolve, waitMs));
+}
+
+async function stopContext(page: PageLike, _deadline: Deadline) {
+  return contextFromPage(page, {}, { minimal: true });
 }
 
 function stopDeadlineResult(
@@ -480,7 +541,7 @@ function stopDeadlineResult(
   warnings: string[] = []
 ): CommandResult<StopGenerationData> {
   const message = data?.wasGenerating === true
-    ? "Stop activation was started, but its outcome could not be verified before the single operation deadline. Do not retry automatically because the original click may still complete."
+    ? "Stop activation reached its browser-native deadline and was terminated, but the click may already have taken effect. Inspect the visible generation state and do not retry automatically."
     : "ChatGPT generation could not be inspected and stopped before the single operation deadline.";
   const result: CommandResult<StopGenerationData> = {
     ok: false,

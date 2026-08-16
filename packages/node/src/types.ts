@@ -960,30 +960,39 @@ export type BrowserUserTabInfo = {
   url?: string;
 };
 
+export type BrowserOperationOptions = {
+  timeoutMs?: number;
+};
+
 export type LocatorLike = {
-  click?: (options?: unknown) => Promise<void>;
+  click?: (options?: BrowserOperationOptions & Record<string, unknown>) => Promise<void>;
   press?: (key: string, options?: unknown) => Promise<void>;
   fill?: (value: string, options?: unknown) => Promise<void>;
   textContent?: (options?: unknown) => Promise<string | null>;
   innerText?: (options?: unknown) => Promise<string>;
   innerHTML?: (options?: unknown) => Promise<string>;
   count?: () => Promise<number>;
+  allTextContents?: (options?: BrowserOperationOptions) => Promise<string[]>;
   nth?: (index: number) => LocatorLike;
   first?: () => LocatorLike;
   last?: () => LocatorLike;
   isVisible?: (options?: unknown) => Promise<boolean>;
-  evaluate?: <T>(fn: (element: Element) => T) => Promise<T>;
+  evaluate?: <T>(
+    fn: (element: Element) => T,
+    arg?: unknown,
+    options?: BrowserOperationOptions
+  ) => Promise<T>;
   locator?: (selector: string) => LocatorLike;
   filter?: (options: Record<string, unknown>) => LocatorLike;
   getByRole?: (role: string, options?: Record<string, unknown>) => LocatorLike;
   getByText?: (text: string | RegExp, options?: Record<string, unknown>) => LocatorLike;
-  setInputFiles?: (paths: string[]) => Promise<void>;
+  setInputFiles?: (paths: string[], options?: BrowserOperationOptions) => Promise<void>;
 };
 
 export type FileChooserLike = {
   element?: () => LocatorLike | Promise<LocatorLike>;
   isMultiple?: () => boolean | Promise<boolean>;
-  setFiles: (paths: string[]) => Promise<void>;
+  setFiles: (paths: string[], options?: BrowserOperationOptions) => Promise<void>;
 };
 
 export type WaitForEventOptions = {
@@ -1015,8 +1024,12 @@ export type PageLike = {
   };
   waitForTimeout?: (ms: number) => Promise<void>;
   waitForEvent?: (event: string, optionsOrCallback?: WaitForEventOptions | unknown) => Promise<unknown>;
-  evaluate?: <T, A = unknown>(fn: (arg: A) => T | Promise<T>, arg?: A) => Promise<T>;
-  content?: () => Promise<string>;
+  evaluate?: <T, A = unknown>(
+    fn: (arg: A) => T | Promise<T>,
+    arg?: A,
+    options?: BrowserOperationOptions
+  ) => Promise<T>;
+  content?: (options?: BrowserOperationOptions) => Promise<string>;
   close?: () => Promise<void>;
   capabilities?: {
     get?: (id: string) => Promise<unknown> | unknown;

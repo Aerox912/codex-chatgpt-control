@@ -4,6 +4,10 @@ import { resultError, resultOk } from "../errors.js";
 import type { BootstrapArgs, BootstrapData, CommandResult, RuntimeEnv } from "../types.js";
 import { contextFromPage } from "./context.js";
 
+export type EnsurePageOptions = {
+  minimalContext?: boolean;
+};
+
 export async function bootstrap(
   env: RuntimeEnv,
   args: BootstrapArgs = {}
@@ -34,7 +38,10 @@ export async function bootstrap(
   }
 }
 
-export async function ensurePage(env: RuntimeEnv): Promise<CommandResult<unknown>> {
+export async function ensurePage(
+  env: RuntimeEnv,
+  options: EnsurePageOptions = {}
+): Promise<CommandResult<unknown>> {
   if (env.page === undefined) {
     return bootstrap(env, { preferExistingTab: true });
   }
@@ -49,7 +56,11 @@ export async function ensurePage(env: RuntimeEnv): Promise<CommandResult<unknown
     return origin;
   }
 
-  return resultOk({}, await contextFromPage(env.page, tabContext(env)));
+  return resultOk({}, await contextFromPage(
+    env.page,
+    tabContext(env),
+    { minimal: options.minimalContext === true }
+  ));
 }
 
 async function verifyChatGPTOrigin(env: RuntimeEnv): Promise<CommandResult<unknown> | undefined> {

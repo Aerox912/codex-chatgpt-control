@@ -5,7 +5,7 @@
     "blocker": {
       "code": "stop_generation_unverified",
       "kind": "selector_drift",
-      "message": "Stop activation was started, but its outcome could not be verified before the single operation deadline. Do not retry automatically because the original click may still complete.",
+      "message": "Stop activation reached its browser-native deadline and was terminated, but the click may already have taken effect. Inspect the visible generation state and do not retry automatically.",
       "resumable": false
     },
     "context": {

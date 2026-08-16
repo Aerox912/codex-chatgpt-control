@@ -5104,8 +5104,8 @@ function normalizeExtractedMessage(message, args = {}) {
 }
 
 // src/commands/context.ts
-async function contextFromPage(page, partial = {}) {
-  if (page === void 0) {
+async function contextFromPage(page, partial = {}, options = {}) {
+  if (page === void 0 || options.minimal === true) {
     return { timestamp: (/* @__PURE__ */ new Date()).toISOString(), ...partial };
   }
   const url = typeof page.url === "function" ? await Promise.resolve(page.url()).catch(() => partial.url) : partial.url;
@@ -5159,7 +5159,7 @@ async function bootstrap(env, args = {}) {
     return resultError(error instanceof Error ? error : new Error(String(error)));
   }
 }
-async function ensurePage(env) {
+async function ensurePage(env, options = {}) {
   if (env.page === void 0) {
     return bootstrap(env, { preferExistingTab: true });
   }
@@ -5171,7 +5171,11 @@ async function ensurePage(env) {
   if (origin !== void 0) {
     return origin;
   }
-  return resultOk({}, await contextFromPage(env.page, tabContext(env)));
+  return resultOk({}, await contextFromPage(
+    env.page,
+    tabContext(env),
+    { minimal: options.minimalContext === true }
+  ));
 }
 async function verifyChatGPTOrigin(env) {
   if (env.page === void 0) return void 0;
@@ -8832,8 +8836,11 @@ var EMPTY_GENERATION_STATE = {
   stopped: false,
   signals: []
 };
-async function readAssistantGenerationState(page) {
+async function readAssistantGenerationState(page, options = {}) {
+  const expiresAtMs = options.timeoutMs === void 0 ? void 0 : Date.now() + Math.max(1, options.timeoutMs);
   if (typeof page.evaluate === "function") {
+    const evaluateOptions = remainingGenerationStateOptions(expiresAtMs);
+    if (expiresAtMs !== void 0 && evaluateOptions === void 0) return EMPTY_GENERATION_STATE;
     try {
       return await page.evaluate((args) => {
         const normalize2 = (value) => (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -8881,18 +8888,25 @@ async function readAssistantGenerationState(page) {
         stop: [...localeLabels.stopControl],
         stopped: [...localeLabels.stoppedAssistant],
         send: [...localeLabels.sendButton]
-      });
+      }, evaluateOptions);
     } catch {
     }
   }
   if (typeof page.content === "function") {
+    const contentOptions = remainingGenerationStateOptions(expiresAtMs);
+    if (expiresAtMs !== void 0 && contentOptions === void 0) return EMPTY_GENERATION_STATE;
     try {
-      return generationStateFromHtml(await page.content());
+      return generationStateFromHtml(await page.content(contentOptions));
     } catch {
       return EMPTY_GENERATION_STATE;
     }
   }
   return EMPTY_GENERATION_STATE;
+}
+function remainingGenerationStateOptions(expiresAtMs) {
+  if (expiresAtMs === void 0) return void 0;
+  const timeoutMs = expiresAtMs - Date.now();
+  return timeoutMs > 0 ? { timeoutMs } : void 0;
 }
 async function latestAssistantTurnHasResponseActions(page) {
   if (typeof page.evaluate === "function") {
@@ -9414,20 +9428,22 @@ async function stopGeneration(env, args = {}) {
   }
   let boot2;
   try {
-    boot2 = await withinStopDeadline(deadline, () => ensurePage(env), "ChatGPT page verification");
+    boot2 = await withinStopDeadline(
+      deadline,
+      () => ensurePage(env, { minimalContext: true }),
+      "ChatGPT page verification"
+    );
   } catch (error) {
     return stopDeadlineResult(error);
   }
   if (!boot2.ok) return boot2;
   const page = env.page;
-  const generationProbe = createSingleFlightProbe("generation state", readAssistantGenerationState);
   const warnings = /* @__PURE__ */ new Set();
   let stopActivationStarted = false;
   let beforeActivation;
   try {
-    const beforeResult = await generationProbe(page, deadline, {
-      timeoutMs: Math.min(1e3, Math.max(1, remainingMs(deadline)))
-    });
+    const beforeProbeTimeoutMs = Math.min(1e3, Math.max(1, remainingMs(deadline)));
+    const beforeResult = await readStopGenerationState(page, deadline, beforeProbeTimeoutMs);
     addWarnings(warnings, beforeResult.warnings);
     if (!beforeResult.ok || !beforeResult.value.observed) {
       if (remainingMs(deadline) <= 0) {
@@ -9473,16 +9489,15 @@ async function stopGeneration(env, args = {}) {
       };
     }
     stopActivationStarted = true;
-    await withinStopDeadline(
+    await withinNativeStopDeadline(
       deadline,
-      () => resolution.control.click?.({ timeout: Math.min(2e3, remainingMs(deadline)) }) ?? Promise.reject(new Error("The resolved Stop control does not support click().")),
+      (timeoutMs2) => resolution.control.click?.({ timeoutMs: timeoutMs2 }) ?? Promise.reject(new Error("The resolved Stop control does not support click().")),
       "Stop control click"
     );
     let after = EMPTY_GENERATION_STATE;
     while (remainingMs(deadline) > 0) {
-      const afterResult = await generationProbe(page, deadline, {
-        timeoutMs: Math.min(1e3, Math.max(1, remainingMs(deadline)))
-      });
+      const afterProbeTimeoutMs = Math.min(1e3, Math.max(1, remainingMs(deadline)));
+      const afterResult = await readStopGenerationState(page, deadline, afterProbeTimeoutMs);
       addWarnings(warnings, afterResult.warnings);
       if (afterResult.ok) {
         after = afterResult.value;
@@ -9517,6 +9532,25 @@ async function stopGeneration(env, args = {}) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await stopContext(page, deadline));
   }
 }
+async function readStopGenerationState(page, deadline, capMs) {
+  const timeoutMs = Math.min(capMs, remainingMs(deadline));
+  if (timeoutMs <= 0) {
+    return {
+      ok: false,
+      timedOut: true,
+      warnings: ["Skipped generation state DOM probe because no deadline budget remained."]
+    };
+  }
+  try {
+    const value = await readAssistantGenerationState(page, { timeoutMs });
+    return { ok: true, value, warnings: [] };
+  } catch (error) {
+    return {
+      ok: false,
+      warnings: [`generation state DOM probe failed: ${error instanceof Error ? error.message : String(error)}`]
+    };
+  }
+}
 async function resolveStopControl(page, deadline) {
   const candidates = stopGenerationButton(page);
   if (typeof candidates.count !== "function") {
@@ -9526,7 +9560,7 @@ async function resolveStopControl(page, deadline) {
       message: "ChatGPT is generating, but the Stop-control candidate set could not be enumerated safely."
     };
   }
-  const count = await withinStopDeadline(deadline, () => candidates.count(), "Stop control enumeration");
+  const count = await stopControlCount(candidates, deadline);
   if (count === 0) {
     return {
       ok: false,
@@ -9544,20 +9578,15 @@ async function resolveStopControl(page, deadline) {
   const eligible = [];
   for (let index = 0; index < count; index += 1) {
     const control = count === 1 ? candidates : typeof candidates.nth === "function" ? candidates.nth(index) : void 0;
-    if (control === void 0 || typeof control.isVisible !== "function" || typeof control.evaluate !== "function") {
+    if (control === void 0 || typeof control.evaluate !== "function") {
       continue;
     }
-    const visible = await withinStopDeadline(
-      deadline,
-      () => control.isVisible({ timeout: Math.min(1e3, remainingMs(deadline)) }),
-      `Stop control ${index + 1} visibility check`
-    );
-    if (!visible) continue;
-    const scoped = await withinStopDeadline(deadline, () => control.evaluate((element) => {
+    const evaluationTimeoutMs = Math.min(1e3, Math.max(1, remainingMs(deadline)));
+    const scoped = await withinNativeStopDeadline(deadline, (timeoutMs) => control.evaluate((element) => {
       const button = element;
       if (button.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
       if (button.disabled || button.getAttribute("aria-disabled") === "true") return false;
-      const visible2 = (node) => {
+      const visible = (node) => {
         if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
         const style = window.getComputedStyle(node);
         const rect = node.getBoundingClientRect();
@@ -9565,10 +9594,10 @@ async function resolveStopControl(page, deadline) {
       };
       const textboxes = Array.from(document.querySelectorAll(
         "textarea, [contenteditable='true'], [role='textbox']"
-      )).filter(visible2);
+      )).filter(visible);
       const activeComposers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
       return activeComposers.length === 1 && activeComposers[0].contains(button);
-    }), `Stop control ${index + 1} scope check`);
+    }, void 0, { timeoutMs }), `Stop control ${index + 1} visibility and scope check`, evaluationTimeoutMs);
     if (scoped) eligible.push(control);
   }
   if (eligible.length === 1) {
@@ -9587,6 +9616,18 @@ async function resolveStopControl(page, deadline) {
     message: "ChatGPT is generating, but no uniquely scoped visible Stop control could be activated."
   };
 }
+async function stopControlCount(candidates, deadline) {
+  if (typeof candidates.allTextContents === "function") {
+    const values = await withinNativeStopDeadline(
+      deadline,
+      (timeoutMs) => candidates.allTextContents({ timeoutMs }),
+      "Stop control enumeration",
+      1e3
+    );
+    return values.length;
+  }
+  return withinStopDeadline(deadline, () => candidates.count(), "Stop control enumeration");
+}
 async function withinStopDeadline(deadline, operation, label) {
   const budget = remainingMs(deadline);
   if (budget <= 0) throw new StopDeadlineError(label);
@@ -9597,19 +9638,31 @@ async function withinStopDeadline(deadline, operation, label) {
     throw error;
   }
 }
-async function sleepWithinDeadline(page, deadline, requestedMs) {
+async function withinNativeStopDeadline(deadline, operation, label, capMs = 2e3) {
+  const timeoutMs = Math.min(capMs, remainingMs(deadline));
+  if (timeoutMs <= 0) throw new StopDeadlineError(label);
+  try {
+    return await operation(timeoutMs);
+  } catch (error) {
+    if (remainingMs(deadline) <= 0 || isNativeBrowserTimeout(error)) {
+      throw new StopDeadlineError(label);
+    }
+    throw error;
+  }
+}
+function isNativeBrowserTimeout(error) {
+  return error instanceof Error && /timed?\s*out|timeout/i.test(error.message);
+}
+async function sleepWithinDeadline(_page, deadline, requestedMs) {
   const waitMs = Math.min(requestedMs, Math.max(0, remainingMs(deadline) - 1));
   if (waitMs <= 0) return;
-  const wait = page.waitForTimeout?.(waitMs) ?? new Promise((resolve5) => setTimeout(resolve5, waitMs));
-  await withinStopDeadline(deadline, () => wait, "Generation-state polling delay");
+  await new Promise((resolve5) => setTimeout(resolve5, waitMs));
 }
-async function stopContext(page, deadline) {
-  const budget = Math.min(250, remainingMs(deadline));
-  if (budget <= 0) return { timestamp: (/* @__PURE__ */ new Date()).toISOString() };
-  return withTimeout(contextFromPage(page), budget, "Stop-result context capture timed out.").catch(() => ({ timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
+async function stopContext(page, _deadline) {
+  return contextFromPage(page, {}, { minimal: true });
 }
 function stopDeadlineResult(error, data, warnings = []) {
-  const message = data?.wasGenerating === true ? "Stop activation was started, but its outcome could not be verified before the single operation deadline. Do not retry automatically because the original click may still complete." : "ChatGPT generation could not be inspected and stopped before the single operation deadline.";
+  const message = data?.wasGenerating === true ? "Stop activation reached its browser-native deadline and was terminated, but the click may already have taken effect. Inspect the visible generation state and do not retry automatically." : "ChatGPT generation could not be inspected and stopped before the single operation deadline.";
   const result = {
     ok: false,
     status: "timeout",
@@ -10982,6 +11035,7 @@ async function preflightFiles(env, args) {
   return resultOk({ files, totalBytes }, filePreflightContext(env), warnings);
 }
 async function attachFiles(env, args) {
+  const deadline = createDeadline(Math.max(1, args.timeoutMs ?? 3e4));
   const preflightArgs = { paths: args.paths };
   if (args.includeDiagnostics === true && args.includeHashes !== void 0) {
     preflightArgs.includeHashes = args.includeHashes;
@@ -10990,12 +11044,23 @@ async function attachFiles(env, args) {
   if (!preflight.ok || preflight.data === void 0) {
     return preflight;
   }
-  const boot2 = await ensurePage(env);
+  let boot2;
+  try {
+    boot2 = await withinAttachmentDeadline(
+      deadline,
+      () => ensurePage(env, { minimalContext: true }),
+      "ChatGPT page verification"
+    );
+  } catch (error) {
+    if (error instanceof AttachmentDeadlineError || remainingMs(deadline) <= 0) {
+      return attachmentDeadlineResult(error);
+    }
+    return resultError(error instanceof Error ? error : new Error(String(error)));
+  }
   if (!boot2.ok) {
     return boot2;
   }
   const page = env.page;
-  const deadline = createDeadline(Math.max(1, args.timeoutMs ?? 3e4));
   const mutationState = { handoffStarted: false };
   try {
     const files = preflight.data.files.map((file) => ({
@@ -11003,17 +11068,19 @@ async function attachFiles(env, args) {
       name: file.name,
       bytes: file.bytes
     }));
-    const rawBaseline = await withinAttachmentDeadline(
+    const rawBaseline = await withinNativeAttachmentDeadline(
       deadline,
-      () => readAttachmentEvidenceBaseline(page),
-      "Pre-upload attachment baseline"
+      (timeoutMs) => readAttachmentEvidenceBaseline(page, timeoutMs),
+      "Pre-upload attachment baseline",
+      2e3
     ).catch(() => ({ supported: false, inputFiles: [], attachmentLabels: [] }));
     const baseline = rawBaseline !== null && typeof rawBaseline === "object" && Array.isArray(rawBaseline.inputFiles) && Array.isArray(rawBaseline.attachmentLabels) ? rawBaseline : { supported: false, inputFiles: [], attachmentLabels: [] };
     await uploadFiles(page, files, deadline, mutationState);
-    const browserInput = args.includeDiagnostics === true ? await withinAttachmentDeadline(
+    const browserInput = args.includeDiagnostics === true ? await withinNativeAttachmentDeadline(
       deadline,
-      () => readBrowserInputDiagnostic(page),
-      "Browser input diagnostic"
+      (timeoutMs) => readBrowserInputDiagnostic(page, timeoutMs),
+      "Browser input diagnostic",
+      2e3
     ).catch(() => void 0) : void 0;
     await attachmentDelay(
       page,
@@ -11049,18 +11116,7 @@ async function attachFiles(env, args) {
       );
     }
     if (error instanceof AttachmentDeadlineError || remainingMs(deadline) <= 0) {
-      return {
-        ok: false,
-        status: "timeout",
-        warnings: error instanceof Error ? [error.message] : [],
-        blocker: {
-          kind: "upload_failed",
-          code: "attachment_deadline_exhausted",
-          message: "ChatGPT file attachment did not complete before the caller's single operation deadline. The prompt was not submitted.",
-          resumable: true
-        },
-        context: { timestamp: (/* @__PURE__ */ new Date()).toISOString() }
-      };
+      return attachmentDeadlineResult(error);
     }
     if (isUploadTransportFailure(error)) {
       return {
@@ -11130,11 +11186,25 @@ async function attachFiles(env, args) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await attachmentContext(page, deadline));
   }
 }
+function attachmentDeadlineResult(error) {
+  return {
+    ok: false,
+    status: "timeout",
+    warnings: error === void 0 ? [] : [error instanceof Error ? error.message : String(error)],
+    blocker: {
+      kind: "upload_failed",
+      code: "attachment_deadline_exhausted",
+      message: "ChatGPT file attachment did not complete before the caller's single operation deadline. The prompt was not submitted.",
+      resumable: true
+    },
+    context: { timestamp: (/* @__PURE__ */ new Date()).toISOString() }
+  };
+}
 function attachmentOutcomeIndeterminate(files, warnings, context, visibleText, remediation) {
   const blocker = {
     kind: "upload_failed",
     code: "attachment_outcome_indeterminate",
-    message: "The native file handoff started, but its outcome could not be verified. Inspect the current composer; do not submit or retry automatically because the original attachment may still complete or already be present.",
+    message: "The native file handoff started, but its outcome could not be verified. The browser request is no longer in flight, though the file may already be present. Inspect the current composer; do not submit or retry automatically.",
     resumable: false
   };
   if (visibleText !== void 0) blocker.visibleText = visibleText;
@@ -11260,7 +11330,7 @@ function guessFileType(extension) {
 function isNodeError2(error) {
   return error instanceof Error && "code" in error;
 }
-async function readAttachmentEvidenceBaseline(page) {
+async function readAttachmentEvidenceBaseline(page, timeoutMs) {
   if (typeof page.evaluate !== "function") {
     return { supported: false, inputFiles: [], attachmentLabels: [] };
   }
@@ -11308,16 +11378,17 @@ async function readAttachmentEvidenceBaseline(page) {
       inputFiles: Array.from(inputs[0].files ?? []).map((file) => `${file.name.toLocaleLowerCase()}\0${file.size}`),
       attachmentLabels: labels
     };
-  });
+  }, void 0, { timeoutMs });
 }
 async function waitForAttachedFilesReady(page, files, baseline, deadline) {
   let lastProcessingText;
   let sawProcessing = false;
   while (remainingMs(deadline) > 0) {
-    const snapshot = await withinAttachmentDeadline(
+    const snapshot = await withinNativeAttachmentDeadline(
       deadline,
-      () => readAttachmentReadiness(page, files, baseline),
-      "Attachment readiness inspection"
+      (timeoutMs) => readAttachmentReadiness(page, files, baseline, timeoutMs),
+      "Attachment readiness inspection",
+      2e3
     ).catch(() => void 0);
     if (snapshot === void 0 || snapshot.supported === false) {
       return { ready: false, reason: "unverified" };
@@ -11343,7 +11414,7 @@ async function waitForAttachedFilesReady(page, files, baseline, deadline) {
   }
   return blocked2;
 }
-async function readAttachmentReadiness(page, files, baseline) {
+async function readAttachmentReadiness(page, files, baseline, timeoutMs) {
   if (typeof page.evaluate !== "function") {
     return void 0;
   }
@@ -11434,7 +11505,7 @@ async function readAttachmentReadiness(page, files, baseline) {
   }, {
     expectedFiles: files.map((file) => ({ name: file.name, bytes: file.bytes })),
     baseline
-  });
+  }, { timeoutMs });
 }
 async function uploadFiles(page, files, deadline, mutationState) {
   const paths = files.map((file) => file.path);
@@ -11451,11 +11522,7 @@ async function uploadFiles(page, files, deadline, mutationState) {
     attempts.push({
       name: "visible-chatgpt-file-input",
       run: async () => {
-        if (resolvedInput.isVisible !== void 0 && !await withinAttachmentDeadline(
-          deadline,
-          () => resolvedInput.isVisible({ timeoutMs: Math.min(attachmentBudget(deadline), 1e3) }),
-          "Active-composer file-input visibility check"
-        )) {
+        if (!await locatorIsRendered(resolvedInput, deadline)) {
           throw new Error("The active-composer upload target is hidden.");
         }
         await clickFileChooserLocator(page, resolvedInput, paths, deadline, mutationState);
@@ -11519,15 +11586,16 @@ async function clickChatGPTAddPhotosMenuItem(page, paths, deadline, mutationStat
   let menuItem = await findChatGPTUploadMenuItem(page, addPhotosFilesLabels, deadline);
   if (menuItem === void 0) {
     const plusButton = requiredLocator(page, "#composer-plus-btn, button[aria-label='Add files and more']");
-    if (await withinAttachmentDeadline(deadline, () => locatorCount(plusButton), "Add files control enumeration") !== 1) {
+    if (await locatorCount(plusButton, deadline) !== 1) {
       throw new Error("ChatGPT Add files button was not uniquely available.");
     }
     await assertControlInUniqueActiveComposer(plusButton, deadline, "ChatGPT Add files control");
     if (plusButton.click === void 0) throw new Error("ChatGPT Add files button does not expose click().");
-    await withinAttachmentDeadline(
+    await withinNativeAttachmentDeadline(
       deadline,
-      () => plusButton.click({ timeoutMs: Math.min(attachmentBudget(deadline), 1e4) }),
-      "ChatGPT Add files control click"
+      (timeoutMs) => plusButton.click({ timeoutMs }),
+      "ChatGPT Add files control click",
+      1e4
     );
     await attachmentDelay(page, deadline, 250);
   }
@@ -11541,11 +11609,7 @@ async function clickChatGPTAddPhotosMenuItem(page, paths, deadline, mutationStat
 async function findChatGPTUploadMenuItem(page, addPhotosFilesLabels, deadline) {
   const pattern = new RegExp(addPhotosFilesLabels.map(escapeRegExp).join("|"), "i");
   const candidate = requiredLocator(page, "div[tabindex='0']").filter?.({ hasText: pattern });
-  return await withinAttachmentDeadline(
-    deadline,
-    () => locatorCount(candidate),
-    "Upload menu-item enumeration"
-  ) === 1 ? candidate : void 0;
+  return await locatorCount(candidate, deadline) === 1 ? candidate : void 0;
 }
 async function clickFileChooserLocator(page, locator, paths, deadline, mutationState) {
   if (locator === void 0) {
@@ -11562,10 +11626,11 @@ async function clickFileChooserLocator(page, locator, paths, deadline, mutationS
     (error) => ({ ok: false, error })
   );
   try {
-    await withinAttachmentDeadline(
+    await withinNativeAttachmentDeadline(
       deadline,
-      () => locator.click({ timeoutMs: Math.min(attachmentBudget(deadline), 1e4) }),
-      "ChatGPT upload-control click"
+      (timeoutMs) => locator.click({ timeoutMs }),
+      "ChatGPT upload-control click",
+      1e4
     );
   } catch (error) {
     await chooserPromise;
@@ -11576,7 +11641,7 @@ async function clickFileChooserLocator(page, locator, paths, deadline, mutationS
     throw chooserResult.error;
   }
   const chooser = chooserResult.chooser;
-  await validateChooserTarget(chooser, deadline);
+  await validateChooserTarget(chooser, deadline, "scoped-composer-trigger");
   await withinAttachmentDeadline(
     deadline,
     () => validateChooserMultiplicity(chooser, paths),
@@ -11584,10 +11649,11 @@ async function clickFileChooserLocator(page, locator, paths, deadline, mutationS
   );
   try {
     mutationState.handoffStarted = true;
-    await withinAttachmentDeadline(
+    await withinNativeAttachmentDeadline(
       deadline,
-      () => chooser.setFiles(paths),
-      "File-chooser handoff"
+      (timeoutMs) => chooser.setFiles(paths, { timeoutMs }),
+      "File-chooser handoff",
+      15e3
     );
   } catch (error) {
     throw new Error(`fileChooser.setFiles failed. ${error instanceof Error ? error.message : String(error)}`);
@@ -11611,7 +11677,7 @@ async function clickHiddenFileInputWithCdp(page, paths, deadline, mutationState)
     (error) => ({ ok: false, error })
   );
   try {
-    const evaluation = await withinAttachmentDeadline(deadline, () => Promise.resolve(cdp.send("Runtime.evaluate", {
+    const evaluation = await withinNativeAttachmentDeadline(deadline, (timeoutMs) => Promise.resolve(cdp.send("Runtime.evaluate", {
       expression: `(() => {
         const visible = element => {
           if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']")) return false;
@@ -11641,8 +11707,8 @@ async function clickHiddenFileInputWithCdp(page, paths, deadline, mutationState)
       awaitPromise: true,
       returnByValue: true
     }, {
-      timeoutMs: Math.min(attachmentBudget(deadline), 1e4)
-    })), "Scoped CDP file-input click");
+      timeoutMs
+    })), "Scoped CDP file-input click", 1e4);
     const wrappedValue = evaluation?.result?.value;
     const value = wrappedValue ?? evaluation;
     if (value?.ok !== true) {
@@ -11656,7 +11722,7 @@ async function clickHiddenFileInputWithCdp(page, paths, deadline, mutationState)
   if (!chooserResult.ok) {
     throw chooserResult.error;
   }
-  await validateChooserTarget(chooserResult.chooser, deadline);
+  await validateChooserTarget(chooserResult.chooser, deadline, "scoped-cdp-input");
   await withinAttachmentDeadline(
     deadline,
     () => validateChooserMultiplicity(chooserResult.chooser, paths),
@@ -11664,21 +11730,22 @@ async function clickHiddenFileInputWithCdp(page, paths, deadline, mutationState)
   );
   try {
     mutationState.handoffStarted = true;
-    await withinAttachmentDeadline(
+    await withinNativeAttachmentDeadline(
       deadline,
-      () => chooserResult.chooser.setFiles(paths),
-      "File-chooser handoff"
+      (timeoutMs) => chooserResult.chooser.setFiles(paths, { timeoutMs }),
+      "File-chooser handoff",
+      15e3
     );
   } catch (error) {
     throw new Error(`fileChooser.setFiles failed. ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 async function waitForFileChooser(page, deadline) {
-  const timeoutMs = attachmentBudget(deadline);
-  const rawChooser = await withinAttachmentDeadline(deadline, () => Promise.resolve(page.waitForEvent?.("filechooser", {
-    timeout: timeoutMs,
-    timeoutMs
-  })), "File-chooser event wait");
+  const rawChooser = await withinNativeAttachmentDeadline(
+    deadline,
+    (timeoutMs) => Promise.resolve(page.waitForEvent?.("filechooser", { timeoutMs })),
+    "File-chooser event wait"
+  );
   if (!isFileChooserLike(rawChooser)) {
     throw new Error("File chooser event did not return a setFiles-capable chooser.");
   }
@@ -11696,9 +11763,9 @@ async function validateChooserMultiplicity(chooser, paths) {
 function isFileChooserLike(value) {
   return value !== null && typeof value === "object" && typeof value.setFiles === "function";
 }
-async function validateChooserTarget(chooser, deadline) {
+async function validateChooserTarget(chooser, deadline, _triggerProof) {
   if (typeof chooser.element !== "function") {
-    throw new Error("The file chooser did not expose its backing input, so its active-composer identity could not be verified.");
+    return;
   }
   const element = await withinAttachmentDeadline(
     deadline,
@@ -11708,7 +11775,7 @@ async function validateChooserTarget(chooser, deadline) {
   if (typeof element?.evaluate !== "function") {
     throw new Error("The file chooser backing input could not be inspected safely.");
   }
-  const scoped = await withinAttachmentDeadline(deadline, () => element.evaluate((candidate) => {
+  const scoped = await withinNativeAttachmentDeadline(deadline, (timeoutMs) => element.evaluate((candidate) => {
     const visible = (node) => {
       if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
       const style = window.getComputedStyle(node);
@@ -11725,16 +11792,39 @@ async function validateChooserTarget(chooser, deadline) {
     const nonImage = all.filter((input) => input.getAttribute("accept") !== "image/*");
     const resolved = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : all;
     return resolved.length === 1 && resolved[0] === candidate;
-  }), "File-chooser active-composer identity check");
+  }, void 0, { timeoutMs }), "File-chooser active-composer identity check", 2e3);
   if (!scoped) {
     throw new Error("The file chooser backing input was not the unique active-composer upload target.");
   }
 }
-async function locatorCount(locator) {
-  if (locator === void 0 || typeof locator.count !== "function") {
+async function locatorCount(locator, deadline) {
+  if (locator === void 0) {
     return 0;
   }
+  if (deadline !== void 0 && typeof locator.allTextContents === "function") {
+    const values = await withinNativeAttachmentDeadline(
+      deadline,
+      (timeoutMs) => locator.allTextContents({ timeoutMs }),
+      "Locator enumeration",
+      2e3
+    );
+    return values.length;
+  }
+  if (typeof locator.count !== "function") return 0;
+  if (deadline !== void 0) {
+    return withinAttachmentDeadline(deadline, () => locator.count(), "Locator enumeration");
+  }
   return locator.count();
+}
+async function locatorIsRendered(locator, deadline) {
+  if (typeof locator.evaluate !== "function") return false;
+  return withinNativeAttachmentDeadline(deadline, (timeoutMs) => locator.evaluate((element) => {
+    const node = element;
+    if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+    const style = window.getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && style.pointerEvents !== "none" && (rect.width > 0 || rect.height > 0);
+  }, void 0, { timeoutMs }), "Active-composer file-input visibility check", 1e3);
 }
 function attachmentBudget(deadline) {
   const budget = remainingMs(deadline);
@@ -11760,20 +11850,28 @@ async function withinAttachmentDeadline(deadline, operation, label) {
     throw error;
   }
 }
-async function attachmentDelay(page, deadline, requestedMs) {
+async function withinNativeAttachmentDeadline(deadline, operation, label, capMs = Number.POSITIVE_INFINITY) {
+  const timeoutMs = Math.min(capMs, attachmentBudget(deadline));
+  try {
+    return await operation(timeoutMs);
+  } catch (error) {
+    if (remainingMs(deadline) <= 0) {
+      throw new AttachmentDeadlineError(label);
+    }
+    throw error;
+  }
+}
+async function attachmentDelay(_page, deadline, requestedMs) {
   const budget = attachmentBudget(deadline);
   const delayMs = Math.min(Math.max(0, requestedMs), Math.max(0, budget - 1));
   if (delayMs <= 0) {
     if (requestedMs > 0) throw new AttachmentDeadlineError("Attachment settling delay");
     return;
   }
-  const delay = page.waitForTimeout?.(delayMs) ?? new Promise((resolve5) => setTimeout(resolve5, delayMs));
-  await withinAttachmentDeadline(deadline, () => delay, "Attachment settling delay");
+  await new Promise((resolve5) => setTimeout(resolve5, delayMs));
 }
-async function attachmentContext(page, deadline) {
-  const budget = Math.min(250, remainingMs(deadline));
-  if (budget <= 0) return { timestamp: (/* @__PURE__ */ new Date()).toISOString() };
-  return withTimeout(contextFromPage(page), budget, "Attachment-result context capture timed out.").catch(() => ({ timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
+async function attachmentContext(page, _deadline) {
+  return contextFromPage(page, {}, { minimal: true });
 }
 async function downloadLatestFile(env, args) {
   const boot2 = await ensurePage(env);
@@ -12042,12 +12140,12 @@ async function resolveUniqueActiveComposerFileInput(page, deadline) {
   if (typeof candidates.count !== "function") {
     throw new Error("ChatGPT file inputs could not be enumerated safely.");
   }
-  const count = await withinAttachmentDeadline(deadline, () => candidates.count(), "File-input enumeration");
+  const count = await locatorCount(candidates, deadline);
   const eligible = [];
   for (let index = 0; index < count; index += 1) {
     const input = count === 1 ? candidates : candidates.nth?.(index);
     if (input === void 0 || typeof input.evaluate !== "function") continue;
-    const scoped = await withinAttachmentDeadline(deadline, () => input.evaluate((element) => {
+    const scoped = await withinNativeAttachmentDeadline(deadline, (timeoutMs) => input.evaluate((element) => {
       const candidate = element;
       const visible = (node) => {
         if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
@@ -12065,7 +12163,7 @@ async function resolveUniqueActiveComposerFileInput(page, deadline) {
       const nonImage = all.filter((input2) => input2.getAttribute("accept") !== "image/*");
       const resolved = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : all;
       return resolved.length === 1 && resolved[0] === candidate;
-    }), `File-input ${index + 1} scope check`);
+    }, void 0, { timeoutMs }), `File-input ${index + 1} scope check`, 2e3);
     if (scoped) eligible.push(input);
   }
   if (eligible.length !== 1) {
@@ -12077,7 +12175,7 @@ async function assertControlInUniqueActiveComposer(control, deadline, label) {
   if (control === void 0 || typeof control.evaluate !== "function") {
     throw new Error(`${label} could not be scoped to the active composer.`);
   }
-  const scoped = await withinAttachmentDeadline(deadline, () => control.evaluate((element) => {
+  const scoped = await withinNativeAttachmentDeadline(deadline, (timeoutMs) => control.evaluate((element) => {
     const visible = (node) => {
       if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
       const style = window.getComputedStyle(node);
@@ -12089,7 +12187,7 @@ async function assertControlInUniqueActiveComposer(control, deadline, label) {
     )).filter(visible);
     const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
     return composers.length === 1 && composers[0].contains(element);
-  }), `${label} scope check`);
+  }, void 0, { timeoutMs }), `${label} scope check`, 2e3);
   if (!scoped) throw new Error(`${label} was outside the unique active composer.`);
 }
 async function setResolvedFileInput(input, files, deadline, mutationState) {
@@ -12097,13 +12195,14 @@ async function setResolvedFileInput(input, files, deadline, mutationState) {
     throw new Error("The active browser exposes no sanctioned native file handoff for ChatGPT's file input.");
   }
   mutationState.handoffStarted = true;
-  await withinAttachmentDeadline(
+  await withinNativeAttachmentDeadline(
     deadline,
-    () => input.setInputFiles(files.map((file) => file.path)),
-    "Direct file-input handoff"
+    (timeoutMs) => input.setInputFiles(files.map((file) => file.path), { timeoutMs }),
+    "Direct file-input handoff",
+    15e3
   );
 }
-async function readBrowserInputDiagnostic(page) {
+async function readBrowserInputDiagnostic(page, timeoutMs) {
   if (typeof page.evaluate !== "function") {
     return void 0;
   }
@@ -12141,7 +12240,7 @@ async function readBrowserInputDiagnostic(page) {
         return diagnostic2;
       })
     };
-  });
+  }, void 0, { timeoutMs });
 }
 function guessMimeType(name) {
   if (/\.txt$/i.test(name)) return "text/plain";

@@ -211,7 +211,7 @@ const stopped = await chatgpt.messages.stop({
 
 The exact boolean confirmation is required. The SDK clicks at most one uniquely scoped visible stop control and returns success only after it observes generation inactive. Uninspectable state, ambiguous controls, and an unverified postcondition fail closed; an observably inactive page is a successful no-op.
 
-If Stop activation outlives its deadline, the SDK returns `stop_generation_unverified` with `resumable: false`. The click may still complete, so inspect the visible state and never retry automatically.
+If Stop activation outlives its deadline, the SDK returns `stop_generation_unverified` with `resumable: false`. Its browser-native deadline terminates the request so it cannot click later, but the click may already have taken effect; inspect the visible state and never retry automatically.
 
 Download an image-only generation through the artifact primitives:
 
@@ -348,7 +348,7 @@ File attachments need two separate permission gates:
 
 If either gate is missing, file upload workflows should stop with a structured permission blocker instead of retrying blindly.
 
-If a native handoff starts but its result cannot be verified, `files.attach` returns `attachment_outcome_indeterminate` with `status: "partial"` and `resumable: false`. Inspect the current composer, do not submit, and never retry the attachment automatically because the file may still appear or already be present.
+If a native handoff starts but its result cannot be verified, `files.attach` returns `attachment_outcome_indeterminate` with `status: "partial"` and `resumable: false`. The browser request is no longer in flight, though the file may already be present. Inspect the current composer, do not submit, and never retry the attachment automatically.
 
 ## Repository Layout
 
