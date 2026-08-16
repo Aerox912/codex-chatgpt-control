@@ -148,6 +148,12 @@ group and can hide that group inside an active Work task. The SDK verifies the
 checked pane, gives the current conversation a bounded hydration grace before
 returning home when required, and retains older selector fallbacks.
 
+In a compact or narrow Chat composer, the closed configuration control may show
+only the current value, such as `Pro`. `configuration.inspect` scopes that
+opener to the composer, opens it without changing the selection, and reads the
+visible model and effort rows before deciding that an axis is unavailable. Do
+not treat the collapsed value alone as the complete capability graph.
+
 Apply strict Work configuration and start a task once:
 
 ```ts

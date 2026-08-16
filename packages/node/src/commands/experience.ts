@@ -259,7 +259,13 @@ export function detectExperienceFromSnapshot(snapshot: SurfaceSnapshot): DetectE
   const workAxisCount = (["model", "effort", "speed"] as const)
     .filter(axis => hasAnyLabel(controls, localeLabels.configurationAxes[axis]))
     .length;
-  if (workAxisCount >= 2) {
+  const compactChatAdvanced = chatComposer.length > 0
+    && workAxisCount === 2
+    && !hasAnyLabel(controls, localeLabels.configurationAxes.speed)
+    && hasExactLabel(controls, localeLabels.configurationOptions.pro);
+  if (compactChatAdvanced) {
+    evidence.push({ source: "control", label: "Compact Chat advanced configuration" });
+  } else if (workAxisCount >= 2) {
     evidence.push({ source: "control", label: `Work configuration axes (${workAxisCount}/3)` });
   }
   const workConfigurationOpener = controls.some(label =>
@@ -286,7 +292,7 @@ export function detectExperienceFromSnapshot(snapshot: SurfaceSnapshot): DetectE
 
   const workScore = workComposer.length * 4
     + (workSurfaceSelected ? 10 : 0)
-    + (workAxisCount >= 2 ? 4 : 0)
+    + (workAxisCount >= 2 && !compactChatAdvanced ? 4 : 0)
     // The active Work task drops the Chat/Work radio and keeps the shared
     // "Chat with ChatGPT" textbox name. Its compound model + effort opener is
     // therefore strong enough to disambiguate that continuation surface.
@@ -294,7 +300,8 @@ export function detectExperienceFromSnapshot(snapshot: SurfaceSnapshot): DetectE
     + (/\/work(?:\/|$|\?)/.test(url) ? 3 : 0)
     + (containsAny(mainText, ["work on something else", "work on anything"]) ? 2 : 0);
   const chatScore = chatComposer.length * 4
-    + (chatSurfaceSelected ? 10 : 0);
+    + (chatSurfaceSelected ? 10 : 0)
+    + (compactChatAdvanced ? 4 : 0);
 
   let experience: ChatGPTExperience = "unknown";
   let confidence: ExperienceConfidence = "low";
@@ -318,7 +325,10 @@ export async function readSurfaceSnapshot(page: PageLike): Promise<SurfaceSnapsh
     return { url, composerLabels: [], mainControls: [], mainText: "", selectedSurfaceLabels: [] };
   }
 
-  const snapshot = await page.evaluate((surfaceOptionLabels: string[]) => {
+  const snapshot = await page.evaluate((labels: {
+    surfaceOptions: string[];
+    composerTextboxes: string[];
+  }) => {
     const visible = (element: Element): boolean => {
       const html = element as HTMLElement;
       const rect = html.getBoundingClientRect?.();
@@ -348,21 +358,32 @@ export async function readSurfaceSnapshot(page: PageLike): Promise<SurfaceSnapsh
     };
     const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
     const normalizeComparable = (value: string): string => normalize(value).toLocaleLowerCase();
-    const wantedSurfaceLabels = new Set(surfaceOptionLabels.map(normalizeComparable));
+    const wantedSurfaceLabels = new Set(labels.surfaceOptions.map(normalizeComparable));
+    const wantedComposerLabels = new Set(labels.composerTextboxes.map(normalizeComparable));
     const composerRoots = Array.from(document.querySelectorAll(
       "main form, main [data-testid*='composer' i], main [class*='composer' i]"
     ));
-    const composerNodes = composerRoots.flatMap(root => [
-      root,
-      ...Array.from(root.querySelectorAll("textarea, [contenteditable='true'], [role='textbox'], input"))
-    ]);
-    const composerLabels = Array.from(new Set(composerNodes
+    const main = document.querySelector("main");
+    const mainTextboxes = main === null ? [] : Array.from(main.querySelectorAll(
+      "textarea, [contenteditable='true'], [role='textbox'], input:not([type]), input[type='text']"
+    ));
+    const composerNodes = Array.from(new Set([
+      ...composerRoots.flatMap(root => [
+        root,
+        ...Array.from(root.querySelectorAll("textarea, [contenteditable='true'], [role='textbox'], input"))
+      ]),
+      ...mainTextboxes
+    ]));
+    const observedComposerLabels = Array.from(new Set(composerNodes
       .filter(visible)
       .map(labelFor)
       .map(normalize)
-      .filter(Boolean)))
+      .filter(Boolean)));
+    const composerLabels = Array.from(new Set([
+      ...observedComposerLabels.filter(label => wantedComposerLabels.has(normalizeComparable(label))),
+      ...observedComposerLabels
+    ]))
       .slice(0, 16);
-    const main = document.querySelector("main");
     const overlayRoots = Array.from(document.querySelectorAll(
       "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper], [data-radix-menu-content]"
     )).filter(visible);
@@ -393,10 +414,16 @@ export async function readSurfaceSnapshot(page: PageLike): Promise<SurfaceSnapsh
       .filter(label => wantedSurfaceLabels.has(normalizeComparable(label)))))
       .slice(0, 4);
     return { composerLabels, mainControls, mainText, selectedSurfaceLabels };
-  }, [
-    ...localeLabels.experienceOptions.chat,
-    ...localeLabels.experienceOptions.work,
-  ]).catch(() => ({ composerLabels: [], mainControls: [], mainText: "", selectedSurfaceLabels: [] }));
+  }, {
+    surfaceOptions: [
+      ...localeLabels.experienceOptions.chat,
+      ...localeLabels.experienceOptions.work,
+    ],
+    composerTextboxes: [
+      ...localeLabels.composerTextbox,
+      ...localeLabels.workComposerTextbox,
+    ]
+  }).catch(() => ({ composerLabels: [], mainControls: [], mainText: "", selectedSurfaceLabels: [] }));
 
   return { url, ...snapshot };
 }
@@ -520,6 +547,11 @@ function hasAnyLabel(normalizedHaystack: string[], candidates: readonly string[]
       label === candidate || visibleLabelMatches(label, candidate)
     )
   );
+}
+
+function hasExactLabel(normalizedHaystack: string[], candidates: readonly string[]): boolean {
+  const normalizedCandidates = new Set(candidates.map(normalizeForLabelMatch));
+  return normalizedHaystack.some(label => normalizedCandidates.has(label));
 }
 
 function containsAny(normalizedText: string, candidates: readonly string[]): boolean {

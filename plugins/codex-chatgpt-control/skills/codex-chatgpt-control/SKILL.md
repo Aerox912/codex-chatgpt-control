@@ -147,6 +147,12 @@ surface` group. An active Work task may hide that group. Use
 only after a bounded current-page hydration grace when necessary, and retains
 legacy button/menu/tab/link fallbacks.
 
+In a compact or narrow Chat composer, the closed configuration control may show
+only the current value, such as `Pro`. `configuration.inspect` scopes that
+opener to the composer, opens it without changing the selection, and reads the
+visible model and effort rows before deciding that an axis is unavailable. Do
+not treat the collapsed value alone as the complete capability graph.
+
 Selector profiles describe observed UI shapes (`chat_legacy_v1`, `chat_simplified_v1`, `work_basic_v1`, and `work_advanced_v1`). They are not plan or entitlement labels. Treat unavailable controls and rollout differences as structured results instead of guessing.
 
 Start Work exactly once, then poll or steer the same task:

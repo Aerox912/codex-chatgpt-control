@@ -47,7 +47,9 @@ export async function enumerateVisibleMenuItems(page: PageLike): Promise<MenuIte
       };
       const toItem = (node: Element) => {
         const element = node as HTMLElement;
-        const label = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim();
+        const ariaLabel = element.getAttribute("aria-label");
+        const visibleText = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim();
+        const label = visibleText.length > 0 ? visibleText : ariaLabel?.trim() ?? "";
         const item: {
           label: string;
           role?: string;
@@ -68,7 +70,6 @@ export async function enumerateVisibleMenuItems(page: PageLike): Promise<MenuIte
         if (element.getAttribute("aria-haspopup") === "menu") item.hasPopup = true;
         const testId = element.getAttribute("data-testid");
         if (testId !== null) item.testId = testId;
-        const ariaLabel = element.getAttribute("aria-label");
         if (ariaLabel !== null) item.ariaLabel = ariaLabel;
         return item;
       };

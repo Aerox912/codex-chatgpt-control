@@ -59,7 +59,28 @@ export async function inspectConfiguration(
     if (!detected.ok || detected.data === undefined) {
       return forwardFailure(detected);
     }
-    if (args.experience !== undefined && detected.data.experience !== args.experience) {
+    const discoveryExperience = detected.data.experience === "unknown"
+      ? args.experience ?? "unknown"
+      : detected.data.experience;
+    const rootOpened = await waitForConfigurationRoot(
+      page,
+      discoveryExperience,
+      args.timeoutMs
+    );
+    if (rootOpened) {
+      await page.waitForTimeout?.(150);
+    }
+
+    let panel = await readConfigurationPanel(page);
+    let rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
+    const inferredExperience = detected.data.experience === "unknown"
+      ? inferExperienceFromConfigurationPanel(panel, rootItems)
+      : detected.data.experience;
+    const experience = inferredExperience === "unknown"
+      ? discoveryExperience
+      : inferredExperience;
+
+    if (args.experience !== undefined && experience !== args.experience) {
       return {
         ok: false,
         status: "unsupported",
@@ -68,34 +89,35 @@ export async function inspectConfiguration(
           kind: "selector_drift",
           code: "experience_mismatch",
           fieldPath: "experience",
-          message: `Configuration inspection expected ${args.experience}, but the visible composer is ${detected.data.experience}. Call experience.open first or omit the expected experience.`,
+          message: `Configuration inspection expected ${args.experience}, but the visible composer is ${experience}. Call experience.open first or omit the expected experience.`,
           resumable: true
         },
         context: await contextFromPage(page, {
-          experience: detected.data.experience,
+          experience,
           selectorProfile: detected.data.selectorProfile
         })
       };
     }
 
-    const experience = detected.data.experience;
-    const rootOpened = experience !== "unknown" && await waitForConfigurationRoot(
-      page,
-      experience,
-      args.timeoutMs
-    );
-    if (rootOpened) {
+    const chatAdvancedRequired = experience === "chat"
+      && rootOpened
+      && compactChatRootLooksRecognized(panel, rootItems);
+    const chatAdvancedOpened = !chatAdvancedRequired
+      || await ensureChatAdvancedPanel(page, rootItems);
+    if (chatAdvancedRequired && chatAdvancedOpened) {
       await page.waitForTimeout?.(150);
+      panel = await readConfigurationPanel(page);
+      rootItems = await enumerateVisibleMenuItems(page);
     }
 
     const workAdvancedOpened = experience !== "work"
       || (rootOpened && await ensureWorkAdvancedPanel(page));
     if (experience === "work" && workAdvancedOpened) {
       await page.waitForTimeout?.(150);
+      panel = await readConfigurationPanel(page);
+      rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
     }
 
-    const panel = await readConfigurationPanel(page);
-    const rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
     const data = configurationInspectionFromSurface(
       experience,
       detected.data.selectorProfile,
@@ -121,6 +143,9 @@ export async function inspectConfiguration(
     }
     if (experience === "work" && rootOpened && !workAdvancedOpened) {
       warnings.push("The Work configuration menu opened, but its Advanced model, effort, and speed controls could not be made visible.");
+    }
+    if (chatAdvancedRequired && !chatAdvancedOpened) {
+      warnings.push("The compact Chat configuration menu opened, but its Advanced model and effort controls could not be made visible.");
     }
     if (!data.verified) {
       warnings.push("The visible configuration could not be verified from a recognized Chat or Work selector profile.");
@@ -294,25 +319,37 @@ export function configurationInspectionFromSurface(
     }
     selectorProfile = panel.advancedVisible ? "work_advanced_v1" : "work_basic_v1";
   } else if (experience === "chat") {
-    const simplified = chatMenuLooksSimplified(menuItems);
+    const compact = compactChatMenuLooksRecognized(panel);
+    const simplified = compact || chatMenuLooksSimplified(menuItems);
     selectorProfile = simplified ? "chat_simplified_v1" : detectedProfile;
-    const axis: ConfigurationAxis = simplified ? "intelligence" : "effort";
-    if (menuItems.length > 0 || panel.openerLabel !== undefined) {
-      availableAxes.push(axis);
-    }
-    if (panel.openerLabel !== undefined) {
-      active[axis] = panel.openerLabel;
-    }
-    const chatOptions = menuItems
-      .filter(item => !isConfigurationAxisRow(item.label))
-      .map(menuItemToOption);
-    if (chatOptions.length > 0) {
-      options[axis] = chatOptions;
-    }
-    const modelRows = menuItems.filter(item => /^gpt[\s-]/i.test(item.label) || item.hasPopup === true);
-    if (modelRows.length > 0) {
-      availableAxes.push("modelVersion");
-      options.modelVersion = modelRows.map(menuItemToOption);
+    if (compact) {
+      if (panel.openerLabel !== undefined) {
+        availableAxes.push("intelligence");
+        active.intelligence = panel.openerLabel;
+      }
+      for (const row of panel.axisRows) {
+        if (!availableAxes.includes(row.axis)) availableAxes.push(row.axis);
+        if (row.value !== undefined && row.value.length > 0) active[row.axis] = row.value;
+      }
+    } else {
+      const axis: ConfigurationAxis = simplified ? "intelligence" : "effort";
+      if (menuItems.length > 0 || panel.openerLabel !== undefined) {
+        availableAxes.push(axis);
+      }
+      if (panel.openerLabel !== undefined) {
+        active[axis] = panel.openerLabel;
+      }
+      const chatOptions = menuItems
+        .filter(item => !isConfigurationAxisRow(item.label))
+        .map(menuItemToOption);
+      if (chatOptions.length > 0) {
+        options[axis] = chatOptions;
+      }
+      const modelRows = menuItems.filter(item => /^gpt[\s-]/i.test(item.label) || item.hasPopup === true);
+      if (modelRows.length > 0) {
+        availableAxes.push("modelVersion");
+        options.modelVersion = modelRows.map(menuItemToOption);
+      }
     }
   }
 
@@ -535,6 +572,9 @@ async function openConfigurationRoot(page: PageLike, experience: ChatGPTExperien
     return true;
   }
   const existingItems = await enumerateVisibleMenuItems(page).catch(() => []);
+  if (compactChatRootLooksRecognized(existing, existingItems)) {
+    return true;
+  }
   if (configurationMenuLooksRecognized(existingItems, experience, existing.openerLabel)) {
     return true;
   }
@@ -625,6 +665,13 @@ function configurationMenuLooksRecognized(
   if (items.some(item => /(?:model|mode|effort|speed)-(?:switcher|selector)|model-switcher/i.test(item.testId ?? ""))) {
     return true;
   }
+  const visibleAxisCount = (["model", "intelligence", "effort", "speed"] as ConfigurationAxis[])
+    .filter(axis => items.some(item => (localeLabels.configurationAxes[axis as keyof typeof localeLabels.configurationAxes] ?? [])
+      .some(label => visibleLabelMatches(item.label, label))))
+    .length;
+  if (visibleAxisCount >= 2) {
+    return true;
+  }
   if (experience === "work" && items.some(item =>
     localeLabels.configurationAxes.advanced.some(label => visibleLabelMatches(item.label, label)))) {
     return true;
@@ -675,6 +722,15 @@ async function ensureWorkAdvancedPanel(page: PageLike): Promise<boolean> {
   }
   await page.waitForTimeout?.(200);
   return (await readConfigurationPanel(page)).axisRows.length > 0;
+}
+
+async function ensureChatAdvancedPanel(page: PageLike, items: MenuItem[]): Promise<boolean> {
+  const advanced = items.filter(item => menuItemMatchesConfigurationAxis(item, "advanced"));
+  if (advanced.length !== 1 || !await clickVisibleMenuItem(page, advanced[0]!)) {
+    return false;
+  }
+  await page.waitForTimeout?.(200);
+  return compactChatMenuLooksRecognized(await readConfigurationPanel(page));
 }
 
 async function readConfigurationPanel(page: PageLike): Promise<ConfigurationPanelSnapshot> {
@@ -736,11 +792,7 @@ async function readConfigurationPanel(page: PageLike): Promise<ConfigurationPane
       "main form, main [data-testid*='composer' i], main [class*='composer' i]"
     ));
     const main = document.querySelector("main");
-    const openerRoots = Array.from(new Set<Element>([
-      ...composerRoots,
-      ...(main === null ? [] : [main])
-    ]));
-    const openerCandidates = Array.from(new Set(openerRoots.flatMap(root =>
+    const openerCandidatesFrom = (roots: Element[]) => Array.from(new Set(roots.flatMap(root =>
       Array.from(root.querySelectorAll("button, [role='button']"))
     )))
       .filter(visible)
@@ -751,9 +803,13 @@ async function readConfigurationPanel(page: PageLike): Promise<ConfigurationPane
           testId: control.getAttribute("data-testid") ?? ""
         };
       })
-      .filter(item => !/send|voice|microphone|attach|upload|add files|plus/i.test(`${item.label} ${item.testId}`))
+      .filter(item => !/send|voice|microphone|attach|upload|add files|plus|feedback|copy|share|edit|more actions/i.test(`${item.label} ${item.testId}`))
       .filter(item => /model-switcher|model-selector|mode-selector/i.test(item.testId)
         || /\b(?:gpt|sol|luna|terra|instant|medium|high|extra high|pro|thinking|extended|light|standard|fast)\b/i.test(item.label));
+    const scopedOpenerCandidates = openerCandidatesFrom(composerRoots);
+    const openerCandidates = scopedOpenerCandidates.length > 0
+      ? scopedOpenerCandidates
+      : openerCandidatesFrom(main === null ? [] : [main]);
     const result: ConfigurationPanelSnapshot = {
       axisRows,
       advancedVisible: axisRows.length > 0
@@ -763,6 +819,60 @@ async function readConfigurationPanel(page: PageLike): Promise<ConfigurationPane
     }
     return result;
   }, localeLabels.configurationAxes).catch(() => ({ axisRows: [], advancedVisible: false }));
+}
+
+function compactChatMenuLooksRecognized(panel: ConfigurationPanelSnapshot): boolean {
+  const openerLabel = panel.openerLabel;
+  if (!isProConfigurationOpener(openerLabel)) {
+    return false;
+  }
+  const axes = new Set(panel.axisRows.map(row => row.axis));
+  return axes.has("model") && axes.has("effort");
+}
+
+function compactChatRootLooksRecognized(
+  panel: ConfigurationPanelSnapshot,
+  items: MenuItem[]
+): boolean {
+  return isProConfigurationOpener(panel.openerLabel)
+    && panel.axisRows.length === 0
+    && items.some(item => /\bpower\b/i.test(`${item.label} ${item.ariaLabel ?? ""}`))
+    && items.some(item => menuItemMatchesConfigurationAxis(item, "advanced"));
+}
+
+function isProConfigurationOpener(label: string | undefined): boolean {
+  return label !== undefined
+    && localeLabels.configurationOptions.pro.some(candidate => visibleLabelMatches(label, candidate));
+}
+
+function menuItemMatchesConfigurationAxis(
+  item: MenuItem,
+  axis: "advanced"
+): boolean {
+  return localeLabels.configurationAxes[axis].some(label =>
+    visibleLabelMatches(item.label, label)
+    || (item.ariaLabel !== undefined && visibleLabelMatches(item.ariaLabel, label)));
+}
+
+function inferExperienceFromConfigurationPanel(
+  panel: ConfigurationPanelSnapshot,
+  items: MenuItem[]
+): ChatGPTExperience {
+  if (compactChatMenuLooksRecognized(panel)) {
+    return "chat";
+  }
+  if (compactChatRootLooksRecognized(panel, items)) {
+    return "chat";
+  }
+  if (chatMenuLooksSimplified(items)) {
+    return "chat";
+  }
+  const axes = new Set(panel.axisRows.map(row => row.axis));
+  if (axes.has("speed") || items.some(item =>
+    localeLabels.configurationAxes.advanced.some(label => visibleLabelMatches(item.label, label)))) {
+    return "work";
+  }
+  return "unknown";
 }
 
 async function findWorkAxisRow(page: PageLike, axis: ConfigurationAxis): Promise<LocatorLike | undefined> {
@@ -784,6 +894,10 @@ async function clickVisibleMenuItem(page: PageLike, item: MenuItem): Promise<boo
     return true;
   }
   for (const role of ["menuitemradio", "menuitem", "option"]) {
+    if (item.ariaLabel !== undefined
+      && await clickIfUnique(page.getByRole?.(role, { name: item.ariaLabel, exact: true }))) {
+      return true;
+    }
     if (await clickIfUnique(page.getByRole?.(role, { name: item.label, exact: true }))) {
       return true;
     }

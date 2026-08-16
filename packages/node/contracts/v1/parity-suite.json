@@ -267,6 +267,7 @@
       "summary": "Chat and Work experience detection, selector profiles, verified configuration, task lifecycle, and compatibility aliases.",
       "fixtures": [
         "surface-chat-legacy.json",
+        "surface-chat-compact.json",
         "surface-chat-simplified.json",
         "surface-sidebar-false-positive.json",
         "surface-work-advanced.json",
@@ -496,7 +497,7 @@
     },
     "experience.detect": {
       "surface": "chat-work-surface-control",
-      "fixtures": ["surface-chat-simplified.json", "surface-work-basic.json", "surface-sidebar-false-positive.json"],
+      "fixtures": ["surface-chat-compact.json", "surface-chat-simplified.json", "surface-work-basic.json", "surface-sidebar-false-positive.json"],
       "nodeTests": ["tests/unit/surface-profiles.test.ts", "tests/unit/backend-conformance.test.ts"],
       "pythonTests": ["tests/test_primitives.py", "tests/test_async_client.py", "tests/test_surface_models.py"],
       "docs": ["references/backend-protocol.md", "references/python-parity.md", "../../README.md"]
@@ -510,14 +511,14 @@
     },
     "configuration.inspect": {
       "surface": "chat-work-surface-control",
-      "fixtures": ["surface-chat-legacy.json", "surface-chat-simplified.json", "surface-work-basic.json", "surface-work-advanced.json"],
+      "fixtures": ["surface-chat-legacy.json", "surface-chat-compact.json", "surface-chat-simplified.json", "surface-work-basic.json", "surface-work-advanced.json"],
       "nodeTests": ["tests/unit/surface-profiles.test.ts", "tests/unit/client.test.ts"],
       "pythonTests": ["tests/test_primitives.py", "tests/test_async_client.py", "tests/test_surface_models.py"],
       "docs": ["references/backend-protocol.md", "references/python-parity.md", "../../README.md"]
     },
     "configuration.apply": {
       "surface": "chat-work-surface-control",
-      "fixtures": ["surface-chat-simplified.json", "surface-work-advanced.json", "command-descriptors.json"],
+      "fixtures": ["surface-chat-compact.json", "surface-chat-simplified.json", "surface-work-advanced.json", "command-descriptors.json"],
       "nodeTests": ["tests/unit/surface-profiles.test.ts", "tests/unit/modes.test.ts", "tests/unit/client.test.ts"],
       "pythonTests": ["tests/test_primitives.py", "tests/test_async_client.py", "tests/test_surface_models.py"],
       "docs": ["references/backend-protocol.md", "references/python-parity.md", "../../README.md"]

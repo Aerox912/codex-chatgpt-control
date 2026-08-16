@@ -28,6 +28,7 @@ type TestSurfaceProfileFixture = Omit<SurfaceProfileFixture, "panel" | "menuItem
 
 const fixtureNames = [
   "surface-chat-legacy.json",
+  "surface-chat-compact.json",
   "surface-chat-simplified.json",
   "surface-sidebar-false-positive.json",
   "surface-work-basic.json",
@@ -247,6 +248,26 @@ describe("sanitized Chat and Work surface profiles", () => {
     });
   });
 
+  it("keeps compact Chat Advanced controls from being mistaken for Work", () => {
+    const detected = detectExperienceFromSnapshot({
+      url: "https://chatgpt.com/g/g-p-sanitized-project/c/sanitized-chat",
+      composerLabels: ["Chat with ChatGPT"],
+      mainControls: ["Pro", "Show compact options", "Model GPT-5.6 Sol", "Effort Pro"],
+      mainText: ""
+    });
+
+    expect(detected.experience).toBe("chat");
+    expect(detected.selectorProfile).toBe("chat_simplified_v1");
+    expect(detected.evidence).toContainEqual({
+      source: "control",
+      label: "Compact Chat advanced configuration"
+    });
+    expect(detected.evidence).not.toContainEqual({
+      source: "control",
+      label: "Work configuration axes (2/3)"
+    });
+  });
+
   it("opens Work configuration from main when no semantic composer root exists", async () => {
     const page = mainScopedWorkConfigurationPage();
 
@@ -268,6 +289,72 @@ describe("sanitized Chat and Work surface profiles", () => {
       verified: true
     });
     expect(page.configurationOpenCount()).toBe(1);
+  });
+
+  it("opens and inspects the compact Chat Pro menu in a narrow composer", async () => {
+    const page = compactChatConfigurationPage();
+
+    const result = await inspectConfiguration({ page }, {
+      includeOptions: false,
+      timeoutMs: 100
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({
+      experience: "chat",
+      selectorProfile: "chat_simplified_v1",
+      availableAxes: ["intelligence", "model", "effort"],
+      active: {
+        intelligence: "Pro",
+        model: "GPT-5.6 Sol",
+        effort: "Pro"
+      },
+      verified: true
+    });
+    expect(page.configurationOpenCount()).toBe(1);
+    expect(page.advancedOpenCount()).toBe(1);
+  });
+
+  it("strictly verifies a compact Chat configuration without changing it", async () => {
+    const page = compactChatConfigurationPage();
+
+    const result = await applyConfiguration({ page }, {
+      experience: "chat",
+      desired: {
+        model: "GPT-5.6 Sol",
+        intelligence: "Pro",
+        effort: "Pro"
+      },
+      timeoutMs: 100
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.verified).toBe(true);
+    expect(result.data?.selected).toEqual([
+      { axis: "model", requested: "GPT-5.6 Sol", selected: "GPT-5.6 Sol" },
+      { axis: "intelligence", requested: "Pro", selected: "Pro" },
+      { axis: "effort", requested: "Pro", selected: "Pro" }
+    ]);
+    expect(page.configurationOpenCount()).toBe(1);
+    expect(page.advancedOpenCount()).toBe(1);
+  });
+
+  it("reuses an already-open compact Chat root menu", async () => {
+    const page = compactChatConfigurationPage(true);
+
+    const result = await inspectConfiguration({ page }, {
+      includeOptions: false,
+      timeoutMs: 100
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.active).toEqual({
+      intelligence: "Pro",
+      model: "GPT-5.6 Sol",
+      effort: "Pro"
+    });
+    expect(page.configurationOpenCount()).toBe(0);
+    expect(page.advancedOpenCount()).toBe(1);
   });
 
   it("waits for the configuration opener to hydrate after the composer", async () => {
@@ -664,6 +751,110 @@ type MainScopedWorkConfigurationPage = PageLike & {
   advancedOpenCount: () => number;
   configurationOpenCount: () => number;
 };
+
+type CompactChatConfigurationPage = PageLike & {
+  advancedOpenCount: () => number;
+  configurationOpenCount: () => number;
+};
+
+function compactChatConfigurationPage(startOpen = false): CompactChatConfigurationPage {
+  let configurationOpen = startOpen;
+  let configurationOpenCount = 0;
+  let advancedOpen = false;
+  let advancedOpenCount = 0;
+  const opener: LocatorLike = {
+    count: async () => 1,
+    click: async () => {
+      configurationOpen = true;
+      configurationOpenCount += 1;
+    }
+  };
+  const missing: LocatorLike = {
+    count: async () => 0,
+    click: async () => {}
+  };
+  const advanced: LocatorLike = {
+    count: async () => configurationOpen && !advancedOpen ? 1 : 0,
+    click: async () => {
+      advancedOpen = true;
+      advancedOpenCount += 1;
+    }
+  };
+
+  return {
+    advancedOpenCount: () => advancedOpenCount,
+    configurationOpenCount: () => configurationOpenCount,
+    url: () => "https://chatgpt.com/g/g-p-sanitized-project/c/sanitized-chat",
+    title: async () => "ChatGPT",
+    getByRole: (role, options = {}) => {
+      if (role === "button" && options.name === "Pro" && options.exact === true) return opener;
+      if (role === "menuitem" && options.name === "Show advanced options" && options.exact === true) return advanced;
+      return missing;
+    },
+    evaluate: async <T, A = unknown>(
+      fn: (arg: A) => T | Promise<T>,
+      _arg?: A
+    ): Promise<T> => {
+      const source = String(fn);
+      if (source.includes("composerRoots") && source.includes("mainControls")) {
+        const mainControls = advancedOpen
+          ? ["Pro", "Pro feedback", "Show compact options", "Model GPT-5.6 Sol", "Effort Pro"]
+          : ["Pro", "Pro feedback"];
+        if (!source.includes("mainTextboxes") || !source.includes("wantedComposerLabels")) {
+          return {
+            composerLabels: [],
+            mainControls,
+            mainText: "",
+            selectedSurfaceLabels: []
+          } as T;
+        }
+        return {
+          composerLabels: ["Ask ChatGPT"],
+          mainControls,
+          mainText: "",
+          selectedSurfaceLabels: []
+        } as T;
+      }
+      if (source.includes("normalizedAxes") && source.includes("axisRows")) {
+        if (!source.includes("scopedOpenerCandidates")) {
+          throw new Error("Configuration opener discovery did not prioritize composer controls.");
+        }
+        return (configurationOpen && advancedOpen
+          ? {
+              openerLabel: "Pro",
+              axisRows: [
+                { axis: "model", label: "Model GPT-5.6 Sol", value: "GPT-5.6 Sol" },
+                { axis: "effort", label: "Effort Pro", value: "Pro" }
+              ],
+              advancedVisible: true
+            }
+          : {
+              openerLabel: "Pro",
+              axisRows: [],
+              advancedVisible: false
+            }) as T;
+      }
+      if (source.includes("allRoleNodes") && source.includes("scopedRoleNodes")) {
+        const items = configurationOpen
+          ? advancedOpen ? [
+              { label: "Show compact options", normalized: "show compact options", role: "menuitem" },
+              { label: "Model GPT-5.6 Sol", normalized: "model gpt-5.6 sol", role: "menuitem" },
+              { label: "Effort Pro", normalized: "effort pro", role: "menuitem" }
+            ] : [
+              { label: "Power", normalized: "power", role: "menuitem", ariaLabel: "Power" },
+              { label: "Advanced", normalized: "advanced", role: "menuitem", ariaLabel: "Show advanced options" }
+            ]
+          : [];
+        return { items, labels: [], split: false } as T;
+      }
+      if (source.includes("matches.length !== 1") && source.includes("model-switcher")) {
+        return false as T;
+      }
+      throw new Error(`Unexpected evaluate call: ${source}`);
+    },
+    waitForTimeout: async () => {}
+  };
+}
 
 function mainScopedWorkConfigurationPage(
   delayedPanelReads = 0,

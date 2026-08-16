@@ -97,6 +97,11 @@ const submitted = await chatgpt.runner.run(reviewer, {
 
 The configuration is a visible preference, not a guaranteed underlying model identifier. Inspect the `configuration` sequence step and require `verified: true` before claiming that the requested setting was active. If the account does not expose that option, report the structured blocker and visible candidates.
 
+On a narrow Chat composer, a closed selector may announce only `Pro`. Inspect it
+before submission: the SDK opens the composer-scoped control without changing
+the selection and reads the visible model and effort rows. Do not conclude that
+GPT-5.6 Sol or the 5-of-5 state is unavailable from the collapsed label alone.
+
 For long answers, submit once and poll the same thread:
 
 ```js

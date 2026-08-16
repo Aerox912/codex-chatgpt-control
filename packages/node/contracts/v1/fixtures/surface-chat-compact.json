@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "chatgpt.browser_control.surface_profile.v1",
+  "id": "chat-compact-pro-en",
+  "observedAt": "2026-08-16",
+  "provenance": "Sanitized profile derived from a compact project-conversation composer where only the current Pro value is visible until its configuration menu opens.",
+  "locale": "en-US",
+  "region": "not-recorded",
+  "accountScope": "not-recorded",
+  "planScope": "not-recorded",
+  "workspaceScope": "not-recorded",
+  "supportState": "current",
+  "snapshot": {
+    "url": "https://chatgpt.com/g/g-p-sanitized-project/c/sanitized-chat",
+    "composerLabels": ["Ask ChatGPT"],
+    "mainControls": ["Pro", "Pro feedback", "Send prompt"],
+    "mainText": ""
+  },
+  "panel": {
+    "openerLabel": "Pro",
+    "axisRows": [
+      { "axis": "model", "label": "Model GPT-5.6 Sol", "value": "GPT-5.6 Sol" },
+      { "axis": "effort", "label": "Effort Pro", "value": "Pro" }
+    ],
+    "advancedVisible": true
+  },
+  "menuItems": [
+    { "label": "Show compact options", "normalized": "show compact options", "role": "menuitem" },
+    { "label": "Model GPT-5.6 Sol", "normalized": "model gpt-5.6 sol", "role": "menuitem" },
+    { "label": "Effort Pro", "normalized": "effort pro", "role": "menuitem" }
+  ],
+  "expected": {
+    "experience": "chat",
+    "selectorProfile": "chat_simplified_v1",
+    "availableAxes": ["intelligence", "model", "effort"],
+    "active": {
+      "intelligence": "Pro",
+      "model": "GPT-5.6 Sol",
+      "effort": "Pro"
+    }
+  }
+}

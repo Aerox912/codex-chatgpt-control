@@ -227,6 +227,11 @@
       "schema": "surfaceProfile"
     },
     {
+      "case": "surface_chat_compact",
+      "file": "surface-chat-compact.json",
+      "schema": "surfaceProfile"
+    },
+    {
       "case": "surface_chat_simplified",
       "file": "surface-chat-simplified.json",
       "schema": "surfaceProfile"

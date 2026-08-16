@@ -119,8 +119,12 @@ The backend must support:
 
 `experience.detect` and `configuration.inspect` are non-mutating capability
 discovery. `configuration.apply` is strict by default and must verify the final
-visible state. `work.start` defaults to a fresh task and must not append to a
-loaded task unless the caller explicitly passes `newTask: false`. A partial or
+visible state. In a compact Chat composer, the closed configuration control may
+show only the current value, such as `Pro`. Inspection scopes that opener to the
+composer, opens it without changing the selection, and reads the model and
+effort rows before deciding which axes are available. `work.start` defaults to
+a fresh task and must not append to a loaded task unless the caller explicitly
+passes `newTask: false`. A partial or
 timeout Work result is recovered through status/wait/read on the same task, not
 by resubmitting the original prompt. New Work tasks accept the same `project`
 target as `threads.new`; project routing is verified before prompt submission.

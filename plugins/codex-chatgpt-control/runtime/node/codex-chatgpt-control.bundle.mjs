@@ -7912,7 +7912,9 @@ async function enumerateVisibleMenuItems(page) {
       };
       const toItem = (node) => {
         const element = node;
-        const label = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim();
+        const ariaLabel = element.getAttribute("aria-label");
+        const visibleText = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim();
+        const label = visibleText.length > 0 ? visibleText : ariaLabel?.trim() ?? "";
         const item = { label };
         const role = element.getAttribute("role");
         if (role !== null) item.role = role;
@@ -7925,7 +7927,6 @@ async function enumerateVisibleMenuItems(page) {
         if (element.getAttribute("aria-haspopup") === "menu") item.hasPopup = true;
         const testId = element.getAttribute("data-testid");
         if (testId !== null) item.testId = testId;
-        const ariaLabel = element.getAttribute("aria-label");
         if (ariaLabel !== null) item.ariaLabel = ariaLabel;
         return item;
       };
@@ -8152,7 +8153,10 @@ function detectExperienceFromSnapshot(snapshot) {
     evidence.push({ source: "composer", label });
   }
   const workAxisCount = ["model", "effort", "speed"].filter((axis) => hasAnyLabel(controls, localeLabels.configurationAxes[axis])).length;
-  if (workAxisCount >= 2) {
+  const compactChatAdvanced = chatComposer.length > 0 && workAxisCount === 2 && !hasAnyLabel(controls, localeLabels.configurationAxes.speed) && hasExactLabel(controls, localeLabels.configurationOptions.pro);
+  if (compactChatAdvanced) {
+    evidence.push({ source: "control", label: "Compact Chat advanced configuration" });
+  } else if (workAxisCount >= 2) {
     evidence.push({ source: "control", label: `Work configuration axes (${workAxisCount}/3)` });
   }
   const workConfigurationOpener = controls.some(
@@ -8174,8 +8178,8 @@ function detectExperienceFromSnapshot(snapshot) {
   if (containsAny(mainText, ["work on something else", "work on anything"])) {
     evidence.push({ source: "heading", label: "Work composer copy" });
   }
-  const workScore = workComposer.length * 4 + (workSurfaceSelected ? 10 : 0) + (workAxisCount >= 2 ? 4 : 0) + (workConfigurationOpener ? 6 : 0) + (/\/work(?:\/|$|\?)/.test(url) ? 3 : 0) + (containsAny(mainText, ["work on something else", "work on anything"]) ? 2 : 0);
-  const chatScore = chatComposer.length * 4 + (chatSurfaceSelected ? 10 : 0);
+  const workScore = workComposer.length * 4 + (workSurfaceSelected ? 10 : 0) + (workAxisCount >= 2 && !compactChatAdvanced ? 4 : 0) + (workConfigurationOpener ? 6 : 0) + (/\/work(?:\/|$|\?)/.test(url) ? 3 : 0) + (containsAny(mainText, ["work on something else", "work on anything"]) ? 2 : 0);
+  const chatScore = chatComposer.length * 4 + (chatSurfaceSelected ? 10 : 0) + (compactChatAdvanced ? 4 : 0);
   let experience = "unknown";
   let confidence = "low";
   if (workScore > chatScore && workScore >= 4) {
@@ -8193,7 +8197,7 @@ async function readSurfaceSnapshot(page) {
   if (typeof page.evaluate !== "function") {
     return { url, composerLabels: [], mainControls: [], mainText: "", selectedSurfaceLabels: [] };
   }
-  const snapshot = await page.evaluate((surfaceOptionLabels) => {
+  const snapshot = await page.evaluate((labels) => {
     const visible = (element) => {
       const html = element;
       const rect = html.getBoundingClientRect?.();
@@ -8217,16 +8221,27 @@ async function readSurfaceSnapshot(page) {
     };
     const normalize = (value) => value.replace(/\s+/g, " ").trim();
     const normalizeComparable = (value) => normalize(value).toLocaleLowerCase();
-    const wantedSurfaceLabels = new Set(surfaceOptionLabels.map(normalizeComparable));
+    const wantedSurfaceLabels = new Set(labels.surfaceOptions.map(normalizeComparable));
+    const wantedComposerLabels = new Set(labels.composerTextboxes.map(normalizeComparable));
     const composerRoots = Array.from(document.querySelectorAll(
       "main form, main [data-testid*='composer' i], main [class*='composer' i]"
     ));
-    const composerNodes = composerRoots.flatMap((root) => [
-      root,
-      ...Array.from(root.querySelectorAll("textarea, [contenteditable='true'], [role='textbox'], input"))
-    ]);
-    const composerLabels = Array.from(new Set(composerNodes.filter(visible).map(labelFor).map(normalize).filter(Boolean))).slice(0, 16);
     const main = document.querySelector("main");
+    const mainTextboxes = main === null ? [] : Array.from(main.querySelectorAll(
+      "textarea, [contenteditable='true'], [role='textbox'], input:not([type]), input[type='text']"
+    ));
+    const composerNodes = Array.from(/* @__PURE__ */ new Set([
+      ...composerRoots.flatMap((root) => [
+        root,
+        ...Array.from(root.querySelectorAll("textarea, [contenteditable='true'], [role='textbox'], input"))
+      ]),
+      ...mainTextboxes
+    ]));
+    const observedComposerLabels = Array.from(new Set(composerNodes.filter(visible).map(labelFor).map(normalize).filter(Boolean)));
+    const composerLabels = Array.from(/* @__PURE__ */ new Set([
+      ...observedComposerLabels.filter((label) => wantedComposerLabels.has(normalizeComparable(label))),
+      ...observedComposerLabels
+    ])).slice(0, 16);
     const overlayRoots = Array.from(document.querySelectorAll(
       "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper], [data-radix-menu-content]"
     )).filter(visible);
@@ -8243,10 +8258,16 @@ async function readSurfaceSnapshot(page) {
       "[role='radio'][aria-checked='true'], [role='radio'][data-state='checked'], input[type='radio']:checked"
     )).filter(visible).map(labelFor).map(normalize).filter((label) => wantedSurfaceLabels.has(normalizeComparable(label))))).slice(0, 4);
     return { composerLabels, mainControls, mainText, selectedSurfaceLabels };
-  }, [
-    ...localeLabels.experienceOptions.chat,
-    ...localeLabels.experienceOptions.work
-  ]).catch(() => ({ composerLabels: [], mainControls: [], mainText: "", selectedSurfaceLabels: [] }));
+  }, {
+    surfaceOptions: [
+      ...localeLabels.experienceOptions.chat,
+      ...localeLabels.experienceOptions.work
+    ],
+    composerTextboxes: [
+      ...localeLabels.composerTextbox,
+      ...localeLabels.workComposerTextbox
+    ]
+  }).catch(() => ({ composerLabels: [], mainControls: [], mainText: "", selectedSurfaceLabels: [] }));
   return { url, ...snapshot };
 }
 function profileFromSnapshot(snapshot, experience) {
@@ -8343,6 +8364,10 @@ function hasAnyLabel(normalizedHaystack, candidates) {
       (candidate) => label === candidate || visibleLabelMatches(label, candidate)
     )
   );
+}
+function hasExactLabel(normalizedHaystack, candidates) {
+  const normalizedCandidates = new Set(candidates.map(normalizeForLabelMatch));
+  return normalizedHaystack.some((label) => normalizedCandidates.has(label));
 }
 function containsAny(normalizedText, candidates) {
   return candidates.map(normalizeForLabelMatch).some((candidate) => normalizedText.includes(candidate));
@@ -9029,7 +9054,20 @@ async function inspectConfiguration(env, args = {}) {
     if (!detected.ok || detected.data === void 0) {
       return forwardFailure2(detected);
     }
-    if (args.experience !== void 0 && detected.data.experience !== args.experience) {
+    const discoveryExperience = detected.data.experience === "unknown" ? args.experience ?? "unknown" : detected.data.experience;
+    const rootOpened = await waitForConfigurationRoot(
+      page,
+      discoveryExperience,
+      args.timeoutMs
+    );
+    if (rootOpened) {
+      await page.waitForTimeout?.(150);
+    }
+    let panel = await readConfigurationPanel(page);
+    let rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
+    const inferredExperience = detected.data.experience === "unknown" ? inferExperienceFromConfigurationPanel(panel, rootItems) : detected.data.experience;
+    const experience = inferredExperience === "unknown" ? discoveryExperience : inferredExperience;
+    if (args.experience !== void 0 && experience !== args.experience) {
       return {
         ok: false,
         status: "unsupported",
@@ -9038,30 +9076,28 @@ async function inspectConfiguration(env, args = {}) {
           kind: "selector_drift",
           code: "experience_mismatch",
           fieldPath: "experience",
-          message: `Configuration inspection expected ${args.experience}, but the visible composer is ${detected.data.experience}. Call experience.open first or omit the expected experience.`,
+          message: `Configuration inspection expected ${args.experience}, but the visible composer is ${experience}. Call experience.open first or omit the expected experience.`,
           resumable: true
         },
         context: await contextFromPage(page, {
-          experience: detected.data.experience,
+          experience,
           selectorProfile: detected.data.selectorProfile
         })
       };
     }
-    const experience = detected.data.experience;
-    const rootOpened = experience !== "unknown" && await waitForConfigurationRoot(
-      page,
-      experience,
-      args.timeoutMs
-    );
-    if (rootOpened) {
+    const chatAdvancedRequired = experience === "chat" && rootOpened && compactChatRootLooksRecognized(panel, rootItems);
+    const chatAdvancedOpened = !chatAdvancedRequired || await ensureChatAdvancedPanel(page, rootItems);
+    if (chatAdvancedRequired && chatAdvancedOpened) {
       await page.waitForTimeout?.(150);
+      panel = await readConfigurationPanel(page);
+      rootItems = await enumerateVisibleMenuItems(page);
     }
     const workAdvancedOpened = experience !== "work" || rootOpened && await ensureWorkAdvancedPanel(page);
     if (experience === "work" && workAdvancedOpened) {
       await page.waitForTimeout?.(150);
+      panel = await readConfigurationPanel(page);
+      rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
     }
-    const panel = await readConfigurationPanel(page);
-    const rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
     const data = configurationInspectionFromSurface(
       experience,
       detected.data.selectorProfile,
@@ -9085,6 +9121,9 @@ async function inspectConfiguration(env, args = {}) {
     }
     if (experience === "work" && rootOpened && !workAdvancedOpened) {
       warnings.push("The Work configuration menu opened, but its Advanced model, effort, and speed controls could not be made visible.");
+    }
+    if (chatAdvancedRequired && !chatAdvancedOpened) {
+      warnings.push("The compact Chat configuration menu opened, but its Advanced model and effort controls could not be made visible.");
     }
     if (!data.verified) {
       warnings.push("The visible configuration could not be verified from a recognized Chat or Work selector profile.");
@@ -9229,23 +9268,35 @@ function configurationInspectionFromSurface(experience, detectedProfile, evidenc
     }
     selectorProfile = panel.advancedVisible ? "work_advanced_v1" : "work_basic_v1";
   } else if (experience === "chat") {
-    const simplified = chatMenuLooksSimplified(menuItems);
+    const compact = compactChatMenuLooksRecognized(panel);
+    const simplified = compact || chatMenuLooksSimplified(menuItems);
     selectorProfile = simplified ? "chat_simplified_v1" : detectedProfile;
-    const axis = simplified ? "intelligence" : "effort";
-    if (menuItems.length > 0 || panel.openerLabel !== void 0) {
-      availableAxes.push(axis);
-    }
-    if (panel.openerLabel !== void 0) {
-      active[axis] = panel.openerLabel;
-    }
-    const chatOptions = menuItems.filter((item) => !isConfigurationAxisRow(item.label)).map(menuItemToOption);
-    if (chatOptions.length > 0) {
-      options[axis] = chatOptions;
-    }
-    const modelRows = menuItems.filter((item) => /^gpt[\s-]/i.test(item.label) || item.hasPopup === true);
-    if (modelRows.length > 0) {
-      availableAxes.push("modelVersion");
-      options.modelVersion = modelRows.map(menuItemToOption);
+    if (compact) {
+      if (panel.openerLabel !== void 0) {
+        availableAxes.push("intelligence");
+        active.intelligence = panel.openerLabel;
+      }
+      for (const row of panel.axisRows) {
+        if (!availableAxes.includes(row.axis)) availableAxes.push(row.axis);
+        if (row.value !== void 0 && row.value.length > 0) active[row.axis] = row.value;
+      }
+    } else {
+      const axis = simplified ? "intelligence" : "effort";
+      if (menuItems.length > 0 || panel.openerLabel !== void 0) {
+        availableAxes.push(axis);
+      }
+      if (panel.openerLabel !== void 0) {
+        active[axis] = panel.openerLabel;
+      }
+      const chatOptions = menuItems.filter((item) => !isConfigurationAxisRow(item.label)).map(menuItemToOption);
+      if (chatOptions.length > 0) {
+        options[axis] = chatOptions;
+      }
+      const modelRows = menuItems.filter((item) => /^gpt[\s-]/i.test(item.label) || item.hasPopup === true);
+      if (modelRows.length > 0) {
+        availableAxes.push("modelVersion");
+        options.modelVersion = modelRows.map(menuItemToOption);
+      }
     }
   }
   return {
@@ -9401,6 +9452,9 @@ async function openConfigurationRoot(page, experience) {
     return true;
   }
   const existingItems = await enumerateVisibleMenuItems(page).catch(() => []);
+  if (compactChatRootLooksRecognized(existing, existingItems)) {
+    return true;
+  }
   if (configurationMenuLooksRecognized(existingItems, experience, existing.openerLabel)) {
     return true;
   }
@@ -9476,6 +9530,10 @@ function configurationMenuLooksRecognized(items, experience, openerLabel) {
   if (items.some((item) => /(?:model|mode|effort|speed)-(?:switcher|selector)|model-switcher/i.test(item.testId ?? ""))) {
     return true;
   }
+  const visibleAxisCount = ["model", "intelligence", "effort", "speed"].filter((axis) => items.some((item) => (localeLabels.configurationAxes[axis] ?? []).some((label) => visibleLabelMatches(item.label, label)))).length;
+  if (visibleAxisCount >= 2) {
+    return true;
+  }
   if (experience === "work" && items.some((item) => localeLabels.configurationAxes.advanced.some((label) => visibleLabelMatches(item.label, label)))) {
     return true;
   }
@@ -9517,6 +9575,14 @@ async function ensureWorkAdvancedPanel(page) {
   }
   await page.waitForTimeout?.(200);
   return (await readConfigurationPanel(page)).axisRows.length > 0;
+}
+async function ensureChatAdvancedPanel(page, items) {
+  const advanced = items.filter((item) => menuItemMatchesConfigurationAxis(item, "advanced"));
+  if (advanced.length !== 1 || !await clickVisibleMenuItem(page, advanced[0])) {
+    return false;
+  }
+  await page.waitForTimeout?.(200);
+  return compactChatMenuLooksRecognized(await readConfigurationPanel(page));
 }
 async function readConfigurationPanel(page) {
   if (typeof page.evaluate !== "function") {
@@ -9574,11 +9640,7 @@ async function readConfigurationPanel(page) {
       "main form, main [data-testid*='composer' i], main [class*='composer' i]"
     ));
     const main = document.querySelector("main");
-    const openerRoots = Array.from(/* @__PURE__ */ new Set([
-      ...composerRoots,
-      ...main === null ? [] : [main]
-    ]));
-    const openerCandidates = Array.from(new Set(openerRoots.flatMap(
+    const openerCandidatesFrom = (roots2) => Array.from(new Set(roots2.flatMap(
       (root) => Array.from(root.querySelectorAll("button, [role='button']"))
     ))).filter(visible).map((control) => {
       const html = control;
@@ -9586,7 +9648,9 @@ async function readConfigurationPanel(page) {
         label: normalize(control.getAttribute("aria-label") ?? html.innerText ?? control.textContent ?? ""),
         testId: control.getAttribute("data-testid") ?? ""
       };
-    }).filter((item) => !/send|voice|microphone|attach|upload|add files|plus/i.test(`${item.label} ${item.testId}`)).filter((item) => /model-switcher|model-selector|mode-selector/i.test(item.testId) || /\b(?:gpt|sol|luna|terra|instant|medium|high|extra high|pro|thinking|extended|light|standard|fast)\b/i.test(item.label));
+    }).filter((item) => !/send|voice|microphone|attach|upload|add files|plus|feedback|copy|share|edit|more actions/i.test(`${item.label} ${item.testId}`)).filter((item) => /model-switcher|model-selector|mode-selector/i.test(item.testId) || /\b(?:gpt|sol|luna|terra|instant|medium|high|extra high|pro|thinking|extended|light|standard|fast)\b/i.test(item.label));
+    const scopedOpenerCandidates = openerCandidatesFrom(composerRoots);
+    const openerCandidates = scopedOpenerCandidates.length > 0 ? scopedOpenerCandidates : openerCandidatesFrom(main === null ? [] : [main]);
     const result = {
       axisRows,
       advancedVisible: axisRows.length > 0
@@ -9596,6 +9660,39 @@ async function readConfigurationPanel(page) {
     }
     return result;
   }, localeLabels.configurationAxes).catch(() => ({ axisRows: [], advancedVisible: false }));
+}
+function compactChatMenuLooksRecognized(panel) {
+  const openerLabel = panel.openerLabel;
+  if (!isProConfigurationOpener(openerLabel)) {
+    return false;
+  }
+  const axes = new Set(panel.axisRows.map((row) => row.axis));
+  return axes.has("model") && axes.has("effort");
+}
+function compactChatRootLooksRecognized(panel, items) {
+  return isProConfigurationOpener(panel.openerLabel) && panel.axisRows.length === 0 && items.some((item) => /\bpower\b/i.test(`${item.label} ${item.ariaLabel ?? ""}`)) && items.some((item) => menuItemMatchesConfigurationAxis(item, "advanced"));
+}
+function isProConfigurationOpener(label) {
+  return label !== void 0 && localeLabels.configurationOptions.pro.some((candidate) => visibleLabelMatches(label, candidate));
+}
+function menuItemMatchesConfigurationAxis(item, axis) {
+  return localeLabels.configurationAxes[axis].some((label) => visibleLabelMatches(item.label, label) || item.ariaLabel !== void 0 && visibleLabelMatches(item.ariaLabel, label));
+}
+function inferExperienceFromConfigurationPanel(panel, items) {
+  if (compactChatMenuLooksRecognized(panel)) {
+    return "chat";
+  }
+  if (compactChatRootLooksRecognized(panel, items)) {
+    return "chat";
+  }
+  if (chatMenuLooksSimplified(items)) {
+    return "chat";
+  }
+  const axes = new Set(panel.axisRows.map((row) => row.axis));
+  if (axes.has("speed") || items.some((item) => localeLabels.configurationAxes.advanced.some((label) => visibleLabelMatches(item.label, label)))) {
+    return "work";
+  }
+  return "unknown";
 }
 async function findWorkAxisRow(page, axis) {
   const labels = axis === "modelVersion" ? [] : localeLabels.configurationAxes[axis] ?? [];
@@ -9615,6 +9712,9 @@ async function clickVisibleMenuItem(page, item) {
     return true;
   }
   for (const role of ["menuitemradio", "menuitem", "option"]) {
+    if (item.ariaLabel !== void 0 && await clickIfUnique3(page.getByRole?.(role, { name: item.ariaLabel, exact: true }))) {
+      return true;
+    }
     if (await clickIfUnique3(page.getByRole?.(role, { name: item.label, exact: true }))) {
       return true;
     }
