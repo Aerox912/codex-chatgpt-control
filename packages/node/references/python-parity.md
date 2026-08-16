@@ -34,6 +34,10 @@ Incomplete response capture is also shared contract behavior. Python must preser
 
 For long-answer polling, Python forwards `response_content="metadata"` to the shared wire field `responseContent: "metadata"` on `messages.wait`. The TypeScript backend then omits assistant text from wait results and returns compact metadata such as `data.responseChars` and `data.responseSha256`; Python must preserve those fields without trying to reconstruct omitted content.
 
+Python exposes the explicit stop primitive as `chatgpt.messages.stop(confirm_stop=True)`, mapping to `messages.stop` with `confirmStop: true`. The TypeScript backend owns visible-control selection, the single operation deadline, and inactive-state verification; Python adds no independent browser behavior.
+
+Python preserves the backend's indeterminate Stop result exactly: `status == "timeout"`, blocker code `stop_generation_unverified`, and `resumable == False`. Because the original click may still complete, Python callers must inspect the visible state and must not retry automatically.
+
 Generated-image behavior stays owned by the TypeScript runtime. Python exposes
 the same backend commands through `chatgpt.artifacts.list_latest(...)`,
 `chatgpt.artifacts.wait(...)`, and `chatgpt.artifacts.download_latest(...)`.
@@ -62,6 +66,8 @@ the shared `blocker-explanation-profiles.json` and
 Python does not reinterpret attachment paths. It sends the path string to the Node backend, and the backend validates the path against its own host operating system. Attachment paths must be absolute on the backend host. On macOS/Linux/WSL backends, use POSIX paths such as `/example/user/file.pdf` or `/mnt/c/example/user/file.pdf`. On Windows backends, use fully qualified paths such as `C:\Users\you\file.pdf` or UNC paths such as `\\server\share\file.pdf`. Drive-relative paths, root-relative paths, and Windows-looking paths sent to a POSIX backend are rejected before filesystem access.
 
 Python exposes the backend-visible `files.preflight` command as `chatgpt.files.preflight(...)`. It returns the same `CommandResult` as TypeScript and can be decoded with `FilePreflightData` when callers want typed metadata. The command validates paths, readability, file-vs-directory status, size limits, duplicate basenames, duplicate resolved paths, zero-byte files, and extension-based MIME/category guesses without opening ChatGPT or reading file contents for MIME detection. Zero-byte files are blocked before browser interaction. Optional `include_hashes=True` / wire `includeHashes: true` adds SHA-256 metadata to `FilePreflightFile.sha256` for local diagnostics; file contents are never returned.
+
+Python also preserves a post-handoff attachment uncertainty as `status == "partial"`, blocker code `attachment_outcome_indeterminate`, and `resumable == False`. Callers must inspect the current composer, must not submit, and must not automatically repeat the file handoff.
 
 ## Project Sources
 
@@ -211,8 +217,8 @@ python scripts/live_smoke.py --mode browser-bridge
 When the live backend is hosted inside the Codex Chrome plugin runtime, do not test bridge availability from a normal shell or an unbootstrapped Node REPL. First initialize the Chrome runtime:
 
 ```js
-const { setupBrowserRuntime } = await import("/example/user/.codex/plugins/cache/openai-bundled/chrome/latest/scripts/browser-client.mjs");
-await setupBrowserRuntime({ globals: globalThis });
+const { setupBrowserRuntime } = await import("/absolute/path/to/the/current/chrome/scripts/browser-client.mjs");
+globalThis.agent = await setupBrowserRuntime();
 globalThis.browser = await agent.browsers.get("extension");
 ```
 

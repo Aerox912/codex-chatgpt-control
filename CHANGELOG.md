@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.1-alpha.2
+
+- Adds an explicit `messages.stop` primitive with exact confirmation, unique
+  visible-control selection, one operation deadline, and verified inactive
+  postconditions across Node, Python, sequences, contracts, and plugin docs.
+- Hardens file attachment around a single composer-scoped input, fresh visible
+  evidence, one shared timeout, approved chooser APIs, and localized upload and
+  download labels; removes the page-script `DataTransfer` fallback.
+- Enforces strict HTTPS ChatGPT origins before and after navigation, honors
+  user-open tabs for explicit reuse, and scopes lifecycle, blocker, and mode
+  evidence away from hidden or quoted content.
+- Preserves the reviewed Power/Advanced locale sweep while rejecting unsafe
+  generic or send-colliding stop labels, makes fixture regeneration portable
+  and CI-checked on Windows, refreshes plugin bundles, patches audited
+  transitive dependencies, and makes release helpers use the active Node/npm.
+
 ## 0.5.1-alpha.1
 
 - Fixes current Chat/Work pane switching by selecting the visible

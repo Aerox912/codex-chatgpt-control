@@ -19,6 +19,7 @@ export type WaitDomSnapshot = {
   latestAssistantTurnIndex?: number;
   text: WaitTextMetadata;
   generation: {
+    observed: boolean;
     active: boolean;
     stopped: boolean;
     signals: string[];
@@ -67,7 +68,7 @@ export async function readWaitDomSnapshot(page: PageLike): Promise<WaitDomSnapsh
     return undefined;
   }
 
-  return page.evaluate((args: { transient: string[]; stop: string[]; stopped: string[]; actions: string[] }) => {
+  return page.evaluate((args: { transient: string[]; stop: string[]; stopped: string[]; send: string[]; actions: string[] }) => {
     const __combinedWaitSnapshot = true;
     void __combinedWaitSnapshot;
     const normalizeWs = (value: string) => value.replace(/\s+/g, " ").trim();
@@ -95,37 +96,57 @@ export async function readWaitDomSnapshot(page: PageLike): Promise<WaitDomSnapsh
 
     // --- Generation state: mirrors dom/generation-state.ts readAssistantGenerationState ---
     const isVisible = (element: HTMLElement) => {
+      if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) {
+        return false;
+      }
       const style = window.getComputedStyle(element);
-      return style.display !== "none"
-        && style.visibility !== "hidden"
-        && style.opacity !== "0"
-        && element.getAttribute("aria-hidden") !== "true";
+      if (style.display === "none"
+        || style.visibility === "hidden"
+        || style.opacity === "0"
+        || style.pointerEvents === "none") {
+        return false;
+      }
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 || rect.height > 0;
     };
-    const visibleButtons = Array.from(document.querySelectorAll("button"))
+    const elementValues = (element: HTMLElement) => [
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.innerText,
+      element.textContent
+    ].map(normalizeLower).filter(Boolean);
+    const matchingLabels = (element: HTMLElement, phrases: string[]) => {
+      const values = elementValues(element);
+      return phrases.filter(phrase => values.includes(normalizeLower(phrase)));
+    };
+    const isScopedStopControl = (button: HTMLButtonElement) => {
+      if (button.matches("[data-testid='stop-button'], [data-testid*='stop' i]")) return true;
+      if (button.closest("[data-testid*='composer' i], [aria-label*='composer' i]") !== null) return true;
+      const form = button.closest("form");
+      return form?.querySelector("textarea, [contenteditable='true'], [role='textbox']") !== null;
+    };
+    const visibleStopButtons = Array.from(document.querySelectorAll("button"))
       .filter((button): button is HTMLButtonElement => isVisible(button as HTMLElement)
         && (button as HTMLButtonElement).disabled !== true
-        && button.getAttribute("aria-disabled") !== "true");
-    const buttonTexts = visibleButtons
-      .map(button => [
-        button.innerText,
-        button.textContent,
-        button.getAttribute("aria-label"),
-        button.getAttribute("title")
-      ].map(normalizeLower).filter(Boolean).join(" "))
-      .filter(Boolean);
-    const bodyText = normalizeLower(document.body?.innerText);
-    const haystacks = [bodyText, ...buttonTexts];
-    const matchingSignals = (phrases: string[]) => haystacks.flatMap(text =>
-      phrases
-        .map(phrase => phrase.toLowerCase())
-        .filter(phrase => text.includes(phrase))
-    );
-    const activeSignals = matchingSignals(args.stop);
-    const stoppedSignals = matchingSignals(args.stopped);
+        && button.getAttribute("aria-disabled") !== "true"
+        && isScopedStopControl(button)
+        && matchingLabels(button, args.send).length === 0
+        && matchingLabels(button, args.stop).length > 0);
+    const activeSignals = [...new Set(visibleStopButtons.flatMap(button => matchingLabels(button, args.stop)))];
+    const latestAssistantTurn = latestAssistant?.closest("[data-testid^='conversation-turn']")
+      ?? Array.from(document.querySelectorAll("[data-testid^='conversation-turn']")).at(-1);
+    const stoppedSignals = latestAssistantTurn === undefined
+      ? []
+      : [...new Set(Array.from(latestAssistantTurn.querySelectorAll<HTMLElement>(
+          "button, [role='status'], [aria-label], [title], p, span, div"
+        ))
+          .filter(element => isVisible(element))
+          .flatMap(element => matchingLabels(element, args.stopped)))];
     const generation = {
+      observed: true,
       active: activeSignals.length > 0,
       stopped: stoppedSignals.length > 0,
-      signals: [...new Set([...activeSignals, ...stoppedSignals, ...buttonTexts.filter(text => /stop|cancel|stopped|answering|thinking/i.test(text))])].slice(0, 5)
+      signals: [...new Set([...activeSignals, ...stoppedSignals])].slice(0, 5)
     };
 
     // --- Response actions: mirrors dom/generation-state.ts latestAssistantTurnHasResponseActions ---
@@ -158,7 +179,7 @@ export async function readWaitDomSnapshot(page: PageLike): Promise<WaitDomSnapsh
       assistantTurnCount: number;
       latestAssistantTurnIndex?: number;
       text: { length: number; hash: string; transient: boolean };
-      generation: { active: boolean; stopped: boolean; signals: string[] };
+      generation: { observed: boolean; active: boolean; stopped: boolean; signals: string[] };
       hasResponseActions?: boolean;
     } = {
       turnCount: nodes.length,
@@ -173,6 +194,7 @@ export async function readWaitDomSnapshot(page: PageLike): Promise<WaitDomSnapsh
     transient: [...localeLabels.transientAssistant],
     stop: [...localeLabels.stopControl],
     stopped: [...localeLabels.stoppedAssistant],
+    send: [...localeLabels.sendButton],
     actions: [...localeLabels.responseActions]
   });
 }

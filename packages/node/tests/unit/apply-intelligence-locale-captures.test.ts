@@ -59,6 +59,24 @@ describe("apply intelligence locale captures", () => {
     expect(result.match(/Réflexion arrêtée/g)).toHaveLength(1);
   });
 
+  it("never writes the unsafe generic Cancel label into locale stop selectors", () => {
+    const source = [
+      "import type { LocaleContribution } from \"./types.js\";",
+      "",
+      "export const nl = {",
+      "  responseActions: [\"Reactie kopiëren\"],",
+      "} satisfies LocaleContribution;",
+      ""
+    ].join("\n");
+
+    const result = mergeCapture(source, [], {}, {
+      stopControl: ["Cancel", "Antwoord stoppen"]
+    });
+
+    expect(result).toContain('stopControl: ["Antwoord stoppen"],');
+    expect(result).not.toContain('"Cancel"');
+  });
+
   it("merges localized Chat and Work surface labels without replacing legacy fields", () => {
     const source = [
       "import type { LocaleContribution } from \"./types.js\";",
@@ -75,8 +93,20 @@ describe("apply intelligence locale captures", () => {
     const result = mergeCapture(source, [], {}, {}, {
       workComposerTextbox: ["An etwas arbeiten"],
       experienceOptions: { chat: ["Chatten"], work: ["Arbeiten"] },
-      configurationAxes: { model: ["Modell"], effort: ["Aufwand"], speed: ["Geschwindigkeit"] },
-      configurationOptions: { light: ["Leicht"], standard: ["Standardmäßig"], fast: ["Schnell"] }
+      configurationAxes: {
+        power: ["Leistung"],
+        model: ["Modell"],
+        effort: ["Denkaufwand", "Aufwand"],
+        speed: ["Geschwindigkeit"],
+        advanced: ["Erweitert"]
+      },
+      configurationOptions: {
+        instant: ["Sofort"],
+        light: ["Leicht"],
+        pro: ["Profi"],
+        standard: ["Standardmäßig"],
+        fast: ["Schnell"]
+      }
     });
 
     expect(result).toContain('composerTextbox: ["Mit ChatGPT chatten"],');
@@ -85,8 +115,12 @@ describe("apply intelligence locale captures", () => {
     expect(result).toContain('chat: ["Chatten"],');
     expect(result).toContain('work: ["Arbeiten"],');
     expect(result).toContain('model: ["Modell"],');
-    expect(result).toContain('effort: ["Aufwand"],');
+    expect(result).toContain('power: ["Leistung"],');
+    expect(result).toContain('effort: ["Denkaufwand", "Aufwand"],');
+    expect(result).toContain('advanced: ["Erweitert"],');
+    expect(result).toContain('instant: ["Sofort"],');
     expect(result).toContain('light: ["Leicht"],');
+    expect(result).toContain('pro: ["Profi"],');
     expect(result).toContain('fast: ["Schnell"],');
   });
 });

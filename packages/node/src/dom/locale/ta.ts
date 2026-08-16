@@ -6,19 +6,24 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const ta = {
   configurationAxes: {
-    model: ["மாதிரி"],
-    effort: ["முயற்சி"],
+    power: ["திறன்"],
+    model: ["மாதிரி", "மாடல்"],
+    effort: ["முயற்சி", "சிந்தனை அளவு"],
     speed: ["வேகம்"],
+    advanced: ["மேம்பட்ட"],
   },
   configurationOptions: {
+    instant: ["உடனடி"],
     light: ["குறைவு"],
     medium: ["மிதமான"],
     high: ["அதிகமான"],
     extraHigh: ["மிக அதிகமான"],
+    max: ["அதிகபட்சம்"],
+    ultra: ["அல்ட்ரா"],
     standard: ["வழக்கமான"],
     fast: ["விரைவு"],
   },
@@ -40,6 +45,10 @@ export const ta = {
     pro: ["ப்ரோ"],
   },
   modeOpenerExtra: ["கட்டமைக்கவும்..."],
+  experienceOptions: {
+    chat: ["அரட்டை"],
+    work: ["வேலை"],
+  },
   tools: {
     web_search: ["இணைய தேடல்"],
     deep_research: ["ஆழ்ந்த ஆய்வு"],

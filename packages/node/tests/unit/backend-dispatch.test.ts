@@ -10,6 +10,7 @@ import {
   type BackendResponseOk,
   parseBackendRequest
 } from "../../src/backend/protocol.js";
+import type { LocatorLike, PageLike } from "../../src/types.js";
 
 describe("backend dispatch", () => {
   it("reports backend version, health, and capabilities", async () => {
@@ -45,6 +46,47 @@ describe("backend dispatch", () => {
     expect((capabilities.result as { commands: string[] }).commands).toContain("responses.create");
     expect((capabilities.result as { commands: string[] }).commands).toContain("files.preflight");
     expect((capabilities.result as { commands: string[] }).commands).toContain("projects.sources.add");
+    expect((capabilities.result as { commands: string[] }).commands).toContain("messages.stop");
+  });
+
+  it("requires the exact boolean stop confirmation at the backend boundary", async () => {
+    let generating = true;
+    let clicks = 0;
+    const locator: LocatorLike = {
+      count: async () => 1,
+      isVisible: async () => true,
+      evaluate: async <T>(): Promise<T> => true as T,
+      click: async () => { clicks += 1; generating = false; }
+    };
+    const page: PageLike = {
+      url: () => "https://chatgpt.com/c/backend-stop",
+      title: async () => "ChatGPT",
+      content: async () => generating
+        ? '<form><textarea></textarea><button aria-label="Stop answering"></button></form>'
+        : '<main><div data-message-author-role="assistant">Partial response.</div></main>',
+      getByRole: () => locator,
+      waitForTimeout: async () => undefined
+    };
+    const session = new BackendSession({ page, now: () => new Date("2026-06-06T00:00:00.000Z") });
+
+    for (const payload of [{}, { confirmStop: false }, { confirmStop: 1 }, { confirmStop: "true" }]) {
+      const response = await send(session, "messages.stop", payload);
+      expectOk(response);
+      expect(response.result).toMatchObject({
+        ok: false,
+        status: "needs_confirmation",
+        blocker: { code: "stop_generation_confirmation_required" }
+      });
+    }
+    expect(clicks).toBe(0);
+
+    const confirmed = await send(session, "messages.stop", { confirmStop: true, timeoutMs: 250 });
+    expectOk(confirmed);
+    expect(confirmed.result).toMatchObject({
+      ok: true,
+      data: { wasGenerating: true, stopped: true }
+    });
+    expect(clicks).toBe(1);
   });
 
   it("dispatches runner.plan through the public ChatGPT client", async () => {

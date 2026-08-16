@@ -44,6 +44,35 @@ describe("conversation navigation", () => {
     expect(result.navigated).toBe(true);
     expect(page.gotoCalls).toEqual(["https://chatgpt.com/c/6a2b2771-7810-83ea-83eb-cb9e31ca01f5"]);
   });
+
+  it.each([
+    "http://chatgpt.com/c/unsafe",
+    "https://chatgpt.com:444/c/unsafe",
+    "https://evil.example/c/unsafe"
+  ])("rejects a disallowed conversation target before navigation: %s", async targetUrl => {
+    const page = conversationPage("https://chatgpt.com/");
+
+    await expect(ensureConversationTarget(page, { url: targetUrl }, { timeoutMs: 0 }))
+      .rejects.toThrow(/allowlisted ChatGPT origin/i);
+    expect(page.gotoCalls).toEqual([]);
+  });
+
+  it("rejects a cross-origin redirect before reading the destination DOM", async () => {
+    let evaluateCalls = 0;
+    const page: PageLike = {
+      url: () => "https://evil.example/c/target",
+      goto: async () => undefined,
+      evaluate: async <T>(): Promise<T> => {
+        evaluateCalls += 1;
+        return undefined as T;
+      }
+    };
+
+    await expect(ensureConversationTarget(page, {
+      url: "https://chatgpt.com/c/target"
+    }, { timeoutMs: 100 })).rejects.toThrow(/allowlisted ChatGPT origin/i);
+    expect(evaluateCalls).toBe(0);
+  });
 });
 
 type ConversationPage = PageLike & {

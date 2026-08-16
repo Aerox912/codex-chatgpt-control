@@ -6,7 +6,7 @@ In a true Codex Chrome-plugin run, initialize the Chrome plugin runtime before u
 
 ```js
 const { setupBrowserRuntime } = await import("/absolute/path/to/browser-client.mjs");
-await setupBrowserRuntime({ globals: globalThis });
+globalThis.agent = await setupBrowserRuntime();
 globalThis.browser = await agent.browsers.get("extension");
 ```
 

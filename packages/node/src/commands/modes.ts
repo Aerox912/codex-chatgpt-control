@@ -78,7 +78,8 @@ export async function setMode(
       return selectorDrift(page, "No unique ChatGPT mode menu opener was found.");
     }
     await page.waitForTimeout?.(250);
-    const candidates = await enumerateVisibleMenuItems(page);
+    let candidates = await enumerateVisibleMenuItems(page);
+    const observedCandidates: MenuItem[] = [...candidates];
     const selected: string[] = [];
 
     if (requested.length > 0 && shouldRejectAsWrongModeMenu(candidates)) {
@@ -93,9 +94,20 @@ export async function setMode(
     }
 
     for (const request of requested) {
-      const match = findModeMenuItem(candidates, request);
+      let match = findModeMenuItem(candidates, request);
       if (match === undefined) {
-        const candidateLabels = candidates.map(candidate => candidate.label);
+        const sliderSelection = await selectModeWithPowerSlider(page, request);
+        if (sliderSelection !== undefined) {
+          selected.push(sliderSelection);
+          continue;
+        }
+        const nested = await openEffortSubmenu(page, candidates, request);
+        observedCandidates.push(...nested);
+        candidates = nested;
+        match = findModeMenuItem(candidates, request);
+      }
+      if (match === undefined) {
+        const candidateLabels = dedupeLabels(observedCandidates.map(candidate => candidate.label));
         return {
           ok: false,
           status: "unsupported",
@@ -104,13 +116,13 @@ export async function setMode(
           context: await contextFromPage(page)
         };
       }
-      if (!await clickMenuItem(page, match.label)) {
+      if (!await clickResolvedMenuItem(page, match)) {
         return selectorDrift(page, `Mode option "${match.label}" was visible but could not be clicked.`, candidates.map(candidate => candidate.label));
       }
       selected.push(match.label);
     }
 
-    let candidateLabels = candidates.map(candidate => candidate.label);
+    let candidateLabels = dedupeLabels(observedCandidates.map(candidate => candidate.label));
     if (requestedVersion !== undefined) {
       const versionResult = await selectModelVersion(page, requestedVersion, candidates, args.timeoutMs ?? 30000);
       candidateLabels = dedupeLabels([...candidateLabels, ...versionResult.candidates]);
@@ -131,6 +143,98 @@ export async function setMode(
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
   }
+}
+
+/**
+ * Chat's compact picker exposes the five canonical intelligence levels as an
+ * ARIA slider. Use it only when its visible min/max/current metadata exactly
+ * matches that five-step scale, and accept the move only when the composer
+ * visibly echoes the requested label. The Advanced submenu remains the
+ * fallback for every unrecognized shape.
+ */
+async function selectModeWithPowerSlider(
+  page: PageLike,
+  request: RequestedMode
+): Promise<string | undefined> {
+  const wanted = request.modeId === undefined
+    ? undefined
+    : CANONICAL_INTELLIGENCE_ORDER.get(request.modeId);
+  const slider = page.locator?.("[role='slider'][aria-valuemin='0'][aria-valuemax='4']");
+  if (wanted === undefined
+    || slider?.count === undefined
+    || slider.evaluate === undefined
+    || slider.press === undefined
+    || slider.isVisible === undefined
+    || !await slider.isVisible().catch(() => false)
+    || await slider.count().catch(() => 0) !== 1) {
+    return undefined;
+  }
+
+  const state = await slider.evaluate(element => ({
+    min: Number(element.getAttribute("aria-valuemin")),
+    max: Number(element.getAttribute("aria-valuemax")),
+    now: Number(element.getAttribute("aria-valuenow"))
+  })).catch(() => undefined);
+  if (state === undefined
+    || state.min !== 0
+    || state.max !== CANONICAL_INTELLIGENCE_ORDER.size - 1
+    || !Number.isInteger(state.now)
+    || state.now < state.min
+    || state.now > state.max) {
+    return undefined;
+  }
+
+  const key = wanted > state.now ? "ArrowRight" : "ArrowLeft";
+  for (let step = 0; step < Math.abs(wanted - state.now); step += 1) {
+    await slider.press(key);
+  }
+  await page.waitForTimeout?.(150);
+  return findUniqueVisibleLabelForRequest(await visibleModeButtonLabelList(page), request);
+}
+
+/**
+ * Current Chat exposes the intelligence choices inside an Advanced "Effort <value>"
+ * submenu.  Only traverse a uniquely labelled visible Effort/Intelligence row and
+ * only accept the submenu when it contains the exact requested mode.  This keeps the
+ * legacy flat picker working while avoiding any inference from the five-position
+ * power slider.
+ */
+async function openEffortSubmenu(
+  page: PageLike,
+  rootItems: MenuItem[],
+  request: RequestedMode
+): Promise<MenuItem[]> {
+  const axisLabels = [
+    ...localeLabels.configurationAxes.effort,
+    ...localeLabels.configurationAxes.intelligence,
+  ].map(normalizeForLabelMatch);
+  const effortRows = (items: MenuItem[]): MenuItem[] => items.filter(item => {
+    if (item.role === "menuitemradio") return false;
+    const normalized = normalizeForLabelMatch(item.label);
+    return axisLabels.some(axis => normalized === axis || normalized.startsWith(`${axis} `));
+  });
+  let visibleRootItems = rootItems;
+  let rows = effortRows(visibleRootItems);
+  if (rows.length === 0) {
+    const advancedLabels = localeLabels.configurationAxes.advanced.map(normalizeForLabelMatch);
+    const advancedRows = visibleRootItems.filter(item => {
+      const normalized = normalizeForLabelMatch(item.label);
+      return advancedLabels.some(label => normalized === label || visibleLabelMatches(item.label, label));
+    });
+    if (advancedRows.length !== 1 || !await clickResolvedMenuItem(page, advancedRows[0]!)) {
+      return [];
+    }
+    await page.waitForTimeout?.(250);
+    visibleRootItems = await enumerateVisibleMenuItems(page);
+    rows = effortRows(visibleRootItems);
+  }
+  if (rows.length !== 1 || !await clickResolvedMenuItem(page, rows[0]!)) {
+    return [];
+  }
+
+  await page.waitForTimeout?.(250);
+  const nested = await enumerateVisibleMenuItems(page);
+  return findModeMenuItem(nested, request) === undefined ? [] : nested;
 }
 
 /**
@@ -266,7 +370,7 @@ export async function selectTool(
       };
     }
 
-    if (!await clickMenuItem(page, match.label)) {
+    if (!await clickMenuItem(page, match)) {
       return selectorDrift(page, `Tool "${match.label}" was visible but could not be clicked.`, candidates.map(candidate => candidate.label));
     }
     return resultOk({ selected: match.label, candidates: candidates.map(candidate => candidate.label) }, await contextFromPage(page));
@@ -356,30 +460,30 @@ function shouldRejectAsWrongModeMenu(items: MenuItem[]): boolean {
   return items.some(item => isThreadActionLabel(item.label));
 }
 
-async function clickMenuItem(page: PageLike, label: string): Promise<boolean> {
-  if (await clickModelSwitcherMenuItem(page, label)) {
+async function clickMenuItem(page: PageLike, item: MenuItem): Promise<boolean> {
+  if (await clickModelSwitcherMenuItem(page, item)) {
     return true;
   }
 
-  if (await clickMenuItemByPointer(page, label)) {
+  if (await clickMenuItemByPointer(page, item)) {
     return true;
   }
 
-  if (await clickMenuItemByDom(page, label)) {
-    return true;
+  if (item.role !== undefined) {
+    const accessibleName = item.ariaLabel ?? item.label;
+    if (await clickIfUniqueMenuControl(
+      page.getByRole?.(item.role, { name: accessibleName, exact: true }),
+      item
+    )) return true;
   }
 
-  const roleLocator = page.locator?.("[role='menuitem'], [role='menuitemradio'], [role='option']")?.filter?.({ hasText: label });
-  if (await clickIfUnique(roleLocator)) {
-    return true;
-  }
-
-  const textLocator = page.getByText?.(label, { exact: true });
-  return clickIfUnique(textLocator);
+  const roleLocator = page.locator?.("[role='menuitem'], [role='menuitemradio'], [role='option']")
+    ?.filter?.({ hasText: new RegExp(`^\\s*${escapeRegExp(item.label)}\\s*$`, "i") });
+  return clickIfUniqueMenuControl(roleLocator, item);
 }
 
-async function clickMenuItemByPointer(page: PageLike, label: string): Promise<boolean> {
-  const point = await menuItemCenter(page, { label });
+async function clickMenuItemByPointer(page: PageLike, item: MenuItem): Promise<boolean> {
+  const point = await menuItemCenter(page, item);
   if (point === undefined) {
     return false;
   }
@@ -400,19 +504,20 @@ async function clickMenuItemByPointer(page: PageLike, label: string): Promise<bo
   return false;
 }
 
-async function clickModelSwitcherMenuItem(page: PageLike, label: string): Promise<boolean> {
+async function clickModelSwitcherMenuItem(page: PageLike, item: MenuItem): Promise<boolean> {
   if (typeof page.evaluate !== "function" || typeof page.locator !== "function") {
     return false;
   }
 
-  const testId = await page.evaluate((wanted: string) => {
-    const normalizedWanted = wanted.replace(/\s+/g, " ").trim().toLowerCase();
+  const testId = await page.evaluate((wanted: { label: string; testId?: string }) => {
+    const normalizedWanted = wanted.label.replace(/\s+/g, " ").trim().toLowerCase();
     const candidates = Array.from(document.querySelectorAll("[data-testid^='model-switcher-']"));
     const matches = candidates
       .filter(node => {
         const element = node as HTMLElement;
         const candidateTestId = element.getAttribute("data-testid") ?? "";
         if (candidateTestId.endsWith("-effort")) return false;
+        if (wanted.testId !== undefined && candidateTestId !== wanted.testId) return false;
         const text = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim().toLowerCase();
         return text === normalizedWanted;
       })
@@ -420,32 +525,13 @@ async function clickModelSwitcherMenuItem(page: PageLike, label: string): Promis
       .filter((value): value is string => value !== null);
 
     return matches.length === 1 ? matches[0] : undefined;
-  }, label).catch(() => undefined);
+  }, item.testId === undefined ? { label: item.label } : { label: item.label, testId: item.testId }).catch(() => undefined);
 
   if (testId === undefined) {
     return false;
   }
 
-  return clickIfUnique(page.locator(`[data-testid="${escapeAttributeValue(testId)}"]`));
-}
-
-async function clickMenuItemByDom(page: PageLike, label: string): Promise<boolean> {
-  if (typeof page.evaluate !== "function") {
-    return false;
-  }
-
-  return page.evaluate((wanted: string) => {
-    const normalizedWanted = wanted.replace(/\s+/g, " ").trim().toLowerCase();
-    const candidates = Array.from(document.querySelectorAll("[role='menuitem'], [role='menuitemradio'], [role='option']"));
-    const matches = candidates.filter(node => {
-      const element = node as HTMLElement;
-      const text = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim().toLowerCase();
-      return text === normalizedWanted;
-    });
-    if (matches.length !== 1) return false;
-    (matches[0] as HTMLElement).click();
-    return true;
-  }, label).catch(() => false);
+  return clickIfUniqueMenuControl(page.locator(`[data-testid="${escapeAttributeValue(testId)}"]`), item);
 }
 
 async function clickIfUnique(locator: LocatorLike | undefined): Promise<boolean> {
@@ -458,6 +544,43 @@ async function clickIfUnique(locator: LocatorLike | undefined): Promise<boolean>
     return false;
   }
 
+  await locator.click();
+  return true;
+}
+
+async function clickIfUniqueMenuControl(locator: LocatorLike | undefined, item: MenuItem): Promise<boolean> {
+  if (locator === undefined
+    || typeof locator.count !== "function"
+    || typeof locator.evaluate !== "function"
+    || typeof locator.click !== "function") {
+    return false;
+  }
+  if (await locator.count().catch(() => 0) !== 1) return false;
+  const safe = await locator.evaluate((element: Element) => {
+    const control = element as HTMLButtonElement;
+    if (control.disabled || control.getAttribute("aria-disabled") === "true") return false;
+    if (control.hidden || control.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+    const style = window.getComputedStyle(control);
+    const rect = control.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0
+      || style.display === "none"
+      || style.visibility === "hidden"
+      || style.opacity === "0"
+      || style.pointerEvents === "none") return false;
+    const containers = Array.from(document.querySelectorAll<HTMLElement>(
+      "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]"
+    )).filter(container => {
+      if (container.hidden || container.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const containerStyle = window.getComputedStyle(container);
+      const containerRect = container.getBoundingClientRect();
+      return containerRect.width > 0 && containerRect.height > 0
+        && containerStyle.display !== "none"
+        && containerStyle.visibility !== "hidden"
+        && containerStyle.opacity !== "0";
+    });
+    return containers.length > 0 && containers.some(container => container.contains(control));
+  }).catch(() => false);
+  if (!safe) return false;
   await locator.click();
   return true;
 }
@@ -632,17 +755,19 @@ function isModelVersionSubmenuOpener(item: MenuItem): boolean {
 }
 
 async function clickResolvedMenuItem(page: PageLike, item: MenuItem): Promise<boolean> {
-  if (item.testId !== undefined && await clickIfUnique(
-    page.locator?.(`[data-testid="${escapeAttributeValue(item.testId)}"]`)
+  if (item.testId !== undefined && await clickIfUniqueMenuControl(
+    page.locator?.(`[data-testid="${escapeAttributeValue(item.testId)}"]`),
+    item
   )) {
     return true;
   }
-  if (item.role !== undefined && await clickIfUnique(
-    page.getByRole?.(item.role, { name: item.label, exact: true })
+  if (item.role !== undefined && await clickIfUniqueMenuControl(
+    page.getByRole?.(item.role, { name: item.ariaLabel ?? item.label, exact: true }),
+    item
   )) {
     return true;
   }
-  return clickMenuItem(page, item.label);
+  return clickMenuItem(page, item);
 }
 
 async function openModelVersionSubmenu(page: PageLike, candidates: MenuItem[]): Promise<boolean> {
@@ -659,7 +784,7 @@ async function openModelVersionSubmenu(page: PageLike, candidates: MenuItem[]): 
       }
     }
 
-    if (await clickMenuItem(page, candidate.label)) {
+    if (await clickMenuItem(page, candidate)) {
       await page.waitForTimeout?.(250);
       if (await modelVersionMenuItemsAreVisible(page)) {
         return true;
@@ -709,23 +834,34 @@ async function menuItemCenter(
     const normalize = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
     const normalizedLabel = normalize(target.label);
     const roleSelector = target.roles.map(role => `[role='${role}']`).join(",");
+    const visible = (element: HTMLElement) => {
+      if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0
+        && rect.height > 0
+        && style.visibility !== "hidden"
+        && style.display !== "none"
+        && style.opacity !== "0"
+        && style.pointerEvents !== "none";
+    };
+    const containers = Array.from(document.querySelectorAll<HTMLElement>(
+      "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]"
+    )).filter(visible);
     const matches = Array.from(document.querySelectorAll(roleSelector))
       .filter(node => {
-        const element = node as HTMLElement;
+        const element = node as HTMLButtonElement;
         if (target.testId !== undefined && element.getAttribute("data-testid") !== target.testId) {
           return false;
         }
+        if (element.disabled || element.getAttribute("aria-disabled") === "true") return false;
         const label = normalize(element.innerText ?? element.textContent ?? "");
         if (label !== normalizedLabel) {
           return false;
         }
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
-        return rect.width > 0
-          && rect.height > 0
-          && style.visibility !== "hidden"
-          && style.display !== "none"
-          && style.opacity !== "0";
+        return visible(element)
+          && containers.length > 0
+          && containers.some(container => container.contains(element));
       });
     if (matches.length !== 1) return undefined;
 
@@ -829,6 +965,21 @@ async function visibleModeButtonLabelList(page: PageLike): Promise<string[]> {
     return Array.from(document.querySelectorAll("button, [role='button']"))
       .map(node => {
         const element = node as HTMLElement;
+        if (element.hidden
+          || element.getAttribute("aria-hidden") === "true"
+          || (typeof element.closest === "function"
+            && element.closest("[hidden], [inert], [aria-hidden='true']") !== null)) return "";
+        const style = typeof window?.getComputedStyle === "function"
+          ? window.getComputedStyle(element)
+          : undefined;
+        if (style?.display === "none"
+          || style?.visibility === "hidden"
+          || style?.opacity === "0"
+          || style?.pointerEvents === "none") return "";
+        const rect = typeof element.getBoundingClientRect === "function"
+          ? element.getBoundingClientRect()
+          : { width: 1, height: 1 };
+        if (rect.width <= 0 && rect.height <= 0) return "";
         if (scopedRoots.length > 0 && !scopedRoots.some(root => root.contains(node))) return "";
         const visibleText = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim();
         const ariaLabel = (element.getAttribute("aria-label") ?? "").replace(/\s+/g, " ").trim();

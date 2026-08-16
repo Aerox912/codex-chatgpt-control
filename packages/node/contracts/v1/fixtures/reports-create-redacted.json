@@ -9,15 +9,15 @@
       "integrity": {
         "inputs": [],
         "output": {
-          "bytes": 96,
-          "sha256": "850670117a5a33720b6f91ac79ce20cefe23ed760d6c47ec78f71cac06eba360",
+          "bytes": 82,
+          "sha256": "d8cd174ddee7b33b70c9c5534ccbd745f46e4bfdc3b884cfb4632e1982e94081",
           "untrusted": true
         },
         "schemaVersion": "chatgpt.browser_control.integrity.v1",
         "target": {
           "bytes": 335,
           "path": "/tmp/codex-chatgpt-control/reports/contract-fixtures/fixed-contract-report.json",
-          "sha256": "27edafba40f11bcbd8fbda81c36b7caae4f677e4311426086d8bcd3d26aed92a"
+          "sha256": "f187607ac2a07ea75ae308a9b2cc796f68fe1c9f5ffafef9cbaa3ad6934f6047"
         }
       },
       "metaPath": "/tmp/codex-chatgpt-control/reports/contract-fixtures/fixed-contract-report.json.meta.json",

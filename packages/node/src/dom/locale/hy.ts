@@ -6,19 +6,24 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const hy = {
   configurationAxes: {
+    power: ["Հզորություն"],
     model: ["Մոդել"],
-    effort: ["Ջանք"],
+    effort: ["Ջանք", "Մտածողության մակարդակ"],
     speed: ["Արագություն"],
+    advanced: ["Ընդլայնված"],
   },
   configurationOptions: {
+    instant: ["Ակնթարթային"],
     light: ["Թեթև"],
     medium: ["Միջին"],
     high: ["Հզոր"],
     extraHigh: ["Ավելի հզոր"],
+    max: ["Առավելագույն"],
+    ultra: ["Ուլտրա"],
     standard: ["Ստանդարտ"],
     fast: ["Արագ"],
   },
@@ -40,6 +45,10 @@ export const hy = {
     pro: ["Պրո"],
   },
   modeOpenerExtra: ["Կազմաձևել․․․"],
+  experienceOptions: {
+    chat: ["Զրույց"],
+    work: ["Աշխատանք"],
+  },
   tools: {
     web_search: ["Վեբ որոնում"],
     deep_research: ["Խորը ուսումնասիրություն"],

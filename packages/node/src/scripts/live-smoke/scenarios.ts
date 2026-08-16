@@ -19,12 +19,13 @@ import {
   searchThreads,
   selectTool,
   setMode,
+  stopGeneration,
   submitMessage,
   twoTurnExchange,
   waitAndRead,
   waitForMessage
 } from "../../index.js";
-import { readAssistantGenerationState } from "../../dom/generation-state.js";
+import { EMPTY_GENERATION_STATE, readAssistantGenerationState } from "../../dom/generation-state.js";
 import type {
   AskReadData,
   CommandResult,
@@ -1138,22 +1139,18 @@ async function waitForGenerationSignal(env: RuntimeEnv, timeoutMs: number): Prom
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     if (env.page !== undefined) {
-      const state = await readAssistantGenerationState(env.page).catch(() => ({ active: false, stopped: false, signals: [] }));
+      const state = await readAssistantGenerationState(env.page).catch(() => EMPTY_GENERATION_STATE);
       if (state.active || state.stopped) {
         return state;
       }
     }
     await env.page?.waitForTimeout?.(500);
   }
-  return { active: false, stopped: false, signals: [] };
+  return EMPTY_GENERATION_STATE;
 }
 
 async function stopGenerationIfVisible(env: RuntimeEnv): Promise<void> {
-  const stop = env.page?.getByRole?.("button", { name: /Stop answering|Stop generating|Stop streaming|Cancel/i });
-  const clicked = stop?.click?.({ timeoutMs: 5000 });
-  if (clicked !== undefined) {
-    await clicked.catch(() => undefined);
-  }
+  await stopGeneration(env, { confirmStop: true, timeoutMs: 5_000 }).catch(() => undefined);
 }
 
 function hashPreview(text: string): string {

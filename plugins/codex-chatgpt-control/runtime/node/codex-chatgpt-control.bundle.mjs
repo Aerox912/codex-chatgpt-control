@@ -1,5 +1,5 @@
 // src/errors.ts
-var BROWSER_BRIDGE_UNAVAILABLE_MESSAGE = "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.";
+var BROWSER_BRIDGE_UNAVAILABLE_MESSAGE = "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it.";
 var BROWSER_BRIDGE_REMEDIATION = [
   {
     label: "Ordinary shell",
@@ -8,7 +8,7 @@ var BROWSER_BRIDGE_REMEDIATION = [
   },
   {
     label: "Codex Chrome bootstrap",
-    instruction: 'For a live run, initialize the Chrome plugin runtime in node_repl with setupBrowserRuntime({ globals: globalThis }), then set globalThis.browser = await agent.browsers.get("extension") before calling createChatGPT({ agent: globalThis.agent }).',
+    instruction: 'For a live run, initialize the Chrome plugin runtime in node_repl with globalThis.agent = await setupBrowserRuntime(), then set globalThis.browser = await agent.browsers.get("extension") before calling createChatGPT({ agent: globalThis.agent }).',
     userActionRequired: false
   },
   {
@@ -167,6 +167,25 @@ function redactLogEvent(event) {
   return redacted;
 }
 
+// src/browser/chatgpt-url.ts
+var CHATGPT_HOME = "https://chatgpt.com/";
+var CHATGPT_HOSTS = /* @__PURE__ */ new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com"]);
+function isChatGPTUrl(value) {
+  if (value === void 0) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.port === "" && url.username === "" && url.password === "" && CHATGPT_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+function requireChatGPTUrl(value, label) {
+  if (!isChatGPTUrl(value)) {
+    throw new Error(`${label} must use HTTPS on an allowlisted ChatGPT origin with the default port.`);
+  }
+  return value;
+}
+
 // src/safety/blockers.ts
 var RULES = [
   {
@@ -271,6 +290,7 @@ var en = {
     work: ["Work"]
   },
   configurationAxes: {
+    power: ["Power"],
     model: ["Model"],
     intelligence: ["Intelligence"],
     effort: ["Effort"],
@@ -306,7 +326,7 @@ var en = {
   /** Exact-match transient assistant placeholders filtered out of captured responses. */
   transientAssistant: ["thinking", "reasoning", "searching", "searching the web"],
   /** Streaming "stop" control text, matched while a response generates. */
-  stopControl: ["stop generating", "stop streaming", "stop answering", "cancel"],
+  stopControl: ["stop generating", "stop streaming", "stop answering"],
   /** Interrupted generation markers shown after the assistant stops before completion. */
   stoppedAssistant: ["stopped thinking", "stopped answering", "generation stopped"],
   /** Response-action affordance text (fallback to the structural copy-button locator). */
@@ -323,11 +343,14 @@ var en = {
 // src/dom/locale/de.ts
 var de = {
   configurationAxes: {
+    power: ["Leistung"],
     model: ["Modell"],
-    effort: ["Aufwand"],
-    speed: ["Tempo"]
+    effort: ["Aufwand", "Denkaufwand"],
+    speed: ["Tempo"],
+    advanced: ["Erweitert"]
   },
   configurationOptions: {
+    instant: ["Sofort"],
     light: ["Leicht"],
     medium: ["Mittel"],
     high: ["Hoch"],
@@ -363,15 +386,19 @@ var de = {
 // src/dom/locale/es-ES.ts
 var esES = {
   configurationAxes: {
+    power: ["Potencia"],
     model: ["Modelo"],
     effort: ["Esfuerzo"],
-    speed: ["Velocidad"]
+    speed: ["Velocidad"],
+    advanced: ["Avanzadas"]
   },
   configurationOptions: {
+    instant: ["Instant\xE1nea"],
     light: ["Ligero"],
     medium: ["Media"],
     high: ["Alta"],
     extraHigh: ["Muy alta"],
+    max: ["M\xE1ximo"],
     standard: ["Est\xE1ndar"],
     fast: ["R\xE1pido"]
   },
@@ -405,15 +432,19 @@ var esES = {
 // src/dom/locale/fr-FR.ts
 var frFR = {
   configurationAxes: {
+    power: ["Puissance"],
     model: ["Mod\xE8le"],
     effort: ["Niveau"],
-    speed: ["Vitesse"]
+    speed: ["Vitesse"],
+    advanced: ["Avanc\xE9"]
   },
   configurationOptions: {
+    instant: ["Instantan\xE9"],
     light: ["Minimal"],
     medium: ["Moyenne"],
     high: ["\xC9lev\xE9e"],
     extraHigh: ["Tr\xE8s \xE9lev\xE9e"],
+    max: ["Maximum"],
     fast: ["Rapide"]
   },
   composerTextbox: ["Discuter avec ChatGPT"],
@@ -425,9 +456,9 @@ var frFR = {
   addFilesOpenerCandidates: ["Ajouter des fichiers et plus encore"],
   addPhotosFilesMenuItem: ["Ajouter des photos et fichiers"],
   copyResponse: ["Copier la r\xE9ponse"],
-  modeLabels: ["Moyen", "Avanc\xE9", "Tr\xE8s \xE9lev\xE9", "Instantan\xE9e", "Moyenne", "\xC9lev\xE9e", "Tr\xE8s \xE9lev\xE9e"],
+  modeLabels: ["Moyen", "Avanc\xE9", "Tr\xE8s \xE9lev\xE9", "Instantan\xE9e", "Moyenne", "\xC9lev\xE9e", "Tr\xE8s \xE9lev\xE9e", "Instantan\xE9"],
   modeOptions: {
-    instant: ["Instantan\xE9e"],
+    instant: ["Instantan\xE9e", "Instantan\xE9"],
     medium: ["Moyen", "Moyenne"],
     high: ["Avanc\xE9", "\xC9lev\xE9e"],
     extraHigh: ["Tr\xE8s \xE9lev\xE9", "Tr\xE8s \xE9lev\xE9e"]
@@ -446,12 +477,15 @@ var frFR = {
 // src/dom/locale/zh-HK.ts
 var zhHK = {
   configurationAxes: {
+    power: ["\u667A\u80FD\u5F37\u5EA6"],
     model: ["\u6A21\u578B"],
     effort: ["\u63A8\u7406\u5F37\u5EA6"],
-    speed: ["\u56DE\u61C9\u901F\u5EA6"]
+    speed: ["\u56DE\u61C9\u901F\u5EA6"],
+    advanced: ["\u9032\u968E"]
   },
   configurationOptions: {
-    light: ["\u5FEB\u601D"],
+    instant: ["\u5373\u6642"],
+    light: ["\u5FEB\u601D", "\u8F15\u5EA6"],
     medium: ["\u4E2D"],
     high: ["\u9AD8"],
     extraHigh: ["\u6975\u9AD8"],
@@ -476,6 +510,10 @@ var zhHK = {
     pro: ["\u5C08\u696D"]
   },
   modeOpenerExtra: ["\u8A2D\u5B9A"],
+  experienceOptions: {
+    chat: ["\u5C0D\u8A71"],
+    work: ["\u5DE5\u4F5C"]
+  },
   tools: {
     web_search: ["\u7DB2\u7D61\u641C\u5C0B"],
     deep_research: ["\u6DF1\u5EA6\u7814\u7A76"],
@@ -489,15 +527,20 @@ var zhHK = {
 // src/dom/locale/zh-TW.ts
 var zhTW = {
   configurationAxes: {
+    power: ["\u80FD\u529B"],
     model: ["\u6A21\u578B"],
     effort: ["\u63A8\u7406\u5F37\u5EA6"],
-    speed: ["\u901F\u5EA6"]
+    speed: ["\u901F\u5EA6"],
+    advanced: ["\u9032\u968E"]
   },
   configurationOptions: {
+    instant: ["\u5373\u6642"],
     light: ["\u5FEB\u601D"],
     medium: ["\u4E2D"],
     high: ["\u9AD8"],
-    extraHigh: ["\u6975\u9AD8"],
+    extraHigh: ["\u6975\u9AD8", "\u8D85\u9AD8"],
+    max: ["\u6700\u9AD8"],
+    ultra: ["\u6975\u81F4"],
     standard: ["\u6A19\u6E96"],
     fast: ["\u5FEB\u901F"]
   },
@@ -519,6 +562,10 @@ var zhTW = {
     pro: ["\u5C08\u696D"]
   },
   modeOpenerExtra: ["\u8A2D\u5B9A"],
+  experienceOptions: {
+    chat: ["\u5C0D\u8A71"],
+    work: ["\u5DE5\u4F5C"]
+  },
   tools: {
     web_search: ["\u7DB2\u9801\u641C\u5C0B"],
     deep_research: ["\u6DF1\u5165\u7814\u7A76"],
@@ -532,15 +579,20 @@ var zhTW = {
 // src/dom/locale/ja.ts
 var ja = {
   configurationAxes: {
+    power: ["\u30D1\u30EF\u30FC"],
     model: ["\u30E2\u30C7\u30EB"],
-    effort: ["\u601D\u8003\u30EC\u30D9\u30EB"],
-    speed: ["\u901F\u5EA6"]
+    effort: ["\u601D\u8003\u30EC\u30D9\u30EB", "\u63A8\u8AD6\u30EC\u30D9\u30EB"],
+    speed: ["\u901F\u5EA6"],
+    advanced: ["\u8A73\u7D30\u8A2D\u5B9A"]
   },
   configurationOptions: {
+    instant: ["\u6700\u901F"],
     light: ["\u8EFD"],
     medium: ["\u4E2D\u7A0B\u5EA6"],
     high: ["\u9AD8\u3044"],
     extraHigh: ["\u975E\u5E38\u306B\u9AD8\u3044"],
+    max: ["\u6700\u5927"],
+    ultra: ["\u30A6\u30EB\u30C8\u30E9"],
     standard: ["\u6A19\u6E96"],
     fast: ["\u9AD8\u901F"]
   },
@@ -573,11 +625,14 @@ var ja = {
 // src/dom/locale/it.ts
 var it = {
   configurationAxes: {
+    power: ["Potenza"],
     model: ["Modello"],
     effort: ["Sforzo"],
-    speed: ["Velocit\xE0"]
+    speed: ["Velocit\xE0"],
+    advanced: ["Avanzate"]
   },
   configurationOptions: {
+    instant: ["Istantaneo"],
     medium: ["Medio"],
     high: ["Alto"],
     extraHigh: ["Molto alto"],
@@ -592,9 +647,9 @@ var it = {
   addFilesOpenerCandidates: ["Aggiungi file e altro"],
   addPhotosFilesMenuItem: ["Aggiungi foto e file"],
   copyResponse: ["Copia risposta"],
-  modeLabels: ["Istantanea", "Media", "Alta", "Extra elevata", "Medio", "Alto", "Molto alto"],
+  modeLabels: ["Istantanea", "Media", "Alta", "Extra elevata", "Medio", "Alto", "Molto alto", "Istantaneo"],
   modeOptions: {
-    instant: ["Istantanea"],
+    instant: ["Istantanea", "Istantaneo"],
     medium: ["Media", "Medio"],
     high: ["Alta", "Alto"],
     extraHigh: ["Extra elevata", "Molto alto"]
@@ -612,15 +667,19 @@ var it = {
 // src/dom/locale/vi.ts
 var vi = {
   configurationAxes: {
+    power: ["S\u1EE9c m\u1EA1nh"],
     model: ["M\xF4 h\xECnh"],
-    effort: ["M\u1EE9c \u0111\u1ED9"],
-    speed: ["T\u1ED1c \u0111\u1ED9"]
+    effort: ["M\u1EE9c \u0111\u1ED9", "M\u1EE9c suy lu\u1EADn"],
+    speed: ["T\u1ED1c \u0111\u1ED9"],
+    advanced: ["N\xE2ng cao"]
   },
   configurationOptions: {
+    instant: ["T\u1EE9c th\xEC"],
     light: ["Nh\u1EB9"],
     medium: ["V\u1EEBa"],
     high: ["Cao"],
     extraHigh: ["Chuy\xEAn s\xE2u"],
+    max: ["T\u1ED1i \u0111a"],
     standard: ["Ti\xEAu chu\u1EA9n"],
     fast: ["Nhanh"]
   },
@@ -641,6 +700,10 @@ var vi = {
     extraHigh: ["R\u1EA5t cao", "Chuy\xEAn s\xE2u"]
   },
   modeOpenerExtra: ["\u0110\u1ECBnh c\u1EA5u h\xECnh"],
+  experienceOptions: {
+    chat: ["Tr\xF2 chuy\u1EC7n"],
+    work: ["C\xF4ng vi\u1EC7c"]
+  },
   tools: {
     web_search: ["T\xECm ki\u1EBFm tr\xEAn m\u1EA1ng"],
     deep_research: ["Nghi\xEAn c\u1EE9u chuy\xEAn s\xE2u"],
@@ -654,15 +717,20 @@ var vi = {
 // src/dom/locale/am.ts
 var am = {
   configurationAxes: {
+    power: ["\u12A0\u1245\u121D"],
     model: ["\u121E\u12F4\u120D"],
     effort: ["\u1325\u1228\u1275"],
-    speed: ["\u134D\u1325\u1290\u1275"]
+    speed: ["\u134D\u1325\u1290\u1275"],
+    advanced: ["\u12E8\u120B\u1240"]
   },
   configurationOptions: {
+    instant: ["\u1348\u1323\u1295"],
     light: ["\u1240\u120B\u120D"],
     medium: ["\u1218\u12AB\u12A8\u1208\u129B"],
     high: ["\u12A8\u134D\u1270\u129B"],
     extraHigh: ["\u12A5\u1305\u130D \u12A8\u134D\u1270\u129B"],
+    max: ["\u12A8\u134D\u1270\u129B\u12CD"],
+    ultra: ["\u12A0\u120D\u1275\u122B"],
     standard: ["\u1218\u12F0\u1260\u129B"],
     fast: ["\u1348\u1323\u1295"]
   },
@@ -683,6 +751,10 @@ var am = {
     extraHigh: ["\u12A5\u1305\u130D \u12A8\u134D\u1270\u129B"]
   },
   modeOpenerExtra: ["\u12EB\u12CB\u1245\u1229"],
+  experienceOptions: {
+    chat: ["\u12CD\u12ED\u12ED\u1275"],
+    work: ["\u1225\u122B"]
+  },
   tools: {
     web_search: ["\u12E8\u12F5\u122D \u134D\u1208\u130B"],
     deep_research: ["\u1325\u120D\u1245 \u121D\u122D\u121D\u122D"],
@@ -696,16 +768,19 @@ var am = {
 // src/dom/locale/ar.ts
 var ar = {
   configurationAxes: {
+    power: ["\u0627\u0644\u0642\u062F\u0631\u0629"],
     model: ["\u0627\u0644\u0646\u0645\u0648\u0630\u062C"],
     effort: ["\u0627\u0644\u062C\u0647\u062F"],
-    speed: ["\u0627\u0644\u0633\u0631\u0639\u0629"]
+    speed: ["\u0627\u0644\u0633\u0631\u0639\u0629"],
+    advanced: ["\u0645\u062A\u0642\u062F\u0645"]
   },
   configurationOptions: {
+    instant: ["\u0641\u0648\u0631\u064A"],
     light: ["\u062E\u0641\u064A\u0641"],
     medium: ["\u0645\u062A\u0648\u0633\u0637"],
     high: ["\u0639\u0627\u0644\u064D"],
     extraHigh: ["\u0639\u0627\u0644\u064D \u062C\u062F\u064B\u0627"],
-    standard: ["\u0642\u064A\u0627\u0633\u064A"],
+    standard: ["\u0642\u064A\u0627\u0633\u064A", "\u0642\u064A\u0627\u0633\u064A\u0629"],
     fast: ["\u0633\u0631\u064A\u0639"]
   },
   composerTextbox: ["\u0627\u0644\u062F\u0631\u062F\u0634\u0629 \u0645\u0639 ChatGPT"],
@@ -726,6 +801,10 @@ var ar = {
     pro: ["\u0627\u062D\u062A\u0631\u0627\u0641\u064A"]
   },
   modeOpenerExtra: ["\u062A\u0643\u0648\u064A\u0646"],
+  experienceOptions: {
+    chat: ["\u0627\u0644\u062F\u0631\u062F\u0634\u0629"],
+    work: ["\u0627\u0644\u0639\u0645\u0644"]
+  },
   tools: {
     web_search: ["\u0627\u0644\u0628\u062D\u062B \u0641\u064A \u0627\u0644\u0648\u064A\u0628"],
     deep_research: ["\u0627\u0644\u0628\u062D\u062B \u0627\u0644\u062A\u0641\u0635\u064A\u0644\u064A"],
@@ -739,15 +818,20 @@ var ar = {
 // src/dom/locale/bg.ts
 var bg = {
   configurationAxes: {
+    power: ["\u041C\u043E\u0449\u043D\u043E\u0441\u0442"],
     model: ["\u041C\u043E\u0434\u0435\u043B"],
     effort: ["\u0423\u0441\u0438\u043B\u0438\u0435"],
-    speed: ["\u0421\u043A\u043E\u0440\u043E\u0441\u0442"]
+    speed: ["\u0421\u043A\u043E\u0440\u043E\u0441\u0442"],
+    advanced: ["\u0420\u0430\u0437\u0448\u0438\u0440\u0435\u043D\u0438"]
   },
   configurationOptions: {
+    instant: ["\u041C\u0438\u0433\u043D\u043E\u0432\u0435\u043D"],
     light: ["\u041A\u0440\u0430\u0442\u043A\u043E"],
     medium: ["\u0421\u0440\u0435\u0434\u043D\u043E"],
     high: ["\u0412\u0438\u0441\u043E\u043A\u043E"],
     extraHigh: ["\u041C\u043D\u043E\u0433\u043E \u0432\u0438\u0441\u043E\u043A\u043E"],
+    max: ["\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u043D\u043E"],
+    ultra: ["\u0423\u043B\u0442\u0440\u0430"],
     standard: ["\u0421\u0442\u0430\u043D\u0434\u0430\u0440\u0442\u043D\u043E"],
     fast: ["\u0411\u044A\u0440\u0437\u0430"]
   },
@@ -782,14 +866,18 @@ var bg = {
 // src/dom/locale/bs.ts
 var bs = {
   configurationAxes: {
+    power: ["Snaga"],
     effort: ["Napor"],
-    speed: ["Brzina"]
+    speed: ["Brzina"],
+    advanced: ["Napredno"]
   },
   configurationOptions: {
+    instant: ["Brzo"],
     light: ["Lagano"],
     medium: ["Srednja"],
     high: ["Visoka"],
     extraHigh: ["Veoma visoka"],
+    max: ["Maks."],
     standard: ["Standardno"],
     fast: ["Brzo"]
   },
@@ -823,14 +911,18 @@ var bs = {
 // src/dom/locale/ca.ts
 var ca = {
   configurationAxes: {
+    power: ["Pot\xE8ncia"],
     effort: ["Esfor\xE7"],
-    speed: ["Velocitat"]
+    speed: ["Velocitat"],
+    advanced: ["Avan\xE7ades"]
   },
   configurationOptions: {
+    instant: ["Instant\xE0nia"],
     light: ["Lleuger"],
     medium: ["Mitjana"],
     high: ["Alta"],
     extraHigh: ["Molt alta"],
+    max: ["M\xE0xim"],
     standard: ["Est\xE0ndard"],
     fast: ["R\xE0pid"]
   },
@@ -851,6 +943,9 @@ var ca = {
     extraHigh: ["Molt alt", "Molt alta"]
   },
   modeOpenerExtra: ["Configura\u2026"],
+  experienceOptions: {
+    chat: ["Conversa"]
+  },
   tools: {
     web_search: ["Cerca a la xarxa"],
     deep_research: ["Recerca profunda"],
@@ -864,14 +959,18 @@ var ca = {
 // src/dom/locale/cs.ts
 var cs = {
   configurationAxes: {
-    effort: ["\xDAsil\xED"],
-    speed: ["Rychlost"]
+    power: ["V\xFDkon"],
+    effort: ["\xDAsil\xED", "M\xEDra \xFAsil\xED"],
+    speed: ["Rychlost"],
+    advanced: ["Pokro\u010Dil\xE9"]
   },
   configurationOptions: {
+    instant: ["Okam\u017Eit\xE1"],
     light: ["N\xEDzk\xE1"],
     medium: ["St\u0159edn\xED"],
     high: ["Vysok\xE1"],
     extraHigh: ["Velmi vysok\xE1"],
+    max: ["Maxim\xE1ln\xED"],
     standard: ["Standardn\xED"],
     fast: ["Rychl\xE9"]
   },
@@ -905,14 +1004,18 @@ var cs = {
 // src/dom/locale/da.ts
 var da = {
   configurationAxes: {
-    effort: ["Indsats"],
-    speed: ["Hastighed"]
+    power: ["Styrke"],
+    effort: ["Indsats", "T\xE6nkeindsats"],
+    speed: ["Hastighed"],
+    advanced: ["Avanceret"]
   },
   configurationOptions: {
+    instant: ["\xD8jeblikkeligt"],
     light: ["Let"],
     medium: ["Mellem"],
     high: ["H\xF8j"],
     extraHigh: ["Ekstra h\xF8j"],
+    max: ["Maks."],
     fast: ["Hurtig"]
   },
   composerTextbox: ["Chat med ChatGPT"],
@@ -945,15 +1048,19 @@ var da = {
 // src/dom/locale/el.ts
 var el = {
   configurationAxes: {
+    power: ["\u0399\u03C3\u03C7\u03CD\u03C2"],
     model: ["\u039C\u03BF\u03BD\u03C4\u03AD\u03BB\u03BF"],
-    effort: ["\u03A0\u03C1\u03BF\u03C3\u03C0\u03AC\u03B8\u03B5\u03B9\u03B1"],
-    speed: ["\u03A4\u03B1\u03C7\u03CD\u03C4\u03B7\u03C4\u03B1"]
+    effort: ["\u03A0\u03C1\u03BF\u03C3\u03C0\u03AC\u03B8\u03B5\u03B9\u03B1", "\u0395\u03C0\u03AF\u03C0\u03B5\u03B4\u03BF \u03C3\u03C5\u03BB\u03BB\u03BF\u03B3\u03B9\u03C3\u03BC\u03BF\u03CD"],
+    speed: ["\u03A4\u03B1\u03C7\u03CD\u03C4\u03B7\u03C4\u03B1"],
+    advanced: ["\u0393\u03B9\u03B1 \u03C0\u03C1\u03BF\u03C7\u03C9\u03C1\u03B7\u03BC\u03AD\u03BD\u03BF\u03C5\u03C2"]
   },
   configurationOptions: {
+    instant: ["\u0386\u03BC\u03B5\u03C3\u03B7"],
     light: ["\u0395\u03BB\u03B1\u03C6\u03C1\u03B9\u03AC"],
     medium: ["\u039C\u03B5\u03C3\u03B1\u03AF\u03BF"],
     high: ["\u03A5\u03C8\u03B7\u03BB\u03CC"],
     extraHigh: ["\u03A0\u03BF\u03BB\u03CD \u03C5\u03C8\u03B7\u03BB\u03CC"],
+    max: ["\u039C\u03AD\u03B3\u03B9\u03C3\u03C4\u03B7"],
     standard: ["\u03A4\u03C5\u03C0\u03B9\u03BA\u03CC"],
     fast: ["\u0393\u03C1\u03AE\u03B3\u03BF\u03C1\u03BF"]
   },
@@ -987,15 +1094,19 @@ var el = {
 // src/dom/locale/es-419.ts
 var es419 = {
   configurationAxes: {
+    power: ["Potencia"],
     model: ["Modelo"],
     effort: ["Esfuerzo"],
-    speed: ["Velocidad"]
+    speed: ["Velocidad"],
+    advanced: ["Avanzado"]
   },
   configurationOptions: {
+    instant: ["Instant\xE1nea"],
     light: ["M\xEDnimo"],
     medium: ["Media"],
     high: ["Alta"],
     extraHigh: ["Muy alta"],
+    max: ["M\xE1x."],
     standard: ["Est\xE1ndar"],
     fast: ["R\xE1pido"]
   },
@@ -1029,11 +1140,14 @@ var es419 = {
 // src/dom/locale/et.ts
 var et = {
   configurationAxes: {
+    power: ["V\xF5imsus"],
     model: ["Mudel"],
-    effort: ["Pingutus"],
-    speed: ["Kiirus"]
+    effort: ["Pingutus", "P\xF5hjalikkus"],
+    speed: ["Kiirus"],
+    advanced: ["T\xE4psemad seaded"]
   },
   configurationOptions: {
+    instant: ["Kohene"],
     light: ["Kerge"],
     medium: ["Keskmine"],
     high: ["K\xF5rge"],
@@ -1070,15 +1184,19 @@ var et = {
 // src/dom/locale/fa.ts
 var fa = {
   configurationAxes: {
+    power: ["\u062A\u0648\u0627\u0646"],
     model: ["\u0645\u062F\u0644"],
-    effort: ["\u0633\u0637\u062D \u062A\u0644\u0627\u0634"],
-    speed: ["\u0633\u0631\u0639\u062A"]
+    effort: ["\u0633\u0637\u062D \u062A\u0644\u0627\u0634", "\u0645\u06CC\u0632\u0627\u0646 \u0627\u0633\u062A\u062F\u0644\u0627\u0644"],
+    speed: ["\u0633\u0631\u0639\u062A"],
+    advanced: ["\u067E\u06CC\u0634\u0631\u0641\u062A\u0647"]
   },
   configurationOptions: {
+    instant: ["\u0641\u0648\u0631\u06CC"],
     light: ["\u0633\u0628\u06A9"],
     medium: ["\u0645\u062A\u0648\u0633\u0637"],
     high: ["\u0628\u0627\u0644\u0627"],
     extraHigh: ["\u0628\u0633\u06CC\u0627\u0631 \u0628\u0627\u0644\u0627"],
+    max: ["\u062D\u062F\u0627\u06A9\u062B\u0631"],
     fast: ["\u0633\u0631\u06CC\u0639"]
   },
   composerTextbox: ["\u06AF\u0641\u062A\u06AF\u0648 \u0628\u0627 ChatGPT"],
@@ -1099,6 +1217,10 @@ var fa = {
     pro: ["\u062D\u0631\u0641\u0647\u200C\u0627\u06CC"]
   },
   modeOpenerExtra: ["\u067E\u06CC\u06A9\u0631\u0628\u0646\u062F\u06CC..."],
+  experienceOptions: {
+    chat: ["\u0686\u062A"],
+    work: ["\u06A9\u0627\u0631"]
+  },
   tools: {
     web_search: ["\u062C\u0633\u062A\u062C\u0648\u06CC \u0648\u0628"],
     deep_research: ["\u067E\u0698\u0648\u0647\u0634 \u0639\u0645\u06CC\u0642"],
@@ -1112,15 +1234,19 @@ var fa = {
 // src/dom/locale/fi.ts
 var fi = {
   configurationAxes: {
+    power: ["Teho"],
     model: ["Malli"],
-    effort: ["M\xE4\xE4r\xE4"],
-    speed: ["Nopeus"]
+    effort: ["M\xE4\xE4r\xE4", "P\xE4\xE4ttelytaso"],
+    speed: ["Nopeus"],
+    advanced: ["Lis\xE4asetukset"]
   },
   configurationOptions: {
+    instant: ["V\xE4lit\xF6n"],
     light: ["Kevyt"],
     medium: ["Keskitaso"],
     high: ["Korkea"],
     extraHigh: ["Eritt\xE4in korkea"],
+    max: ["Maksimi"],
     standard: ["Perustaso"],
     fast: ["Nopea"]
   },
@@ -1154,10 +1280,13 @@ var fi = {
 // src/dom/locale/fr-CA.ts
 var frCA = {
   configurationAxes: {
+    power: ["Puissance"],
     model: ["Mod\xE8le"],
-    speed: ["Vitesse"]
+    speed: ["Vitesse"],
+    advanced: ["Avanc\xE9"]
   },
   configurationOptions: {
+    instant: ["Instantan\xE9"],
     light: ["L\xE9ger"],
     medium: ["Moyen"],
     high: ["\xC9lev\xE9"],
@@ -1194,15 +1323,20 @@ var frCA = {
 // src/dom/locale/gu.ts
 var gu = {
   configurationAxes: {
+    power: ["\u0A95\u0ACD\u0AB7\u0AAE\u0AA4\u0ABE"],
     model: ["\u0AAE\u0ACB\u0AA1\u0AC7\u0AB2"],
     effort: ["\u0AAA\u0ACD\u0AB0\u0AAF\u0ABE\u0AB8"],
-    speed: ["\u0A9D\u0AA1\u0AAA"]
+    speed: ["\u0A9D\u0AA1\u0AAA"],
+    advanced: ["\u0A8F\u0AA1\u0AB5\u0ABE\u0AA8\u0ACD\u0AB8\u0ACD\u0AA1"]
   },
   configurationOptions: {
+    instant: ["\u0AA4\u0AB0\u0AA4"],
     light: ["\u0AB2\u0ABE\u0A87\u0A9F"],
     medium: ["\u0AAE\u0AC0\u0AA1\u0ABF\u0AAF\u0AAE"],
     high: ["\u0AB9\u0ABE\u0A87"],
     extraHigh: ["\u0A8F\u0A95\u0ACD\u0AB8\u0ACD\u0A9F\u0ACD\u0AB0\u0ABE \u0AB9\u0ABE\u0A87"],
+    max: ["\u0AAE\u0AB9\u0AA4\u0ACD\u0AA4\u0AAE"],
+    ultra: ["\u0A85\u0AB2\u0ACD\u0A9F\u0ACD\u0AB0\u0ABE"],
     standard: ["\u0AB8\u0ACD\u0A9F\u0ABE\u0AA8\u0ACD\u0AA1\u0AB0\u0ACD\u0AA1"],
     fast: ["\u0A9D\u0AA1\u0AAA\u0AC0"]
   },
@@ -1223,6 +1357,10 @@ var gu = {
     extraHigh: ["\u0A85\u0AA4\u0ABF \u0A89\u0A9A\u0ACD\u0A9A", "\u0A8F\u0A95\u0ACD\u0AB8\u0ACD\u0A9F\u0ACD\u0AB0\u0ABE \u0AB9\u0ABE\u0A87"]
   },
   modeOpenerExtra: ["\u0A95\u0AA8\u0ACD\u0AAB\u0ABF\u0A97\u0AB0 \u0A95\u0AB0\u0ACB..."],
+  experienceOptions: {
+    chat: ["\u0A9A\u0AC5\u0A9F"],
+    work: ["\u0A95\u0ABE\u0AAE"]
+  },
   tools: {
     web_search: ["\u0AB5\u0AC7\u0AAC \u0AB6\u0ACB\u0AA7"],
     deep_research: ["\u0AA1\u0AC0\u0AAA \u0AB0\u0ABF\u0AB8\u0AB0\u0ACD\u0A9A"],
@@ -1236,15 +1374,20 @@ var gu = {
 // src/dom/locale/hi.ts
 var hi = {
   configurationAxes: {
+    power: ["\u092A\u093E\u0935\u0930"],
     model: ["\u092E\u0949\u0921\u0932"],
-    effort: ["\u092A\u094D\u0930\u092F\u093E\u0938"],
-    speed: ["\u0917\u0924\u093F"]
+    effort: ["\u092A\u094D\u0930\u092F\u093E\u0938", "\u0938\u094B\u091A\u0928\u0947 \u0915\u093E \u0938\u094D\u0924\u0930"],
+    speed: ["\u0917\u0924\u093F"],
+    advanced: ["\u090F\u0921\u0935\u093E\u0902\u0938\u094D\u0921"]
   },
   configurationOptions: {
+    instant: ["\u0924\u0941\u0930\u0902\u0924"],
     light: ["\u0932\u093E\u0907\u091F"],
     medium: ["\u092E\u0927\u094D\u092F\u092E"],
     high: ["\u0909\u091A\u094D\u091A"],
     extraHigh: ["\u090F\u0915\u094D\u0938\u094D\u091F\u094D\u0930\u093E \u0939\u093E\u0908"],
+    max: ["\u0905\u0927\u093F\u0915\u0924\u092E"],
+    ultra: ["\u0905\u0932\u094D\u091F\u094D\u0930\u093E"],
     standard: ["\u0938\u094D\u091F\u0948\u0902\u0921\u0930\u094D\u0921"],
     fast: ["\u0924\u0947\u091C\u093C"]
   },
@@ -1265,6 +1408,10 @@ var hi = {
     extraHigh: ["\u092C\u0939\u0941\u0924 \u0909\u091A\u094D\u091A", "\u090F\u0915\u094D\u0938\u094D\u091F\u094D\u0930\u093E \u0939\u093E\u0908"]
   },
   modeOpenerExtra: ["\u0915\u0949\u0928\u094D\u092B\u093C\u093F\u0917\u0930 \u0915\u0930\u0947\u0902..."],
+  experienceOptions: {
+    chat: ["\u091A\u0948\u091F"],
+    work: ["\u0935\u0930\u094D\u0915"]
+  },
   tools: {
     web_search: ["\u0935\u0947\u092C \u0938\u0930\u094D\u091A"],
     deep_research: ["\u0921\u0940\u092A \u0930\u093F\u0938\u0930\u094D\u091A"],
@@ -1278,14 +1425,17 @@ var hi = {
 // src/dom/locale/hr.ts
 var hr = {
   configurationAxes: {
+    power: ["Snaga"],
     effort: ["Razina napora"],
-    speed: ["Brzina"]
+    speed: ["Brzina"],
+    advanced: ["Napredno"]
   },
   configurationOptions: {
     light: ["Lagano"],
     medium: ["Srednja"],
     high: ["Visoka"],
     extraHigh: ["Vrlo visoka"],
+    max: ["Maks."],
     standard: ["Standardno"],
     fast: ["Brzo"]
   },
@@ -1318,11 +1468,14 @@ var hr = {
 // src/dom/locale/hu.ts
 var hu = {
   configurationAxes: {
+    power: ["Teljes\xEDtm\xE9ny"],
     model: ["Modell"],
-    effort: ["R\xE1ford\xEDt\xE1s"],
-    speed: ["Sebess\xE9g"]
+    effort: ["R\xE1ford\xEDt\xE1s", "Er\u0151fesz\xEDt\xE9s"],
+    speed: ["Sebess\xE9g"],
+    advanced: ["Speci\xE1lis"]
   },
   configurationOptions: {
+    instant: ["Azonnali"],
     light: ["Egyszer\u0171"],
     medium: ["K\xF6zepes"],
     high: ["Er\u0151s"],
@@ -1360,15 +1513,20 @@ var hu = {
 // src/dom/locale/hy.ts
 var hy = {
   configurationAxes: {
+    power: ["\u0540\u0566\u0578\u0580\u0578\u0582\u0569\u0575\u0578\u0582\u0576"],
     model: ["\u0544\u0578\u0564\u0565\u056C"],
-    effort: ["\u054B\u0561\u0576\u0584"],
-    speed: ["\u0531\u0580\u0561\u0563\u0578\u0582\u0569\u0575\u0578\u0582\u0576"]
+    effort: ["\u054B\u0561\u0576\u0584", "\u0544\u057F\u0561\u056E\u0578\u0572\u0578\u0582\u0569\u0575\u0561\u0576 \u0574\u0561\u056F\u0561\u0580\u0564\u0561\u056F"],
+    speed: ["\u0531\u0580\u0561\u0563\u0578\u0582\u0569\u0575\u0578\u0582\u0576"],
+    advanced: ["\u0538\u0576\u0564\u056C\u0561\u0575\u0576\u057E\u0561\u056E"]
   },
   configurationOptions: {
+    instant: ["\u0531\u056F\u0576\u0569\u0561\u0580\u0569\u0561\u0575\u056B\u0576"],
     light: ["\u0539\u0565\u0569\u0587"],
     medium: ["\u0544\u056B\u057B\u056B\u0576"],
     high: ["\u0540\u0566\u0578\u0580"],
     extraHigh: ["\u0531\u057E\u0565\u056C\u056B \u0570\u0566\u0578\u0580"],
+    max: ["\u0531\u057C\u0561\u057E\u0565\u056C\u0561\u0563\u0578\u0582\u0575\u0576"],
+    ultra: ["\u0548\u0582\u056C\u057F\u0580\u0561"],
     standard: ["\u054D\u057F\u0561\u0576\u0564\u0561\u0580\u057F"],
     fast: ["\u0531\u0580\u0561\u0563"]
   },
@@ -1390,6 +1548,10 @@ var hy = {
     pro: ["\u054A\u0580\u0578"]
   },
   modeOpenerExtra: ["\u053F\u0561\u0566\u0574\u0561\u0571\u0587\u0565\u056C\u2024\u2024\u2024"],
+  experienceOptions: {
+    chat: ["\u0536\u0580\u0578\u0582\u0575\u0581"],
+    work: ["\u0531\u0577\u056D\u0561\u057F\u0561\u0576\u0584"]
+  },
   tools: {
     web_search: ["\u054E\u0565\u0562 \u0578\u0580\u0578\u0576\u0578\u0582\u0574"],
     deep_research: ["\u053D\u0578\u0580\u0568 \u0578\u0582\u057D\u0578\u0582\u0574\u0576\u0561\u057D\u056B\u0580\u0578\u0582\u0569\u0575\u0578\u0582\u0576"],
@@ -1403,14 +1565,18 @@ var hy = {
 // src/dom/locale/id.ts
 var id = {
   configurationAxes: {
+    power: ["Daya"],
     effort: ["Upaya"],
-    speed: ["Kecepatan"]
+    speed: ["Kecepatan"],
+    advanced: ["Tingkat lanjut"]
   },
   configurationOptions: {
+    instant: ["Instan"],
     light: ["Ringan"],
     medium: ["Sedang"],
     high: ["Tinggi"],
     extraHigh: ["Ekstra Tinggi"],
+    max: ["Maks"],
     standard: ["Standar"],
     fast: ["Cepat"]
   },
@@ -1444,15 +1610,19 @@ var id = {
 // src/dom/locale/is.ts
 var is = {
   configurationAxes: {
+    power: ["Afl"],
     model: ["L\xEDkan"],
-    effort: ["\xC1reynsla"],
-    speed: ["Hra\xF0i"]
+    effort: ["\xC1reynsla", "Vinnsla"],
+    speed: ["Hra\xF0i"],
+    advanced: ["\xCDtarlegt"]
   },
   configurationOptions: {
+    instant: ["Strax"],
     light: ["L\xE9tt"],
     medium: ["Mi\xF0lungs"],
     high: ["H\xE1tt"],
     extraHigh: ["Mj\xF6g h\xE1tt"],
+    max: ["H\xE1mark"],
     fast: ["Hratt"]
   },
   composerTextbox: ["Spjalla\xF0u vi\xF0 ChatGPT"],
@@ -1472,6 +1642,10 @@ var is = {
     extraHigh: ["Mj\xF6g h\xE1tt"]
   },
   modeOpenerExtra: ["Stillir\u2026"],
+  experienceOptions: {
+    chat: ["Spjall"],
+    work: ["Vinna"]
+  },
   tools: {
     web_search: ["Vefleit"],
     deep_research: ["\xCDtarleg ranns\xF3kn"],
@@ -1485,15 +1659,20 @@ var is = {
 // src/dom/locale/ka.ts
 var ka = {
   configurationAxes: {
+    power: ["\u10E1\u10D8\u10DB\u10EB\u10DA\u10D0\u10D5\u10E0\u10D4"],
     model: ["\u10DB\u10DD\u10D3\u10D4\u10DA\u10D8"],
-    effort: ["\u10EB\u10D0\u10DA\u10D8\u10E1\u10EE\u10DB\u10D4\u10D5\u10D0"],
-    speed: ["\u10E1\u10D8\u10E9\u10E5\u10D0\u10E0\u10D4"]
+    effort: ["\u10EB\u10D0\u10DA\u10D8\u10E1\u10EE\u10DB\u10D4\u10D5\u10D0", "\u10DB\u10E1\u10EF\u10D4\u10DA\u10DD\u10D1\u10D8\u10E1 \u10D3\u10DD\u10DC\u10D4"],
+    speed: ["\u10E1\u10D8\u10E9\u10E5\u10D0\u10E0\u10D4"],
+    advanced: ["\u10D2\u10D0\u10E4\u10D0\u10E0\u10D7\u10DD\u10D4\u10D1\u10E3\u10DA\u10D8"]
   },
   configurationOptions: {
+    instant: ["\u10DB\u10E7\u10D8\u10E1\u10D8\u10D4\u10E0\u10D8"],
     light: ["\u10DB\u10E1\u10E3\u10D1\u10E3\u10E5\u10D8"],
     medium: ["\u10E1\u10D0\u10E8\u10E3\u10D0\u10DA\u10DD"],
     high: ["\u10DB\u10D0\u10E6\u10D0\u10DA\u10D8"],
     extraHigh: ["\u10EB\u10D0\u10DA\u10D8\u10D0\u10DC \u10DB\u10D0\u10E6\u10D0\u10DA\u10D8"],
+    max: ["\u10DB\u10D0\u10E5\u10E1."],
+    ultra: ["\u10E3\u10DA\u10E2\u10E0\u10D0"],
     standard: ["\u10E1\u10E2\u10D0\u10DC\u10D3\u10D0\u10E0\u10E2\u10E3\u10DA\u10D8"],
     fast: ["\u10E1\u10EC\u10E0\u10D0\u10E4\u10D8"]
   },
@@ -1514,6 +1693,10 @@ var ka = {
     extraHigh: ["\u10EB\u10D0\u10DA\u10D8\u10D0\u10DC \u10DB\u10D0\u10E6\u10D0\u10DA\u10D8"]
   },
   modeOpenerExtra: ["\u10D9\u10DD\u10DC\u10E4\u10D8\u10D2\u10E3\u10E0\u10D8\u10E0\u10D4\u10D1\u10D0\u2026"],
+  experienceOptions: {
+    chat: ["\u10E9\u10D0\u10E2\u10D8"],
+    work: ["\u10DB\u10E3\u10E8\u10D0\u10DD\u10D1\u10D0"]
+  },
   tools: {
     web_search: ["\u10D5\u10D4\u10D1\u10E8\u10D8 \u10EB\u10D8\u10D4\u10D1\u10D0"],
     deep_research: ["\u10E1\u10D8\u10E6\u10E0\u10DB\u10D8\u10E1\u10D4\u10E3\u10DA\u10D8 \u10D9\u10D5\u10DA\u10D4\u10D5\u10D0"],
@@ -1527,15 +1710,20 @@ var ka = {
 // src/dom/locale/kk.ts
 var kk = {
   configurationAxes: {
+    power: ["\u049A\u0443\u0430\u0442"],
     model: ["\u041C\u043E\u0434\u0435\u043B\u044C"],
-    effort: ["\u041A\u04AF\u0448-\u0436\u0456\u0433\u0435\u0440"],
-    speed: ["\u0416\u044B\u043B\u0434\u0430\u043C\u0434\u044B\u049B"]
+    effort: ["\u041A\u04AF\u0448-\u0436\u0456\u0433\u0435\u0440", "\u041E\u0439\u043B\u0430\u043D\u0443 \u0434\u0435\u04A3\u0433\u0435\u0439\u0456"],
+    speed: ["\u0416\u044B\u043B\u0434\u0430\u043C\u0434\u044B\u049B"],
+    advanced: ["\u041A\u0435\u04A3\u0435\u0439\u0442\u0456\u043B\u0433\u0435\u043D"]
   },
   configurationOptions: {
+    instant: ["\u0416\u0435\u0434\u0435\u043B"],
     light: ["\u0416\u0435\u04A3\u0456\u043B"],
     medium: ["\u041E\u0440\u0442\u0430\u0448\u0430"],
     high: ["\u0416\u043E\u0493\u0430\u0440\u044B"],
     extraHigh: ["\u04E8\u0442\u0435 \u0436\u043E\u0493\u0430\u0440\u044B"],
+    max: ["\u041C\u0430\u043A\u0441"],
+    ultra: ["\u0423\u043B\u044C\u0442\u0440\u0430"],
     standard: ["\u0421\u0442\u0430\u043D\u0434\u0430\u0440\u0442\u0442\u044B"],
     fast: ["\u0416\u044B\u043B\u0434\u0430\u043C"]
   },
@@ -1556,6 +1744,10 @@ var kk = {
     extraHigh: ["\u0410\u0441\u0430 \u0436\u043E\u0493\u0430\u0440\u044B", "\u04E8\u0442\u0435 \u0436\u043E\u0493\u0430\u0440\u044B"]
   },
   modeOpenerExtra: ["\u041A\u043E\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044F\u043B\u0430\u0443..."],
+  experienceOptions: {
+    chat: ["\u0427\u0430\u0442"],
+    work: ["\u0416\u04B1\u043C\u044B\u0441"]
+  },
   tools: {
     web_search: ["\u0406\u0437\u0434\u0435\u0443"],
     deep_research: ["\u0422\u0435\u0440\u0435\u04A3 \u0437\u0435\u0440\u0442\u0442\u0435\u0443"],
@@ -1569,15 +1761,20 @@ var kk = {
 // src/dom/locale/kn.ts
 var kn = {
   configurationAxes: {
+    power: ["\u0CAA\u0CB5\u0CB0\u0CCD"],
     model: ["\u0CAE\u0CBE\u0CA1\u0CC6\u0CB2\u0CCD"],
-    effort: ["\u0C8E\u0CAB\u0CB0\u0CCD\u0C9F\u0CCD"],
-    speed: ["\u0CB5\u0CC7\u0C97"]
+    effort: ["\u0C8E\u0CAB\u0CB0\u0CCD\u0C9F\u0CCD", "\u0CAA\u0CCD\u0CB0\u0CAF\u0CA4\u0CCD\u0CA8"],
+    speed: ["\u0CB5\u0CC7\u0C97"],
+    advanced: ["\u0CB8\u0CC1\u0CA7\u0CBE\u0CB0\u0CBF\u0CA4"]
   },
   configurationOptions: {
+    instant: ["\u0CA4\u0C95\u0CCD\u0CB7\u0CA3"],
     light: ["\u0CB2\u0CC8\u0C9F\u0CCD"],
     medium: ["\u0CAE\u0CC0\u0CA1\u0CBF\u0CAF\u0C82"],
     high: ["\u0CB9\u0CC8"],
     extraHigh: ["\u0C8E\u0C95\u0CCD\u0CB8\u0CCD\u200C\u0C9F\u0CCD\u0CB0\u0CBE \u0CB9\u0CC8"],
+    max: ["\u0C97\u0CB0\u0CBF\u0CB7\u0CCD\u0CA0"],
+    ultra: ["\u0C85\u0CB2\u0CCD\u0C9F\u0CCD\u0CB0\u0CBE"],
     standard: ["\u0CB8\u0CCD\u0C9F\u0CCD\u0CAF\u0CBE\u0C82\u0CA1\u0CB0\u0CCD\u0CA1\u0CCD"],
     fast: ["\u0CA4\u0CCD\u0CB5\u0CB0\u0CBF\u0CA4"]
   },
@@ -1599,6 +1796,9 @@ var kn = {
     pro: ["\u0CAA\u0CCD\u0CB0\u0CCA"]
   },
   modeOpenerExtra: ["\u0C95\u0CBE\u0CA8\u0CCD\u0CAB\u0CBF\u0C97\u0CB0\u0CCD \u0CAE\u0CBE\u0CA1\u0CBF..."],
+  experienceOptions: {
+    chat: ["\u0C9A\u0CBE\u0C9F\u0CCD"]
+  },
   tools: {
     web_search: ["\u0CB5\u0CC6\u0CAC\u0CCD \u0CB8\u0CB0\u0CCD\u0C9A\u0CCD"],
     deep_research: ["\u0CA1\u0CC0\u0CAA\u0CCD \u0CB0\u0CBF\u0CB8\u0CB0\u0CCD\u0C9A\u0CCD"],
@@ -1612,14 +1812,19 @@ var kn = {
 // src/dom/locale/ko.ts
 var ko = {
   configurationAxes: {
+    power: ["\uC131\uB2A5"],
     model: ["\uBAA8\uB378"],
-    effort: ["\uCD94\uB860 \uC218\uC900"],
-    speed: ["\uC18D\uB3C4"]
+    effort: ["\uCD94\uB860 \uC218\uC900", "\uCD94\uB860 \uAC15\uB3C4"],
+    speed: ["\uC18D\uB3C4"],
+    advanced: ["\uACE0\uAE09"]
   },
   configurationOptions: {
+    instant: ["\uC989\uC2DC"],
     medium: ["\uC911\uAC04"],
     high: ["\uB192\uC74C"],
     extraHigh: ["\uB9E4\uC6B0 \uB192\uC74C"],
+    max: ["\uCD5C\uB300"],
+    ultra: ["\uC6B8\uD2B8\uB77C"],
     fast: ["\uBE60\uB984"]
   },
   composerTextbox: ["ChatGPT\uC640 \uCC44\uD305"],
@@ -1652,15 +1857,19 @@ var ko = {
 // src/dom/locale/lt.ts
 var lt = {
   configurationAxes: {
+    power: ["Paj\u0117gumas"],
     model: ["Modelis"],
-    effort: ["Pastangos"],
-    speed: ["Greitis"]
+    effort: ["Pastangos", "M\u0105stymo lygis"],
+    speed: ["Greitis"],
+    advanced: ["I\u0161pl\u0117stiniai"]
   },
   configurationOptions: {
+    instant: ["Momentinis"],
     light: ["Lengvas"],
     medium: ["Vidutinis"],
     high: ["Auk\u0161tas"],
     extraHigh: ["Labai auk\u0161tas"],
+    max: ["Maks."],
     standard: ["Standartinis"],
     fast: ["Greitas"]
   },
@@ -1695,15 +1904,20 @@ var lt = {
 // src/dom/locale/zh-Hans.ts
 var zhHans = {
   configurationAxes: {
+    power: ["\u80FD\u529B"],
     model: ["\u6A21\u578B"],
-    effort: ["\u63A8\u7406\u5F3A\u5EA6"],
-    speed: ["\u901F\u5EA6"]
+    effort: ["\u63A8\u7406\u5F3A\u5EA6", "\u601D\u8003\u5F3A\u5EA6"],
+    speed: ["\u901F\u5EA6"],
+    advanced: ["\u9AD8\u7EA7"]
   },
   configurationOptions: {
+    instant: ["\u6781\u901F"],
     light: ["\u8F7B\u5EA6"],
     medium: ["\u4E2D"],
     high: ["\u9AD8"],
     extraHigh: ["\u6781\u9AD8"],
+    max: ["\u6700\u9AD8"],
+    ultra: ["\u8D85\u9AD8"],
     standard: ["\u6807\u51C6"],
     fast: ["\u5FEB\u901F"]
   },
@@ -1725,6 +1939,10 @@ var zhHans = {
     pro: ["\u4E13\u4E1A"]
   },
   modeOpenerExtra: ["\u914D\u7F6E\u2026"],
+  experienceOptions: {
+    chat: ["\u804A\u5929"],
+    work: ["\u5DE5\u4F5C"]
+  },
   tools: {
     web_search: ["\u7F51\u9875\u641C\u7D22"],
     deep_research: ["\u6DF1\u5EA6\u7814\u7A76"],
@@ -1740,13 +1958,17 @@ var ur = {
   configurationAxes: {
     model: ["\u0645\u0627\u0688\u0644"],
     effort: ["\u06A9\u0648\u0634\u0634"],
-    speed: ["\u0631\u0641\u062A\u0627\u0631"]
+    speed: ["\u0631\u0641\u062A\u0627\u0631"],
+    advanced: ["\u0627\u06CC\u0688\u0648\u0627\u0646\u0633\u0688"]
   },
   configurationOptions: {
+    instant: ["\u0641\u0648\u0631\u06CC"],
     light: ["\u0644\u0627\u0626\u0679"],
     medium: ["\u0627\u0648\u0633\u0637"],
     high: ["\u06C1\u0627\u0626\u06CC"],
     extraHigh: ["\u0627\u06CC\u06A9\u0633\u0679\u0631\u0627 \u06C1\u0627\u0626\u06CC"],
+    max: ["\u0632\u06CC\u0627\u062F\u06C1 \u0633\u06D2 \u0632\u06CC\u0627\u062F\u06C1"],
+    ultra: ["\u0627\u0644\u0679\u0631\u0627"],
     standard: ["\u0627\u0633\u0679\u06CC\u0646\u0688\u0631\u0688"],
     fast: ["\u062A\u06CC\u0632"]
   },
@@ -1767,6 +1989,10 @@ var ur = {
     extraHigh: ["\u0627\u0646\u062A\u06C1\u0627\u0626\u06CC \u0627\u0639\u0644\u06CC\u0670", "\u0627\u06CC\u06A9\u0633\u0679\u0631\u0627 \u06C1\u0627\u0626\u06CC"]
   },
   modeOpenerExtra: ["\u06A9\u0646\u0641\u06CC\u06AF\u0631 \u06A9\u0631\u06CC\u06BA..."],
+  experienceOptions: {
+    chat: ["\u0686\u064E\u06CC\u0679"],
+    work: ["\u06A9\u0627\u0645"]
+  },
   tools: {
     web_search: ["\u0648\u06CC\u0628 \u067E\u0631 \u062A\u0644\u0627\u0634"],
     deep_research: ["\u0688\u06CC\u067E \u0631\u06CC\u0633\u0631\u0686"],
@@ -1780,15 +2006,20 @@ var ur = {
 // src/dom/locale/uk.ts
 var uk = {
   configurationAxes: {
+    power: ["\u041F\u043E\u0442\u0443\u0436\u043D\u0456\u0441\u0442\u044C"],
     model: ["\u041C\u043E\u0434\u0435\u043B\u044C"],
-    effort: ["\u0417\u0443\u0441\u0438\u043B\u043B\u044F"],
-    speed: ["\u0428\u0432\u0438\u0434\u043A\u0456\u0441\u0442\u044C"]
+    effort: ["\u0417\u0443\u0441\u0438\u043B\u043B\u044F", "\u041C\u0456\u0440\u043A\u0443\u0432\u0430\u043D\u043D\u044F"],
+    speed: ["\u0428\u0432\u0438\u0434\u043A\u0456\u0441\u0442\u044C"],
+    advanced: ["\u0414\u043E\u0434\u0430\u0442\u043A\u043E\u0432\u043E"]
   },
   configurationOptions: {
+    instant: ["\u041C\u0438\u0442\u0442\u0454\u0432\u0438\u0439"],
     light: ["\u041D\u0438\u0437\u044C\u043A\u0438\u0439"],
     medium: ["\u0421\u0435\u0440\u0435\u0434\u043D\u0456\u0439"],
     high: ["\u0412\u0438\u0441\u043E\u043A\u0438\u0439"],
     extraHigh: ["\u041D\u0430\u0439\u0432\u0438\u0449\u0438\u0439"],
+    max: ["\u041C\u0430\u043A\u0441."],
+    ultra: ["\u0423\u043B\u044C\u0442\u0440\u0430"],
     standard: ["\u0421\u0442\u0430\u043D\u0434\u0430\u0440\u0442\u043D\u0438\u0439"],
     fast: ["\u0428\u0432\u0438\u0434\u043A\u0430"]
   },
@@ -1809,6 +2040,10 @@ var uk = {
     extraHigh: ["\u0414\u0443\u0436\u0435 \u0432\u0438\u0441\u043E\u043A\u0438\u0439", "\u041D\u0430\u0439\u0432\u0438\u0449\u0438\u0439"]
   },
   modeOpenerExtra: ["\u041D\u0430\u043B\u0430\u0448\u0442\u0443\u0432\u0430\u0442\u0438\u2026"],
+  experienceOptions: {
+    chat: ["\u0427\u0430\u0442"],
+    work: ["\u0420\u043E\u0431\u043E\u0442\u0430"]
+  },
   tools: {
     web_search: ["\u041F\u043E\u0448\u0443\u043A \u0432 \u0406\u043D\u0442\u0435\u0440\u043D\u0435\u0442\u0456"],
     deep_research: ["\u0413\u043B\u0438\u0431\u043E\u043A\u043E \u0434\u043E\u0441\u043B\u0456\u0434\u0438\u0442\u0438"],
@@ -1822,15 +2057,19 @@ var uk = {
 // src/dom/locale/pt-BR.ts
 var ptBR = {
   configurationAxes: {
+    power: ["Pot\xEAncia"],
     model: ["Modelo"],
-    effort: ["Esfor\xE7o"],
-    speed: ["Velocidade"]
+    effort: ["Esfor\xE7o", "N\xEDvel de racioc\xEDnio"],
+    speed: ["Velocidade"],
+    advanced: ["Avan\xE7ado"]
   },
   configurationOptions: {
+    instant: ["Instant\xE2neo"],
     light: ["Leve"],
     medium: ["M\xE9dio"],
     high: ["Alto"],
     extraHigh: ["Extra alto"],
+    max: ["M\xE1ximo"],
     standard: ["Padr\xE3o"],
     fast: ["R\xE1pido"]
   },
@@ -1864,15 +2103,19 @@ var ptBR = {
 // src/dom/locale/pt-PT.ts
 var ptPT = {
   configurationAxes: {
+    power: ["Capacidade"],
     model: ["Modelo"],
     effort: ["Esfor\xE7o"],
-    speed: ["Velocidade"]
+    speed: ["Velocidade"],
+    advanced: ["Avan\xE7ado"]
   },
   configurationOptions: {
+    instant: ["Instant\xE2neo"],
     light: ["Leve"],
     medium: ["M\xE9dio"],
     high: ["Elevado"],
     extraHigh: ["Muito elevado"],
+    max: ["M\xE1x."],
     standard: ["Padr\xE3o"],
     fast: ["R\xE1pido"]
   },
@@ -1906,14 +2149,18 @@ var ptPT = {
 // src/dom/locale/pl.ts
 var pl = {
   configurationAxes: {
-    effort: ["Nak\u0142ad pracy"],
-    speed: ["Szybko\u015B\u0107"]
+    power: ["Moc"],
+    effort: ["Nak\u0142ad pracy", "Wysi\u0142ek"],
+    speed: ["Szybko\u015B\u0107"],
+    advanced: ["Zaawansowane"]
   },
   configurationOptions: {
+    instant: ["B\u0142yskawiczny"],
     light: ["Lekki"],
     medium: ["\u015Aredni"],
     high: ["Wysoki"],
     extraHigh: ["Bardzo wysoki"],
+    max: ["Maks."],
     standard: ["Standardowy"],
     fast: ["Szybki"]
   },
@@ -1947,14 +2194,18 @@ var pl = {
 // src/dom/locale/sk.ts
 var sk = {
   configurationAxes: {
+    power: ["V\xFDkon"],
     effort: ["\xDAsilie"],
-    speed: ["R\xFDchlos\u0165"]
+    speed: ["R\xFDchlos\u0165"],
+    advanced: ["Roz\u0161\xEDren\xE9"]
   },
   configurationOptions: {
+    instant: ["Okam\u017Eit\xE1"],
     light: ["\u013Dahk\xE9"],
     medium: ["Stredn\xE1"],
     high: ["Vysok\xE1"],
     extraHigh: ["Ve\u013Emi vysok\xE1"],
+    max: ["Maxim\xE1lne"],
     standard: ["\u0160tandardn\xE1"],
     fast: ["R\xFDchla"]
   },
@@ -1988,14 +2239,17 @@ var sk = {
 // src/dom/locale/ro.ts
 var ro = {
   configurationAxes: {
+    power: ["Capacitate"],
     effort: ["Efort"],
-    speed: ["Vitez\u0103"]
+    speed: ["Vitez\u0103"],
+    advanced: ["Avansat"]
   },
   configurationOptions: {
     light: ["U\u0219or"],
     medium: ["Medie"],
     high: ["Ridicat\u0103"],
     extraHigh: ["Foarte ridicat\u0103"],
+    max: ["Maxim"],
     fast: ["Rapid"]
   },
   composerTextbox: ["\xCEntreab\u0103 orice"],
@@ -2027,15 +2281,19 @@ var ro = {
 // src/dom/locale/nb.ts
 var nb = {
   configurationAxes: {
+    power: ["Styrke"],
     model: ["Modell"],
-    effort: ["Innsats"],
-    speed: ["Hastighet"]
+    effort: ["Innsats", "Resonneringsniv\xE5"],
+    speed: ["Hastighet"],
+    advanced: ["Avansert"]
   },
   configurationOptions: {
+    instant: ["\xD8yeblikkelig"],
     light: ["Lett"],
     medium: ["Middels"],
     high: ["H\xF8y"],
     extraHigh: ["Ekstra h\xF8y"],
+    max: ["Maks"],
     fast: ["Rask"]
   },
   composerTextbox: ["Sp\xF8r om hva som helst"],
@@ -2068,15 +2326,20 @@ var nb = {
 // src/dom/locale/ml.ts
 var ml = {
   configurationAxes: {
+    power: ["\u0D2A\u0D35\u0D7C"],
     model: ["\u0D2E\u0D4B\u0D21\u0D7D"],
     effort: ["\u0D36\u0D4D\u0D30\u0D2E\u0D02"],
-    speed: ["\u0D35\u0D47\u0D17\u0D24"]
+    speed: ["\u0D35\u0D47\u0D17\u0D24"],
+    advanced: ["\u0D35\u0D3F\u0D2A\u0D41\u0D32\u0D2E\u0D3E\u0D2F\u0D24\u0D4D"]
   },
   configurationOptions: {
+    instant: ["\u0D24\u0D7D\u0D15\u0D4D\u0D37\u0D23\u0D02"],
     light: ["\u0D32\u0D33\u0D3F\u0D24\u0D02"],
     medium: ["\u0D07\u0D1F\u0D24\u0D4D\u0D24\u0D30\u0D02"],
     high: ["\u0D09\u0D2F\u0D7C\u0D28\u0D4D\u0D28\u0D24\u0D4D"],
     extraHigh: ["\u0D05\u0D24\u0D4D\u0D2F\u0D27\u0D3F\u0D15\u0D02 \u0D09\u0D2F\u0D7C\u0D28\u0D4D\u0D28\u0D24\u0D4D"],
+    max: ["\u0D2A\u0D30\u0D2E\u0D3E\u0D35\u0D27\u0D3F"],
+    ultra: ["\u0D05\u0D7E\u0D1F\u0D4D\u0D30\u0D3E"],
     standard: ["\u0D05\u0D1F\u0D3F\u0D38\u0D4D\u0D25\u0D3E\u0D28\u0D02"],
     fast: ["\u0D35\u0D47\u0D17\u0D02"]
   },
@@ -2098,6 +2361,10 @@ var ml = {
     pro: ["\u0D2A\u0D4D\u0D30\u0D4B"]
   },
   modeOpenerExtra: ["\u0D15\u0D4B\u0D7A\u0D2B\u0D3F\u0D17\u0D7C \u0D1A\u0D46\u0D2F\u0D4D\u0D2F\u0D41\u0D15\u2026"],
+  experienceOptions: {
+    chat: ["\u0D1A\u0D3E\u0D31\u0D4D\u0D31\u0D4D"],
+    work: ["\u0D1C\u0D4B\u0D32\u0D3F"]
+  },
   tools: {
     web_search: ["\u0D35\u0D46\u0D2C\u0D4D \u0D24\u0D3F\u0D30\u0D2F\u0D7D"],
     deep_research: ["\u0D21\u0D40\u0D2A\u0D4D\u0D2A\u0D4D \u0D31\u0D3F\u0D38\u0D47\u0D7C\u0D1A\u0D4D\u0D1A\u0D4D"],
@@ -2112,14 +2379,17 @@ var ml = {
 var ru = {
   configurationAxes: {
     model: ["\u041C\u043E\u0434\u0435\u043B\u044C"],
-    effort: ["\u0423\u0440\u043E\u0432\u0435\u043D\u044C"],
-    speed: ["\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C"]
+    effort: ["\u0423\u0440\u043E\u0432\u0435\u043D\u044C", "\u0423\u0440\u043E\u0432\u0435\u043D\u044C \u043F\u0440\u043E\u0440\u0430\u0431\u043E\u0442\u043A\u0438"],
+    speed: ["\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C"],
+    advanced: ["\u0420\u0430\u0441\u0448\u0438\u0440\u0435\u043D\u043D\u044B\u0435"]
   },
   configurationOptions: {
     light: ["\u041D\u0438\u0437\u043A\u0438\u0439"],
     medium: ["\u0421\u0440\u0435\u0434\u043D\u0438\u0439"],
     high: ["\u0412\u044B\u0441\u043E\u043A\u0438\u0439"],
     extraHigh: ["\u041E\u0447\u0435\u043D\u044C \u0432\u044B\u0441\u043E\u043A\u0438\u0439"],
+    max: ["\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0439"],
+    ultra: ["\u0423\u043B\u044C\u0442\u0440\u0430"],
     standard: ["\u0421\u0442\u0430\u043D\u0434\u0430\u0440\u0442\u043D\u044B\u0439"],
     fast: ["\u0411\u044B\u0441\u0442\u0440\u043E"]
   },
@@ -2139,6 +2409,10 @@ var ru = {
     extraHigh: ["\u041E\u0447\u0435\u043D\u044C \u0432\u044B\u0441\u043E\u043A\u0438\u0439"]
   },
   modeOpenerExtra: ["\u041A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044F..."],
+  experienceOptions: {
+    chat: ["\u0427\u0430\u0442"],
+    work: ["\u0420\u0430\u0431\u043E\u0442\u0430"]
+  },
   tools: {
     web_search: ["\u041F\u043E\u0438\u0441\u043A \u0432 \u0441\u0435\u0442\u0438"],
     deep_research: ["\u0413\u043B\u0443\u0431\u043E\u043A\u043E\u0435 \u0438\u0441\u0441\u043B\u0435\u0434\u043E\u0432\u0430\u043D\u0438\u0435"],
@@ -2152,15 +2426,20 @@ var ru = {
 // src/dom/locale/pa.ts
 var pa = {
   configurationAxes: {
+    power: ["\u0A2A\u0A3E\u0A35\u0A30"],
     model: ["\u0A2E\u0A3E\u0A21\u0A32"],
     effort: ["\u0A15\u0A4B\u0A38\u0A3C\u0A3F\u0A38\u0A3C"],
-    speed: ["\u0A17\u0A24\u0A40"]
+    speed: ["\u0A17\u0A24\u0A40"],
+    advanced: ["\u0A09\u0A71\u0A28\u0A24"]
   },
   configurationOptions: {
+    instant: ["\u0A24\u0A41\u0A30\u0A70\u0A24"],
     light: ["\u0A39\u0A32\u0A15\u0A3E"],
     medium: ["\u0A2E\u0A40\u0A21\u0A40\u0A05\u0A2E"],
     high: ["\u0A39\u0A3E\u0A08"],
     extraHigh: ["\u0A10\u0A15\u0A38\u0A1F\u0A4D\u0A30\u0A3E \u0A39\u0A3E\u0A08"],
+    max: ["\u0A05\u0A27\u0A3F\u0A15\u0A24\u0A2E"],
+    ultra: ["\u0A05\u0A32\u0A1F\u0A30\u0A3E"],
     standard: ["\u0A2E\u0A3F\u0A06\u0A30\u0A40"],
     fast: ["\u0A24\u0A47\u0A1C\u0A3C"]
   },
@@ -2182,6 +2461,10 @@ var pa = {
     pro: ["\u0A2A\u0A4D\u0A30\u0A4B"]
   },
   modeOpenerExtra: ["\u0A15\u0A4C\u0A28\u0A2B\u0A3F\u0A17\u0A30..."],
+  experienceOptions: {
+    chat: ["\u0A1A\u0A48\u0A1F"],
+    work: ["\u0A35\u0A30\u0A15"]
+  },
   tools: {
     web_search: ["\u0A35\u0A48\u0A71\u0A2C \u0A16\u0A4B\u0A1C"],
     deep_research: ["\u0A21\u0A42\u0A70\u0A18\u0A40 \u0A16\u0A4B\u0A1C"],
@@ -2195,15 +2478,20 @@ var pa = {
 // src/dom/locale/mr.ts
 var mr = {
   configurationAxes: {
+    power: ["\u092A\u0949\u0935\u0930"],
     model: ["\u092E\u0949\u0921\u0947\u0932"],
     effort: ["\u092A\u094D\u0930\u092F\u0924\u094D\u0928"],
-    speed: ["\u0935\u0947\u0917"]
+    speed: ["\u0935\u0947\u0917"],
+    advanced: ["\u092A\u094D\u0930\u0917\u0924"]
   },
   configurationOptions: {
+    instant: ["\u091D\u091F\u092A\u091F"],
     light: ["\u0939\u0932\u0915\u093E"],
     medium: ["\u092E\u0927\u094D\u092F\u092E"],
     high: ["\u0909\u091A\u094D\u091A"],
     extraHigh: ["\u0905\u0924\u094D\u092F\u0941\u091A\u094D\u091A"],
+    max: ["\u0915\u092E\u093E\u0932"],
+    ultra: ["\u0905\u0932\u094D\u091F\u094D\u0930\u093E"],
     standard: ["\u0938\u094D\u091F\u0901\u0921\u0930\u094D\u0921"],
     fast: ["\u091C\u0932\u0926"]
   },
@@ -2225,6 +2513,10 @@ var mr = {
     pro: ["\u092A\u094D\u0930\u094B"]
   },
   modeOpenerExtra: ["\u0915\u0949\u0928\u094D\u092B\u093F\u0917\u0930 \u0915\u0930\u093E..."],
+  experienceOptions: {
+    chat: ["\u091A\u0945\u091F"],
+    work: ["\u0915\u093E\u092E"]
+  },
   tools: {
     web_search: ["\u0935\u0947\u092C\u0935\u0930 \u0936\u094B\u0927"],
     deep_research: ["\u0938\u0916\u094B\u0932 \u0938\u0902\u0936\u094B\u0927\u0928"],
@@ -2238,14 +2530,18 @@ var mr = {
 // src/dom/locale/tr.ts
 var tr = {
   configurationAxes: {
-    effort: ["D\xFCzey"],
-    speed: ["H\u0131z"]
+    power: ["G\xFC\xE7"],
+    effort: ["D\xFCzey", "\xC7aba"],
+    speed: ["H\u0131z"],
+    advanced: ["Geli\u015Fmi\u015F"]
   },
   configurationOptions: {
+    instant: ["H\u0131zl\u0131"],
     light: ["S\u0131n\u0131rl\u0131"],
     medium: ["Orta"],
     high: ["Y\xFCksek"],
     extraHigh: ["\xC7ok Y\xFCksek"],
+    max: ["Maks"],
     standard: ["Standart"],
     fast: ["H\u0131zl\u0131"]
   },
@@ -2266,6 +2562,10 @@ var tr = {
     extraHigh: ["\xC7ok Y\xFCksek"]
   },
   modeOpenerExtra: ["Yap\u0131land\u0131r..."],
+  experienceOptions: {
+    chat: ["Sohbet"],
+    work: ["\xC7al\u0131\u015Fma"]
+  },
   tools: {
     web_search: ["Web aramas\u0131"],
     deep_research: ["Derin ara\u015Ft\u0131rma"],
@@ -2279,15 +2579,19 @@ var tr = {
 // src/dom/locale/sw.ts
 var sw = {
   configurationAxes: {
-    model: ["Modeli"],
-    effort: ["Juhudi"],
-    speed: ["Kasi"]
+    power: ["Umahiri"],
+    model: ["Modeli", "Mfumo"],
+    effort: ["Juhudi", "Kiwango cha uchambuzi"],
+    speed: ["Kasi"],
+    advanced: ["Za kina"]
   },
   configurationOptions: {
+    instant: ["Papo hapo"],
     light: ["Nyepesi"],
     medium: ["Wastani"],
     high: ["Juu"],
     extraHigh: ["Juu Zaidi"],
+    max: ["Juu kabisa"],
     standard: ["Kawaida"],
     fast: ["Haraka"]
   },
@@ -2321,15 +2625,20 @@ var sw = {
 // src/dom/locale/te.ts
 var te = {
   configurationAxes: {
+    power: ["\u0C2A\u0C35\u0C30\u0C4D"],
     model: ["\u0C2E\u0C4B\u0C21\u0C32\u0C4D"],
-    effort: ["\u0C2A\u0C4D\u0C30\u0C2F\u0C24\u0C4D\u0C28\u0C02"],
-    speed: ["\u0C35\u0C47\u0C17\u0C02"]
+    effort: ["\u0C2A\u0C4D\u0C30\u0C2F\u0C24\u0C4D\u0C28\u0C02", "\u0C06\u0C32\u0C4B\u0C1A\u0C28"],
+    speed: ["\u0C35\u0C47\u0C17\u0C02"],
+    advanced: ["\u0C05\u0C27\u0C41\u0C28\u0C3E\u0C24\u0C28\u0C02"]
   },
   configurationOptions: {
+    instant: ["\u0C24\u0C15\u0C4D\u0C37\u0C23\u0C02"],
     light: ["\u0C32\u0C48\u0C1F\u0C4D"],
     medium: ["\u0C2E\u0C40\u0C21\u0C3F\u0C2F\u0C02"],
     high: ["\u0C39\u0C48"],
     extraHigh: ["\u0C0E\u0C15\u0C4D\u0C38\u0C4D\u200C\u0C1F\u0C4D\u0C30\u0C3E \u0C39\u0C48"],
+    max: ["\u0C17\u0C30\u0C3F\u0C37\u0C4D\u0C20\u0C02"],
+    ultra: ["\u0C05\u0C32\u0C4D\u0C1F\u0C4D\u0C30\u0C3E"],
     standard: ["\u0C38\u0C4D\u0C1F\u0C3E\u0C02\u0C21\u0C30\u0C4D\u0C21\u0C4D"],
     fast: ["\u0C35\u0C47\u0C17\u0C35\u0C02\u0C24\u0C02"]
   },
@@ -2351,6 +2660,10 @@ var te = {
     pro: ["\u0C2A\u0C4D\u0C30\u0C4B"]
   },
   modeOpenerExtra: ["\u0C15\u0C3E\u0C28\u0C4D\u0C2B\u0C3F\u0C17\u0C30\u0C4D \u0C1A\u0C47\u0C2F\u0C02\u0C21\u0C3F"],
+  experienceOptions: {
+    chat: ["\u0C1A\u0C3E\u0C1F\u0C4D"],
+    work: ["\u0C35\u0C30\u0C4D\u0C15\u0C4D"]
+  },
   tools: {
     web_search: ["\u0C35\u0C46\u0C2C\u0C4D\u200C\u0C32\u0C4B \u0C35\u0C46\u0C24\u0C15\u0C21\u0C02"],
     deep_research: ["\u0C38\u0C02\u0C2A\u0C42\u0C30\u0C4D\u0C23 \u0C2A\u0C30\u0C3F\u0C36\u0C4B\u0C27\u0C28"],
@@ -2364,7 +2677,7 @@ var te = {
 // src/dom/locale/tl.ts
 var tl = {
   configurationAxes: {
-    effort: ["Pagsisikap"],
+    effort: ["Pagsisikap", "Pag-iisip"],
     speed: ["Bilis"]
   },
   configurationOptions: {
@@ -2392,9 +2705,14 @@ var tl = {
 // src/dom/locale/th.ts
 var th = {
   configurationAxes: {
+    power: ["\u0E23\u0E30\u0E14\u0E31\u0E1A\u0E04\u0E27\u0E32\u0E21\u0E2A\u0E32\u0E21\u0E32\u0E23\u0E16"],
     model: ["\u0E42\u0E21\u0E40\u0E14\u0E25"],
     effort: ["\u0E23\u0E30\u0E14\u0E31\u0E1A\u0E01\u0E32\u0E23\u0E04\u0E34\u0E14"],
-    speed: ["\u0E04\u0E27\u0E32\u0E21\u0E40\u0E23\u0E47\u0E27"]
+    speed: ["\u0E04\u0E27\u0E32\u0E21\u0E40\u0E23\u0E47\u0E27"],
+    advanced: ["\u0E02\u0E31\u0E49\u0E19\u0E2A\u0E39\u0E07"]
+  },
+  configurationOptions: {
+    instant: ["\u0E17\u0E31\u0E19\u0E17\u0E35"]
   },
   composerTextbox: ["\u0E16\u0E32\u0E21\u0E2D\u0E30\u0E44\u0E23\u0E01\u0E47\u0E44\u0E14\u0E49"],
   sendButton: ["\u0E2A\u0E48\u0E07\u0E04\u0E33\u0E2A\u0E31\u0E48\u0E07"],
@@ -2426,15 +2744,20 @@ var th = {
 // src/dom/locale/bn.ts
 var bn = {
   configurationAxes: {
+    power: ["\u0995\u09CD\u09B7\u09AE\u09A4\u09BE"],
     model: ["\u09AE\u09A1\u09C7\u09B2"],
     effort: ["\u09AA\u09CD\u09B0\u099A\u09C7\u09B7\u09CD\u099F\u09BE"],
-    speed: ["\u0997\u09A4\u09BF"]
+    speed: ["\u0997\u09A4\u09BF"],
+    advanced: ["\u0989\u09A8\u09CD\u09A8\u09A4"]
   },
   configurationOptions: {
+    instant: ["\u09A4\u09BE\u09CE\u0995\u09CD\u09B7\u09A3\u09BF\u0995"],
     light: ["\u09B2\u09BE\u0987\u099F"],
     medium: ["\u09AE\u09BE\u099D\u09BE\u09B0\u09BF"],
     high: ["\u0989\u099A\u09CD\u099A"],
     extraHigh: ["\u0985\u09A4\u09BF \u0989\u099A\u09CD\u099A"],
+    max: ["\u09B8\u09B0\u09CD\u09AC\u09CB\u099A\u09CD\u099A"],
+    ultra: ["\u0986\u09B2\u09CD\u099F\u09CD\u09B0\u09BE"],
     standard: ["\u09B8\u09CD\u099F\u09CD\u09AF\u09BE\u09A8\u09CD\u09A1\u09BE\u09B0\u09CD\u09A1"],
     fast: ["\u09A6\u09CD\u09B0\u09C1\u09A4"]
   },
@@ -2456,6 +2779,10 @@ var bn = {
     pro: ["\u09AA\u09CD\u09B0\u09CB"]
   },
   modeOpenerExtra: ["\u0995\u09A8\u09AB\u09BF\u0997\u09BE\u09B0 \u0995\u09B0\u09C1\u09A8..."],
+  experienceOptions: {
+    chat: ["\u099A\u09CD\u09AF\u09BE\u099F"],
+    work: ["\u0993\u09AF\u09BC\u09BE\u09B0\u09CD\u0995"]
+  },
   tools: {
     web_search: ["\u0993\u09AF\u09BC\u09C7\u09AC \u09B8\u09A8\u09CD\u09A7\u09BE\u09A8"],
     deep_research: ["\u0997\u09AD\u09C0\u09B0 \u0985\u09A8\u09C1\u09B8\u09A8\u09CD\u09A7\u09BE\u09A8"],
@@ -2469,14 +2796,18 @@ var bn = {
 // src/dom/locale/ms.ts
 var ms = {
   configurationAxes: {
+    power: ["Kuasa"],
     effort: ["Usaha"],
-    speed: ["Kelajuan"]
+    speed: ["Kelajuan"],
+    advanced: ["Lanjutan"]
   },
   configurationOptions: {
+    instant: ["Segera"],
     light: ["Ringan"],
     medium: ["Sederhana"],
     high: ["Tinggi"],
     extraHigh: ["Sangat Tinggi"],
+    max: ["Sangat Tinggi"],
     fast: ["Pantas"]
   },
   composerTextbox: ["Tanya apa-apa sahaja..."],
@@ -2496,6 +2827,10 @@ var ms = {
     extraHigh: ["Sangat Tinggi"]
   },
   modeOpenerExtra: ["Konfigurasikan\u2026"],
+  experienceOptions: {
+    chat: ["Sembang"],
+    work: ["Kerja"]
+  },
   tools: {
     web_search: ["Carian web"],
     deep_research: ["Kajian mendalam"],
@@ -2509,15 +2844,19 @@ var ms = {
 // src/dom/locale/so.ts
 var so = {
   configurationAxes: {
+    power: ["Awood"],
     model: ["Moodel"],
     effort: ["Dadaal"],
-    speed: ["Xawaare"]
+    speed: ["Xawaare"],
+    advanced: ["Horumarsan"]
   },
   configurationOptions: {
+    instant: ["Degdeg"],
     light: ["Fudud"],
     medium: ["Dhexdhexaad"],
     high: ["Sare"],
     extraHigh: ["Aad U Sarreeya"],
+    max: ["Ugu badan"],
     standard: ["Caadi"],
     fast: ["Degdeg"]
   },
@@ -2538,6 +2877,10 @@ var so = {
     extraHigh: ["Aad u sarreeya", "Aad U Sarreeya"]
   },
   modeOpenerExtra: ["Ku xidh..."],
+  experienceOptions: {
+    chat: ["Sheekaysi"],
+    work: ["Shaqo"]
+  },
   tools: {
     web_search: ["Raadi shakabada"],
     deep_research: ["Cilmi baadhid qoto dheer"],
@@ -2551,10 +2894,13 @@ var so = {
 // src/dom/locale/nl.ts
 var nl = {
   configurationAxes: {
+    power: ["Rekenkracht"],
     effort: ["Inspanning"],
-    speed: ["Snelheid"]
+    speed: ["Snelheid"],
+    advanced: ["Geavanceerd"]
   },
   configurationOptions: {
+    instant: ["Direct"],
     light: ["Licht"],
     medium: ["Gemiddeld"],
     high: ["Hoog"],
@@ -2585,18 +2931,20 @@ var nl = {
     create_image: ["Maak een afbeelding"]
   },
   signedInMarkers: ["Nieuwe chat", "Chats doorzoeken", "Recente items", "Chatgeschiedenis", "Projecten", "Stel een vraag"],
-  responseActions: ["Reactie kopi\xEBren"],
-  stopControl: ["Prompt versturen"]
+  responseActions: ["Reactie kopi\xEBren"]
 };
 
 // src/dom/locale/sv.ts
 var sv = {
   configurationAxes: {
+    power: ["Prestanda"],
     model: ["Modell"],
     effort: ["Resonemangsniv\xE5"],
-    speed: ["Hastighet"]
+    speed: ["Hastighet"],
+    advanced: ["Avancerat"]
   },
   configurationOptions: {
+    instant: ["Direkt"],
     light: ["L\xE5g"],
     medium: ["Balanserad"],
     high: ["H\xF6g"],
@@ -2633,15 +2981,19 @@ var sv = {
 // src/dom/locale/lv.ts
 var lv = {
   configurationAxes: {
+    power: ["Jauda"],
     model: ["Modelis"],
     effort: ["P\u016Bles"],
-    speed: ["\u0100trums"]
+    speed: ["\u0100trums"],
+    advanced: ["Papildu"]
   },
   configurationOptions: {
+    instant: ["T\u016Bl\u012Bt\u0113js"],
     light: ["Viegls"],
     medium: ["Vid\u0113js"],
     high: ["Augsts"],
     extraHigh: ["\u013Boti augsts"],
+    max: ["Maks."],
     standard: ["Standarta"],
     fast: ["\u0100trs"]
   },
@@ -2675,15 +3027,19 @@ var lv = {
 // src/dom/locale/mk.ts
 var mk = {
   configurationAxes: {
+    power: ["\u041C\u043E\u045C\u043D\u043E\u0441\u0442"],
     model: ["\u041C\u043E\u0434\u0435\u043B"],
     effort: ["\u041D\u0430\u043F\u043E\u0440"],
-    speed: ["\u0411\u0440\u0437\u0438\u043D\u0430"]
+    speed: ["\u0411\u0440\u0437\u0438\u043D\u0430"],
+    advanced: ["\u041D\u0430\u043F\u0440\u0435\u0434\u043D\u043E"]
   },
   configurationOptions: {
     light: ["\u041B\u0435\u0441\u043D\u043E"],
     medium: ["\u0421\u0440\u0435\u0434\u043D\u0430"],
     high: ["\u0412\u0438\u0441\u043E\u043A\u0430"],
-    extraHigh: ["\u0415\u043A\u0441\u0442\u0440\u0430 \u0432\u0438\u0441\u043E\u043A\u0430"],
+    extraHigh: ["\u0415\u043A\u0441\u0442\u0440\u0430 \u0432\u0438\u0441\u043E\u043A\u0430", "\u041C\u043D\u043E\u0433\u0443 \u0432\u0438\u0441\u043E\u043A\u0430"],
+    max: ["\u041C\u0430\u043A\u0441"],
+    ultra: ["\u0423\u043B\u0442\u0440\u0430"],
     standard: ["\u0421\u0442\u0430\u043D\u0434\u0430\u0440\u0434\u0435\u043D"],
     fast: ["\u0411\u0440\u0437\u043E"]
   },
@@ -2703,6 +3059,10 @@ var mk = {
     extraHigh: ["\u041C\u043D\u043E\u0433\u0443 \u0432\u0438\u0441\u043E\u043A\u043E", "\u041C\u043D\u043E\u0433\u0443 \u0432\u0438\u0441\u043E\u043A\u0430"]
   },
   modeOpenerExtra: ["\u041A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0438\u0440\u0430\u0458..."],
+  experienceOptions: {
+    chat: ["\u0420\u0430\u0437\u0433\u043E\u0432\u043E\u0440"],
+    work: ["\u0420\u0430\u0431\u043E\u0442\u0430"]
+  },
   tools: {
     web_search: ["\u041F\u0440\u0435\u0431\u0430\u0440\u0443\u0432\u0430\u045A\u0435 \u043D\u0430 \u0438\u043D\u0442\u0435\u0440\u043D\u0435\u0442"],
     deep_research: ["\u0414\u043B\u0430\u0431\u043E\u043A\u043E \u0438\u0441\u0442\u0440\u0430\u0436\u0443\u0432\u0430\u045A\u0435"],
@@ -2716,14 +3076,19 @@ var mk = {
 // src/dom/locale/sq.ts
 var sq = {
   configurationAxes: {
-    effort: ["P\xEBrpjekje"],
-    speed: ["Shpejt\xEBsi"]
+    power: ["Fuqia"],
+    model: ["Modeli"],
+    effort: ["P\xEBrpjekje", "Arsyetim"],
+    speed: ["Shpejt\xEBsi"],
+    advanced: ["T\xEB avancuara"]
   },
   configurationOptions: {
-    light: ["I leht\xEB"],
+    instant: ["I menj\xEBhersh\xEBm"],
+    light: ["I leht\xEB", "E leht\xEB"],
     medium: ["Mesatare"],
     high: ["E lart\xEB"],
     extraHigh: ["Tep\xEBr e lart\xEB"],
+    max: ["Maks."],
     fast: ["I shpejt\xEB"]
   },
   composerTextbox: ["Pyet p\xEBr \xE7do gj\xEB"],
@@ -2743,6 +3108,10 @@ var sq = {
     extraHigh: ["Shum\xEB i lart\xEB", "Tep\xEBr e lart\xEB"]
   },
   modeOpenerExtra: ["Konfiguro..."],
+  experienceOptions: {
+    chat: ["Bised\xEB"],
+    work: ["Pun\xEB"]
+  },
   tools: {
     web_search: ["K\xEBrkim n\xEB ueb"],
     deep_research: ["K\xEBrkim i thell\xEB"],
@@ -2756,14 +3125,18 @@ var sq = {
 // src/dom/locale/sl.ts
 var sl = {
   configurationAxes: {
+    power: ["Mo\u010D"],
     effort: ["Napor"],
-    speed: ["Hitrost"]
+    speed: ["Hitrost"],
+    advanced: ["Napredno"]
   },
   configurationOptions: {
+    instant: ["Takoj"],
     light: ["Osnovno"],
     medium: ["Srednje"],
     high: ["Visoko"],
     extraHigh: ["Zelo visoko"],
+    max: ["Najve\u010D"],
     standard: ["Standardno"],
     fast: ["Hitro"]
   },
@@ -2784,6 +3157,10 @@ var sl = {
     extraHigh: ["Zelo visoko"]
   },
   modeOpenerExtra: ["Konfiguracija \u2026"],
+  experienceOptions: {
+    chat: ["Klepet"],
+    work: ["Delo"]
+  },
   tools: {
     web_search: ["Iskanje po spletu"],
     deep_research: ["Poglobljeno raziskovanje"],
@@ -2797,15 +3174,19 @@ var sl = {
 // src/dom/locale/sr.ts
 var sr = {
   configurationAxes: {
+    power: ["\u0421\u043D\u0430\u0433\u0430"],
     model: ["\u041C\u043E\u0434\u0435\u043B"],
-    effort: ["\u041D\u0438\u0432\u043E"],
-    speed: ["\u0411\u0440\u0437\u0438\u043D\u0430"]
+    effort: ["\u041D\u0438\u0432\u043E", "\u041D\u0430\u043F\u043E\u0440"],
+    speed: ["\u0411\u0440\u0437\u0438\u043D\u0430"],
+    advanced: ["\u041D\u0430\u043F\u0440\u0435\u0434\u043D\u043E"]
   },
   configurationOptions: {
     light: ["\u041B\u0430\u0433\u0430\u043D\u043E"],
     medium: ["\u0421\u0440\u0435\u0434\u045A\u0435"],
     high: ["\u0412\u0438\u0441\u043E\u043A\u043E"],
     extraHigh: ["\u0412\u0435\u043E\u043C\u0430 \u0432\u0438\u0441\u043E\u043A\u043E"],
+    max: ["\u041C\u0430\u043A\u0441"],
+    ultra: ["\u0423\u043B\u0442\u0440\u0430"],
     standard: ["\u0421\u0442\u0430\u043D\u0434\u0430\u0440\u0434\u043D\u043E"],
     fast: ["\u0411\u0440\u0437\u043E"]
   },
@@ -2825,6 +3206,10 @@ var sr = {
     extraHigh: ["\u0412\u0435\u043E\u043C\u0430 \u0432\u0438\u0441\u043E\u043A\u043E"]
   },
   modeOpenerExtra: ["\u041A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0438\u0448\u0438..."],
+  experienceOptions: {
+    chat: ["\u040B\u0430\u0441\u043A\u0430\u045A\u0435"],
+    work: ["\u041F\u043E\u0441\u0430\u043E"]
+  },
   tools: {
     web_search: ["\u041F\u0440\u0435\u0442\u0440\u0430\u0433\u0430 \u0432\u0435\u0431\u0430"],
     deep_research: ["\u0414\u0443\u0431\u0438\u043D\u0441\u043A\u043E \u0438\u0441\u0442\u0440\u0430\u0436\u0438\u0432\u0430\u045A\u0435"],
@@ -2838,15 +3223,20 @@ var sr = {
 // src/dom/locale/mn.ts
 var mn = {
   configurationAxes: {
+    power: ["\u0427\u0430\u0434\u0430\u043B"],
     model: ["\u0417\u0430\u0433\u0432\u0430\u0440"],
-    effort: ["\u0425\u04AF\u0447\u0438\u043D \u0447\u0430\u0440\u043C\u0430\u0439\u043B\u0442"],
-    speed: ["\u0425\u0443\u0440\u0434"]
+    effort: ["\u0425\u04AF\u0447\u0438\u043D \u0447\u0430\u0440\u043C\u0430\u0439\u043B\u0442", "\u0422\u043E\u043E\u0446\u043E\u043E\u043B\u043E\u043B"],
+    speed: ["\u0425\u0443\u0440\u0434"],
+    advanced: ["\u0414\u044D\u0432\u0448\u0438\u043B\u0442\u044D\u0442"]
   },
   configurationOptions: {
+    instant: ["\u0428\u0443\u0443\u0440\u0445\u0430\u0439"],
     light: ["\u0425\u04E9\u043D\u0433\u04E9\u043D"],
     medium: ["\u0414\u0443\u043D\u0434"],
-    high: ["\u0418\u0445"],
-    extraHigh: ["\u041C\u0430\u0448 \u0438\u0445"],
+    high: ["\u0418\u0445", "\u04E8\u043D\u0434\u04E9\u0440"],
+    extraHigh: ["\u041C\u0430\u0448 \u0438\u0445", "\u041C\u0430\u0448 \u04E9\u043D\u0434\u04E9\u0440"],
+    max: ["\u0425\u0430\u043C\u0433\u0438\u0439\u043D \u0438\u0445"],
+    ultra: ["\u0423\u043B\u044C\u0442\u0440\u0430"],
     standard: ["\u0421\u0442\u0430\u043D\u0434\u0430\u0440\u0442"],
     fast: ["\u0425\u0443\u0440\u0434\u0430\u043D"]
   },
@@ -2868,6 +3258,10 @@ var mn = {
     pro: ["\u041F\u0440\u043E"]
   },
   modeOpenerExtra: ["\u0422\u043E\u0445\u0438\u0440\u0443\u0443\u043B\u0430\u0445..."],
+  experienceOptions: {
+    chat: ["\u0427\u0430\u0442"],
+    work: ["\u0410\u0436\u0438\u043B"]
+  },
   tools: {
     web_search: ["\u0412\u0435\u0431 \u0445\u0430\u0439\u043B\u0442"],
     deep_research: ["\u0413\u04AF\u043D \u0441\u0443\u0434\u0430\u043B\u0433\u0430\u0430"],
@@ -2881,15 +3275,20 @@ var mn = {
 // src/dom/locale/my.ts
 var my = {
   configurationAxes: {
+    power: ["\u1005\u103D\u1019\u103A\u1038\u1021\u102C\u1038"],
     model: ["\u1019\u1031\u102C\u103A\u1012\u101A\u103A"],
     effort: ["\u1021\u102C\u1038\u1011\u102F\u1010\u103A\u1019\u103E\u102F"],
-    speed: ["\u1021\u1019\u103C\u1014\u103A\u1014\u103E\u102F\u1014\u103A\u1038"]
+    speed: ["\u1021\u1019\u103C\u1014\u103A\u1014\u103E\u102F\u1014\u103A\u1038"],
+    advanced: ["\u1021\u1006\u1004\u1037\u103A\u1019\u103C\u1004\u1037\u103A"]
   },
   configurationOptions: {
+    instant: ["\u1001\u103B\u1000\u103A\u1001\u103B\u1004\u103A\u1038"],
     light: ["\u1015\u1031\u102B\u1037\u1015\u102B\u1038"],
     medium: ["\u1021\u101C\u101A\u103A\u1021\u101C\u1010\u103A"],
     high: ["\u1021\u1019\u103C\u1004\u1037\u103A"],
     extraHigh: ["\u1021\u101C\u103D\u1014\u103A\u1019\u103C\u1004\u1037\u103A"],
+    max: ["\u1021\u1019\u103C\u1004\u1037\u103A\u1006\u102F\u1036\u1038"],
+    ultra: ["\u1021\u101A\u103A\u101C\u103A\u1011\u101B\u102C"],
     standard: ["\u1015\u102F\u1036\u1019\u103E\u1014\u103A"],
     fast: ["\u1021\u1019\u103C\u1014\u103A"]
   },
@@ -2910,6 +3309,9 @@ var my = {
     extraHigh: ["\u1021\u101C\u103D\u1014\u103A\u1019\u103C\u1004\u1037\u103A"]
   },
   modeOpenerExtra: ["\u1015\u103C\u102F\u1015\u103C\u1004\u103A\u1019\u103D\u1019\u103A\u1038\u1019\u1036\u101B\u1014\u103A"],
+  experienceOptions: {
+    work: ["\u1021\u101C\u102F\u1015\u103A"]
+  },
   tools: {
     web_search: ["\u101D\u1018\u103A\u101B\u103E\u102C\u1016\u103D\u1031\u101B\u1014\u103A"],
     deep_research: ["\u1014\u1000\u103A\u1014\u1032\u101E\u1031\u102C \u101E\u102F\u1010\u1031\u101E\u1014"],
@@ -2923,15 +3325,20 @@ var my = {
 // src/dom/locale/ta.ts
 var ta = {
   configurationAxes: {
-    model: ["\u0BAE\u0BBE\u0BA4\u0BBF\u0BB0\u0BBF"],
-    effort: ["\u0BAE\u0BC1\u0BAF\u0BB1\u0BCD\u0B9A\u0BBF"],
-    speed: ["\u0BB5\u0BC7\u0B95\u0BAE\u0BCD"]
+    power: ["\u0BA4\u0BBF\u0BB1\u0BA9\u0BCD"],
+    model: ["\u0BAE\u0BBE\u0BA4\u0BBF\u0BB0\u0BBF", "\u0BAE\u0BBE\u0B9F\u0BB2\u0BCD"],
+    effort: ["\u0BAE\u0BC1\u0BAF\u0BB1\u0BCD\u0B9A\u0BBF", "\u0B9A\u0BBF\u0BA8\u0BCD\u0BA4\u0BA9\u0BC8 \u0B85\u0BB3\u0BB5\u0BC1"],
+    speed: ["\u0BB5\u0BC7\u0B95\u0BAE\u0BCD"],
+    advanced: ["\u0BAE\u0BC7\u0BAE\u0BCD\u0BAA\u0B9F\u0BCD\u0B9F"]
   },
   configurationOptions: {
+    instant: ["\u0B89\u0B9F\u0BA9\u0B9F\u0BBF"],
     light: ["\u0B95\u0BC1\u0BB1\u0BC8\u0BB5\u0BC1"],
     medium: ["\u0BAE\u0BBF\u0BA4\u0BAE\u0BBE\u0BA9"],
     high: ["\u0B85\u0BA4\u0BBF\u0B95\u0BAE\u0BBE\u0BA9"],
     extraHigh: ["\u0BAE\u0BBF\u0B95 \u0B85\u0BA4\u0BBF\u0B95\u0BAE\u0BBE\u0BA9"],
+    max: ["\u0B85\u0BA4\u0BBF\u0B95\u0BAA\u0B9F\u0BCD\u0B9A\u0BAE\u0BCD"],
+    ultra: ["\u0B85\u0BB2\u0BCD\u0B9F\u0BCD\u0BB0\u0BBE"],
     standard: ["\u0BB5\u0BB4\u0B95\u0BCD\u0B95\u0BAE\u0BBE\u0BA9"],
     fast: ["\u0BB5\u0BBF\u0BB0\u0BC8\u0BB5\u0BC1"]
   },
@@ -2953,6 +3360,10 @@ var ta = {
     pro: ["\u0BAA\u0BCD\u0BB0\u0BCB"]
   },
   modeOpenerExtra: ["\u0B95\u0B9F\u0BCD\u0B9F\u0BAE\u0BC8\u0B95\u0BCD\u0B95\u0BB5\u0BC1\u0BAE\u0BCD..."],
+  experienceOptions: {
+    chat: ["\u0B85\u0BB0\u0B9F\u0BCD\u0B9F\u0BC8"],
+    work: ["\u0BB5\u0BC7\u0BB2\u0BC8"]
+  },
   tools: {
     web_search: ["\u0B87\u0BA3\u0BC8\u0BAF \u0BA4\u0BC7\u0B9F\u0BB2\u0BCD"],
     deep_research: ["\u0B86\u0BB4\u0BCD\u0BA8\u0BCD\u0BA4 \u0B86\u0BAF\u0BCD\u0BB5\u0BC1"],
@@ -2996,6 +3407,7 @@ var MODE_OPTION_IDS = [
 ];
 var EXPERIENCE_OPTION_IDS = ["chat", "work"];
 var CONFIGURATION_AXIS_IDS = [
+  "power",
   "model",
   "intelligence",
   "effort",
@@ -3184,9 +3596,13 @@ async function readPageState(page) {
   const url = typeof rawUrl === "string" ? rawUrl : "";
   const rawTitle = typeof page.title === "function" ? await page.title().catch(() => void 0) : void 0;
   const title = typeof rawTitle === "string" ? rawTitle : void 0;
-  const visibleText = await readVisibleText(page);
-  const signedIn = isLikelySignedIn(visibleText);
-  const classifiedBlocker = classifyVisibleText(visibleText);
+  const surface = await readPageSurfaceSnapshot(page);
+  const visibleText = surface.visibleText;
+  const blockerSurface = surface.blockerSurface;
+  const fullPageBlocker = classifyVisibleText(visibleText);
+  const classifiedBlocker = blockerSurface.hasConversationMessages ? classifyVisibleText(blockerSurface.text) : classifyVisibleText(blockerSurface.text) ?? fullPageBlocker;
+  const loginWall = classifiedBlocker?.kind === "login_required" && isLikelyLoginWall(visibleText);
+  const signedIn = isLikelySignedIn(visibleText) && !loginWall;
   const blocker = classifiedBlocker?.kind === "login_required" && signedIn ? void 0 : classifiedBlocker;
   const conversationId = parseConversationId(url);
   const state = {
@@ -3230,23 +3646,203 @@ async function readVisibleText(page) {
   }
   return "";
 }
+async function readPageSurfaceSnapshot(page) {
+  if (typeof page.evaluate === "function") {
+    try {
+      const snapshot = await withTimeout(page.evaluate(() => {
+        const messageSelector = "[data-message-author-role], [data-testid^='conversation-turn']";
+        const systemSelector = [
+          "[role='alert']",
+          "[role='status']",
+          "[role='dialog']",
+          "[aria-live='assertive']",
+          "[data-testid*='toast' i]",
+          "[data-testid*='banner' i]",
+          "[class*='toast' i]",
+          "[class*='banner' i]"
+        ].join(", ");
+        const visible = (element) => {
+          if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+          const style = window.getComputedStyle(element);
+          if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") return false;
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 || rect.height > 0;
+        };
+        const blockerText = Array.from(document.querySelectorAll(systemSelector)).filter((element) => visible(element)).filter((element) => element.closest(messageSelector) === null).map((element) => `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""}`).join(" ");
+        return {
+          visibleText: document.body?.innerText ?? "",
+          blockerText,
+          hasConversationMessages: Array.from(document.querySelectorAll(messageSelector)).some(visible)
+        };
+      }), 1e3, "Timed out while reading the visible ChatGPT page surface.");
+      if (typeof snapshot === "string") {
+        return {
+          visibleText: snapshot,
+          blockerSurface: { text: snapshot, hasConversationMessages: false }
+        };
+      }
+      if (typeof snapshot === "object" && snapshot !== null && typeof snapshot.visibleText === "string" && typeof snapshot.blockerText === "string" && typeof snapshot.hasConversationMessages === "boolean") {
+        const typed = snapshot;
+        return {
+          visibleText: typed.visibleText,
+          blockerSurface: {
+            text: typed.blockerText,
+            hasConversationMessages: typed.hasConversationMessages
+          }
+        };
+      }
+    } catch {
+    }
+  }
+  if (typeof page.content === "function") {
+    try {
+      const html = await withTimeout(page.content(), 1e3, "Timed out while reading the serialized ChatGPT page surface.");
+      return serializedPageSurface(html);
+    } catch {
+    }
+  }
+  return {
+    visibleText: "",
+    blockerSurface: { text: "", hasConversationMessages: false }
+  };
+}
+function serializedPageSurface(html) {
+  const stack = [];
+  const blockerNodes = [];
+  const voidElements = /* @__PURE__ */ new Set([
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr"
+  ]);
+  let hasConversationMessages = false;
+  let visibleText = "";
+  const hidden = (attributes) => /(?:^|\s)(?:hidden|inert)(?:\s|=|$)/i.test(attributes) || /\baria-hidden\s*=\s*["']?true/i.test(attributes) || /\bstyle\s*=\s*["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|pointer-events\s*:\s*none)/i.test(attributes);
+  const hiddenInChain = (node) => {
+    for (let current = node; current !== void 0; current = current.parent) {
+      if (hidden(current.attributes)) return true;
+    }
+    return false;
+  };
+  const messageNode = (node) => {
+    const authorRole = serializedAttribute(node.attributes, "data-message-author-role");
+    const testId = serializedAttribute(node.attributes, "data-testid");
+    return authorRole !== void 0 && authorRole.length > 0 || testId?.toLowerCase().startsWith("conversation-turn") === true;
+  };
+  const insideMessage = (node) => {
+    for (let current = node; current !== void 0; current = current.parent) {
+      if (messageNode(current)) return true;
+    }
+    return false;
+  };
+  const systemSurface = (node) => {
+    const role = serializedAttribute(node.attributes, "role")?.toLowerCase();
+    const ariaLive = serializedAttribute(node.attributes, "aria-live")?.toLowerCase();
+    const testId = serializedAttribute(node.attributes, "data-testid")?.toLowerCase() ?? "";
+    const className = serializedAttribute(node.attributes, "class")?.toLowerCase() ?? "";
+    return role === "alert" || role === "status" || role === "dialog" || ariaLive === "assertive" || testId.includes("toast") || testId.includes("banner") || className.includes("toast") || className.includes("banner");
+  };
+  const ignoredInChain = (node) => {
+    for (let current = node; current !== void 0; current = current.parent) {
+      if (current.tag === "script" || current.tag === "style" || current.tag === "template") return true;
+    }
+    return false;
+  };
+  for (const match of html.matchAll(/<!--[\s\S]*?-->|<![^>]*>|<\/?[a-z0-9-]+\b[^>]*>|[^<]+/gi)) {
+    const token = match[0];
+    const closing = /^<\/([a-z0-9-]+)/i.exec(token);
+    if (closing?.[1] !== void 0) {
+      const tag = closing[1].toLowerCase();
+      const index = stack.map((node) => node.tag).lastIndexOf(tag);
+      if (index >= 0) stack.splice(index);
+      continue;
+    }
+    const opening = /^<([a-z0-9-]+)\b([^>]*)>/i.exec(token);
+    if (opening?.[1] !== void 0) {
+      const node = {
+        tag: opening[1].toLowerCase(),
+        attributes: opening[2] ?? "",
+        parent: stack.at(-1),
+        blockerText: ""
+      };
+      const ignored = ignoredInChain(node);
+      if (messageNode(node) && !hiddenInChain(node) && !ignored) hasConversationMessages = true;
+      if (systemSurface(node) && !hiddenInChain(node) && !insideMessage(node) && !ignored) {
+        const ariaLabel = serializedAttribute(node.attributes, "aria-label");
+        if (ariaLabel !== void 0) node.blockerText = ` ${ariaLabel}`;
+        blockerNodes.push(node);
+      }
+      if (!voidElements.has(node.tag) && !/\/\s*>$/.test(token)) stack.push(node);
+      continue;
+    }
+    const currentNode = stack.at(-1);
+    if (!hiddenInChain(currentNode) && !ignoredInChain(currentNode)) {
+      visibleText += ` ${token}`;
+      for (const node of blockerNodes) {
+        for (let current = currentNode; current !== void 0; current = current.parent) {
+          if (current === node) {
+            node.blockerText += ` ${token}`;
+            break;
+          }
+        }
+      }
+    }
+  }
+  return {
+    visibleText: htmlToText(visibleText),
+    blockerSurface: {
+      text: blockerNodes.map((node) => htmlToText(node.blockerText)).filter(Boolean).join(" "),
+      hasConversationMessages
+    }
+  };
+}
+function serializedAttribute(attributes, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`\\b${escapedName}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+))`, "i").exec(attributes);
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
 function htmlToText(html) {
-  return html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
+  return stripHiddenMarkup(html).replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
+}
+function stripHiddenMarkup(html) {
+  let visible = html;
+  const hiddenElement = /<([a-z0-9-]+)\b[^>]*(?:\bhidden\b|\binert\b|\baria-hidden\s*=\s*["']?true|\bstyle\s*=\s*["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0))[^>]*>[\s\S]*?<\/\1>/gi;
+  for (let pass = 0; pass < 4; pass += 1) {
+    const next = visible.replace(hiddenElement, " ");
+    if (next === visible) break;
+    visible = next;
+  }
+  return visible;
 }
 function isLikelySignedIn(visibleText) {
   const markers = localeLabels.signedInMarkers.map(escapeRegExp).join("|");
   return new RegExp(`\\b(${markers})\\b`, "i").test(visibleText);
 }
+function isLikelyLoginWall(visibleText) {
+  const labels = localeLabels.loginBlocker.map(escapeRegExp).join("|");
+  const matches = visibleText.match(new RegExp(`(?:${labels})`, "gi")) ?? [];
+  return matches.length >= 2 || /\bsign\s?up\b|\bcreate (?:an )?account\b/i.test(visibleText);
+}
 
 // src/browser/attach.ts
-var CHATGPT_HOME = "https://chatgpt.com/";
-var CHATGPT_HOSTS = /* @__PURE__ */ new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com"]);
 var MAX_EXISTING_TAB_DIAGNOSTIC_CANDIDATES = 10;
 var MAX_EXISTING_TAB_DIAGNOSTIC_FIELD_LENGTH = 240;
 async function attachChatGPTBrowser(env, args = {}) {
   const browser = await getBrowser(env);
   const page = await getOrCreateChatGPTPage(browser, env, args);
+  await assertPageOnChatGPTOrigin(page);
   const state = await readPageState(page);
+  if (!isChatGPTUrl(state.url)) throw unsafeChatGPTOriginError();
   if (state.blocker?.kind === "login_required") {
     throw new LoginRequiredError(state.blocker.visibleText);
   }
@@ -3309,6 +3905,7 @@ async function tryBrowserGetPreferredListed(browsers) {
 }
 async function getOrCreateChatGPTPage(browser, env, args) {
   const targetUrl = args.url ?? CHATGPT_HOME;
+  assertSafeChatGPTNavigation(targetUrl);
   const explicitExistingPolicy = normalizeExplicitExistingTabPolicy(args);
   if (env.page !== void 0) {
     const cached = normalizePage(env.page);
@@ -3366,7 +3963,7 @@ function normalizeExplicitExistingTabPolicy(args) {
   if (args.existingTab === true) {
     return {
       target: { type: "selected", host: "chatgpt" },
-      ifMissing: "create",
+      ifMissing: "block",
       ifMultiple: "first",
       requireChatGPT: true
     };
@@ -3404,6 +4001,23 @@ async function selectExistingTab(browser, policy) {
       }
     }
   }
+  if (typeof browser.tabs?.list === "function") {
+    const controlled = await Promise.resolve(browser.tabs.list.call(browser.tabs)).catch(() => []);
+    const matches = [];
+    for (const candidate of controlled) {
+      const page = await hydrateTab(browser, candidate);
+      if (await pageMatchesExistingTarget(page, policy)) matches.push(page);
+    }
+    if (matches.length === 1 || matches.length > 1 && (policy.ifMultiple ?? "block") === "first") {
+      return { page: matches[0] };
+    }
+    if (matches.length > 1) {
+      throw new ExistingTabSelectionError(
+        "Multiple already-controlled ChatGPT tabs matched the requested existing-tab target.",
+        "existing_tab_ambiguous"
+      );
+    }
+  }
   return userMatch.diagnostics === void 0 ? { diagnostics: diagnosticsForUnavailableUserTabs(policy) } : userMatch;
 }
 async function selectExistingUserTab(browser, policy, collectDiagnostics) {
@@ -3431,6 +4045,7 @@ async function selectExistingUserTab(browser, policy, collectDiagnostics) {
   }
   const selected = matches[0];
   const page = normalizePage(await claimTab.call(browser.user, selected));
+  await assertPageOnChatGPTOrigin(page);
   return diagnostics === void 0 ? { page } : { page, diagnostics };
 }
 function userTabMatchesTarget(tab, policy) {
@@ -3546,23 +4161,15 @@ async function pageMatchesExistingTarget(page, policy) {
   return userTabMatchesTarget(tab, policy);
 }
 async function findExistingChatGPTTab(browser) {
-  const userTab = await selectExistingUserTab(browser, {
-    target: { type: "selected", host: "chatgpt" },
-    ifMultiple: "first",
-    requireChatGPT: true
-  }, false).catch(() => ({ page: void 0 }));
-  if (userTab.page !== void 0) {
-    return userTab.page;
-  }
   const selected = browser.tabs?.selected;
   if (typeof selected === "function") {
     try {
       const current = await selected.call(browser.tabs);
       if (current !== void 0) {
-        const normalized2 = normalizePage(current);
+        const normalized = normalizePage(current);
         try {
-          if ((await normalized2.url?.())?.includes("chatgpt.com") === true) {
-            return normalized2;
+          if (isChatGPTUrl(await normalized.url?.())) {
+            return normalized;
           }
         } catch {
         }
@@ -3571,18 +4178,30 @@ async function findExistingChatGPTTab(browser) {
     }
   }
   const list = browser.tabs?.list;
-  if (typeof list !== "function") {
-    return void 0;
-  }
-  const tabs = await list.call(browser.tabs);
-  const normalized = await Promise.all(tabs.map((tab) => hydrateTab(browser, tab)));
-  for (const tab of normalized) {
-    try {
-      if ((await tab.url?.())?.includes("chatgpt.com") === true) {
-        return tab;
+  if (typeof list === "function") {
+    const tabs = await list.call(browser.tabs);
+    const normalized = await Promise.all(tabs.map((tab) => hydrateTab(browser, tab)));
+    for (const tab of normalized) {
+      try {
+        if (isChatGPTUrl(await tab.url?.())) {
+          return tab;
+        }
+      } catch {
       }
-    } catch {
     }
+  }
+  const userTab = await selectExistingUserTab(browser, {
+    target: { type: "selected", host: "chatgpt" },
+    ifMultiple: "first",
+    requireChatGPT: true
+  }, false).catch((error) => {
+    if (error instanceof ChatGPTControlError && error.blockerDetails.code === "unsafe_chatgpt_origin") {
+      throw error;
+    }
+    return { page: void 0 };
+  });
+  if (userTab.page !== void 0) {
+    return userTab.page;
   }
   return void 0;
 }
@@ -3619,16 +4238,6 @@ function targetRequiresChatGPT(target) {
     case "conversation_id":
     case "url":
       return true;
-  }
-}
-function isChatGPTUrl(url) {
-  if (url === void 0) {
-    return false;
-  }
-  try {
-    return CHATGPT_HOSTS.has(new URL(url).hostname);
-  } catch {
-    return false;
   }
 }
 function urlMatches(actual, expected) {
@@ -3682,6 +4291,7 @@ function userTabCandidateLabel(tab) {
   return `tab ${tab.id} - ${tab.title ?? "Untitled"} - ${tab.url ?? "unknown URL"}`;
 }
 async function createTab(browser, url) {
+  assertSafeChatGPTNavigation(url);
   if (typeof browser.tabs?.create === "function") {
     const tab = await browser.tabs.create(url);
     const page = await hydrateTab(browser, tab);
@@ -3699,18 +4309,39 @@ async function createTab(browser, url) {
     if (typeof page.goto === "function") {
       await page.goto(url);
     }
+    await assertPageOnChatGPTOrigin(page);
     return page;
   }
   return void 0;
 }
+function assertSafeChatGPTNavigation(url) {
+  if (isChatGPTUrl(url)) return;
+  throw unsafeChatGPTOriginError(
+    "ChatGPT navigation requires HTTPS on an allowlisted ChatGPT origin with the default port."
+  );
+}
 async function ensurePageAt(page, url) {
   const currentUrl = await Promise.resolve(page.url?.()).catch(() => "");
-  if (currentUrl?.includes("chatgpt.com") === true) {
+  if (isChatGPTUrl(currentUrl)) {
     return;
   }
   if (typeof page.goto === "function") {
     await page.goto(url);
   }
+  await assertPageOnChatGPTOrigin(page);
+}
+async function assertPageOnChatGPTOrigin(page) {
+  const actualUrl = await Promise.resolve(page.url?.()).catch(() => void 0);
+  if (!isChatGPTUrl(actualUrl)) throw unsafeChatGPTOriginError();
+}
+function unsafeChatGPTOriginError(message = "The browser did not remain on a supported ChatGPT origin after navigation or attachment.") {
+  return new ChatGPTControlError(
+    message,
+    "selector_drift",
+    false,
+    void 0,
+    { code: "unsafe_chatgpt_origin" }
+  );
 }
 function normalizeBrowser(browser) {
   if (browser === void 0 || browser === null || typeof browser !== "object") {
@@ -4721,6 +5352,14 @@ function sendButton(page) {
   }
   return page.getByRole("button", { name: anyLabelPattern(localeLabels.sendButton) });
 }
+function stopGenerationButton(page) {
+  if (typeof page.getByRole !== "function") {
+    return requiredLocator(page, "button[aria-label*='Stop'], button[title*='Stop']");
+  }
+  return page.getByRole("button", {
+    name: new RegExp(`^(?:${localeLabels.stopControl.map(escapeRegExp).join("|")})$`, "i")
+  });
+}
 function searchChatsButton(page) {
   if (typeof page.getByRole !== "function") {
     return requiredLocator(page, "button");
@@ -5405,7 +6044,36 @@ async function ensurePage(env) {
   if (affinity !== void 0) {
     return affinity;
   }
+  const origin = await verifyChatGPTOrigin(env);
+  if (origin !== void 0) {
+    return origin;
+  }
   return resultOk({}, await contextFromPage(env.page, tabContext(env)));
+}
+async function verifyChatGPTOrigin(env) {
+  if (env.page === void 0) return void 0;
+  const actualUrl = await Promise.resolve(env.page.url?.()).catch(() => void 0);
+  if (isChatGPTUrl(actualUrl)) return void 0;
+  return {
+    ok: false,
+    status: "blocked",
+    warnings: [],
+    blocker: {
+      kind: "selector_drift",
+      code: "unsafe_chatgpt_origin",
+      message: "ChatGPT command refused to operate because the controlled tab is not on an allowlisted ChatGPT origin.",
+      visibleText: actualUrl ?? "The current tab URL could not be verified.",
+      remediation: [
+        {
+          label: "Reopen ChatGPT",
+          instruction: "Run session.bootstrap against https://chatgpt.com or claim an exact supported ChatGPT tab before retrying.",
+          userActionRequired: false
+        }
+      ],
+      resumable: false
+    },
+    context: await contextFromPage(env.page, tabContext(env))
+  };
 }
 async function verifyTabAffinity(env) {
   if (env.expectedTabId === void 0 || env.page === void 0) {
@@ -5446,14 +6114,22 @@ function tabContext(env, actualTabId = tabIdFromPage(env.page)) {
 var CHATGPT_HOME2 = "https://chatgpt.com/";
 async function ensureConversationTarget(page, target, options) {
   const targetUrl = absoluteConversationUrl(target);
+  requireChatGPTUrl(targetUrl, "Conversation target URL");
   const expectedConversationId = parseConversationId(targetUrl);
   const currentUrl = typeof page.url === "function" ? await Promise.resolve(page.url()).catch(() => "") : "";
-  if (expectedConversationId !== void 0 && parseConversationId(typeof currentUrl === "string" ? currentUrl : "") === expectedConversationId) {
+  if (isChatGPTUrl(typeof currentUrl === "string" ? currentUrl : "") && expectedConversationId !== void 0 && parseConversationId(typeof currentUrl === "string" ? currentUrl : "") === expectedConversationId) {
     await waitForConversationHydrated(page, options.timeoutMs, expectedConversationId);
     return ensureResult(false, targetUrl, expectedConversationId);
   }
   await page.goto?.(targetUrl, { waitUntil: "domcontentloaded", timeout: options.timeoutMs });
+  const navigatedUrl = typeof page.url === "function" ? await Promise.resolve(page.url()).catch(() => "") : "";
+  requireChatGPTUrl(typeof navigatedUrl === "string" ? navigatedUrl : "", "Conversation navigation result");
   await waitForConversationHydrated(page, options.timeoutMs, expectedConversationId);
+  const finalUrl = typeof page.url === "function" ? await Promise.resolve(page.url()).catch(() => "") : "";
+  requireChatGPTUrl(typeof finalUrl === "string" ? finalUrl : "", "Hydrated conversation URL");
+  if (expectedConversationId !== void 0 && parseConversationId(typeof finalUrl === "string" ? finalUrl : "") !== expectedConversationId) {
+    throw new Error(`Visible Chat navigation did not reach conversation ${expectedConversationId}.`);
+  }
   return ensureResult(true, targetUrl, expectedConversationId);
 }
 async function waitForConversationHydrated(page, timeoutMs, expectedConversationId) {
@@ -5744,45 +6420,70 @@ import { createHash as createHash2 } from "node:crypto";
 
 // src/dom/generation-state.ts
 var EMPTY_GENERATION_STATE = {
+  observed: false,
   active: false,
   stopped: false,
   signals: []
 };
 async function readAssistantGenerationState(page) {
   if (typeof page.evaluate === "function") {
-    return page.evaluate((args) => {
-      const normalize = (value) => (value ?? "").trim().toLowerCase();
-      const isVisible = (element) => {
-        const style = window.getComputedStyle(element);
-        return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && element.getAttribute("aria-hidden") !== "true";
-      };
-      const visibleButtons = Array.from(document.querySelectorAll("button")).filter((button) => isVisible(button) && button.disabled !== true && button.getAttribute("aria-disabled") !== "true");
-      const buttonTexts = visibleButtons.map((button) => [
-        button.innerText,
-        button.textContent,
-        button.getAttribute("aria-label"),
-        button.getAttribute("title")
-      ].map(normalize).filter(Boolean).join(" ")).filter(Boolean);
-      const bodyText = normalize(document.body?.innerText);
-      const haystacks = [bodyText, ...buttonTexts];
-      const matchingSignals = (phrases) => haystacks.flatMap(
-        (text) => phrases.map((phrase) => phrase.toLowerCase()).filter((phrase) => text.includes(phrase))
-      );
-      const activeSignals = matchingSignals(args.stop);
-      const stoppedSignals = matchingSignals(args.stopped);
-      return {
-        active: activeSignals.length > 0,
-        stopped: stoppedSignals.length > 0,
-        signals: [.../* @__PURE__ */ new Set([...activeSignals, ...stoppedSignals, ...buttonTexts.filter((text) => /stop|cancel|stopped|answering|thinking/i.test(text))])].slice(0, 5)
-      };
-    }, {
-      stop: [...localeLabels.stopControl],
-      stopped: [...localeLabels.stoppedAssistant]
-    }).catch(() => EMPTY_GENERATION_STATE);
+    try {
+      return await page.evaluate((args) => {
+        const normalize = (value) => (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+        const isVisible = (element) => {
+          if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) {
+            return false;
+          }
+          const style = window.getComputedStyle(element);
+          if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+            return false;
+          }
+          const rect = element.getBoundingClientRect();
+          return (rect.width > 0 || rect.height > 0) && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+        };
+        const values = (element) => [
+          element.getAttribute("aria-label"),
+          element.getAttribute("title"),
+          element.innerText,
+          element.textContent
+        ].map(normalize).filter(Boolean);
+        const matchingLabels2 = (element, phrases) => {
+          const elementValues = values(element);
+          return phrases.filter((phrase) => elementValues.includes(normalize(phrase)));
+        };
+        const textboxes = Array.from(document.querySelectorAll(
+          "textarea, [contenteditable='true'], [role='textbox']"
+        )).filter(isVisible);
+        const activeComposers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
+        const isScopedStopControl = (button) => activeComposers.length === 1 && activeComposers[0].contains(button);
+        const visibleStopButtons = Array.from(document.querySelectorAll("button")).filter((button) => isVisible(button) && button.disabled !== true && button.getAttribute("aria-disabled") !== "true" && isScopedStopControl(button) && matchingLabels2(button, args.send).length === 0 && matchingLabels2(button, args.stop).length > 0);
+        const activeSignals = [...new Set(visibleStopButtons.flatMap((button) => matchingLabels2(button, args.stop)))];
+        const turns = Array.from(document.querySelectorAll("[data-testid^='conversation-turn']"));
+        const latestAssistant = Array.from(document.querySelectorAll("[data-message-author-role='assistant']")).at(-1);
+        const latestTurn = latestAssistant?.closest("[data-testid^='conversation-turn']") ?? turns.at(-1);
+        const stoppedSignals = latestTurn === void 0 ? [] : [...new Set(Array.from(latestTurn.querySelectorAll(
+          "button, [role='status'], [aria-label], [title], p, span, div"
+        )).filter((element) => isVisible(element)).flatMap((element) => matchingLabels2(element, args.stopped)))];
+        return {
+          observed: true,
+          active: activeSignals.length > 0,
+          stopped: stoppedSignals.length > 0,
+          signals: [.../* @__PURE__ */ new Set([...activeSignals, ...stoppedSignals])].slice(0, 5)
+        };
+      }, {
+        stop: [...localeLabels.stopControl],
+        stopped: [...localeLabels.stoppedAssistant],
+        send: [...localeLabels.sendButton]
+      });
+    } catch {
+    }
   }
   if (typeof page.content === "function") {
-    const html = await page.content().catch(() => "");
-    return generationStateFromText(html);
+    try {
+      return generationStateFromHtml(await page.content());
+    } catch {
+      return EMPTY_GENERATION_STATE;
+    }
   }
   return EMPTY_GENERATION_STATE;
 }
@@ -5822,15 +6523,116 @@ async function latestAssistantTurnHasResponseActions(page) {
     return true;
   }
 }
-function generationStateFromText(text) {
-  const normalized = text.toLowerCase();
-  const activeSignals = localeLabels.stopControl.filter((phrase) => normalized.includes(phrase.toLowerCase()));
-  const stoppedSignals = localeLabels.stoppedAssistant.filter((phrase) => normalized.includes(phrase.toLowerCase()));
+function generationStateFromHtml(html) {
+  const normalize = (value) => value.replace(/<[^>]*>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  const isHiddenTag = (tag) => /\b(?:hidden|inert)\b/i.test(tag) || /\baria-hidden\s*=\s*["']?true/i.test(tag) || /\bstyle\s*=\s*["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)/i.test(tag);
+  const candidateValues = (tag, text) => {
+    const values = [text];
+    for (const attribute of ["aria-label", "title"]) {
+      const match = new RegExp(`\\b${attribute}\\s*=\\s*["']([^"']*)["']`, "i").exec(tag);
+      if (match?.[1] !== void 0) values.push(match[1]);
+    }
+    return values.map(normalize).filter(Boolean);
+  };
+  const exactMatches = (values, phrases) => phrases.filter((phrase) => values.includes(normalize(phrase)));
+  const activeSignals = serializedStopButtonCandidates(html).filter((candidate) => candidate.scoped && !candidate.hidden && !candidate.disabled).flatMap((candidate) => {
+    const values = candidateValues(candidate.attributes, candidate.text);
+    return exactMatches(values, localeLabels.sendButton).length > 0 ? [] : exactMatches(values, localeLabels.stopControl);
+  });
+  const latestTurnStart = Math.max(
+    html.toLowerCase().lastIndexOf('data-message-author-role="assistant"'),
+    html.toLowerCase().lastIndexOf("data-message-author-role='assistant'")
+  );
+  const latestAssistantHtml = latestTurnStart >= 0 ? html.slice(latestTurnStart) : "";
+  const stoppedSignals = [...latestAssistantHtml.matchAll(
+    /<(?:button|p|span|div)\b([^>]*)>([\s\S]*?)<\/(?:button|p|span|div)>/gi
+  )].filter((match) => !isHiddenTag(match[1] ?? "")).flatMap((match) => exactMatches(candidateValues(match[1] ?? "", match[2] ?? ""), localeLabels.stoppedAssistant));
   return {
+    observed: true,
     active: activeSignals.length > 0,
     stopped: stoppedSignals.length > 0,
-    signals: [...activeSignals, ...stoppedSignals].slice(0, 5)
+    signals: [.../* @__PURE__ */ new Set([...activeSignals, ...stoppedSignals])].slice(0, 5)
   };
+}
+function serializedStopButtonCandidates(html) {
+  const stack = [];
+  const buttons = [];
+  const activeComposers = /* @__PURE__ */ new Set();
+  const voidElements = /* @__PURE__ */ new Set([
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr"
+  ]);
+  const hidden = (attributes) => /\b(?:hidden|inert)\b/i.test(attributes) || /\baria-hidden\s*=\s*["']?true/i.test(attributes) || /\bstyle\s*=\s*["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)/i.test(attributes);
+  const hiddenInChain = (node) => {
+    for (let current = node; current !== void 0; current = current.parent) {
+      if (hidden(current.attributes)) return true;
+    }
+    return false;
+  };
+  const isComposerMetadata = (node) => /\b(?:data-testid|aria-label|class)\s*=\s*["'][^"']*composer/i.test(node.attributes);
+  const isTextbox = (node) => node.tag === "textarea" || /\bcontenteditable\s*=\s*["']?true/i.test(node.attributes) || /\brole\s*=\s*["']textbox["']/i.test(node.attributes);
+  for (const match of html.matchAll(/<!--[\s\S]*?-->|<![^>]*>|<\/?[a-z0-9-]+\b[^>]*>|[^<]+/gi)) {
+    const token = match[0];
+    const closing = /^<\/([a-z0-9-]+)/i.exec(token);
+    if (closing?.[1] !== void 0) {
+      const tag = closing[1].toLowerCase();
+      const index = stack.map((node) => node.tag).lastIndexOf(tag);
+      if (index >= 0) stack.splice(index);
+      continue;
+    }
+    const opening = /^<([a-z0-9-]+)\b([^>]*)>/i.exec(token);
+    if (opening?.[1] !== void 0) {
+      const node = {
+        tag: opening[1].toLowerCase(),
+        attributes: opening[2] ?? "",
+        parent: stack.at(-1),
+        text: ""
+      };
+      if (node.tag === "button") buttons.push(node);
+      if (isTextbox(node) && !hiddenInChain(node)) {
+        const ancestors = [...stack].reverse();
+        const composer = ancestors.find((ancestor) => ancestor.tag === "form") ?? ancestors.find(isComposerMetadata);
+        if (composer !== void 0 && !hiddenInChain(composer)) activeComposers.add(composer);
+      }
+      if (!voidElements.has(node.tag) && !/\/\s*>$/.test(token)) stack.push(node);
+      continue;
+    }
+    for (let index = stack.length - 1; index >= 0; index -= 1) {
+      if (stack[index].tag === "button") {
+        stack[index].text += ` ${token}`;
+        break;
+      }
+    }
+  }
+  const activeComposer = activeComposers.size === 1 ? [...activeComposers][0] : void 0;
+  return buttons.map((button) => {
+    let scoped = false;
+    for (let current = button.parent; current !== void 0; current = current.parent) {
+      if (current === activeComposer) {
+        scoped = true;
+        break;
+      }
+    }
+    return {
+      attributes: button.attributes,
+      text: button.text,
+      scoped,
+      hidden: hiddenInChain(button),
+      disabled: /\bdisabled(?:\s|=|$)/i.test(button.attributes) || /\baria-disabled\s*=\s*["']?true/i.test(button.attributes)
+    };
+  });
 }
 
 // src/dom/wait-snapshot.ts
@@ -5873,27 +6675,43 @@ async function readWaitDomSnapshot(page) {
     const trimmedForTransient = normalizedText.replace(/[.。…]+$/g, "").trim().toLowerCase();
     const transient = args.transient.some((phrase) => trimmedForTransient === phrase.toLowerCase()) || /^analyzing (?:the )?images?$/.test(trimmedForTransient) || /^processing (?:the )?images?$/.test(trimmedForTransient) || /^reading (?:the )?images?$/.test(trimmedForTransient);
     const isVisible = (element) => {
+      if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) {
+        return false;
+      }
       const style = window.getComputedStyle(element);
-      return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && element.getAttribute("aria-hidden") !== "true";
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+        return false;
+      }
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 || rect.height > 0;
     };
-    const visibleButtons = Array.from(document.querySelectorAll("button")).filter((button) => isVisible(button) && button.disabled !== true && button.getAttribute("aria-disabled") !== "true");
-    const buttonTexts = visibleButtons.map((button) => [
-      button.innerText,
-      button.textContent,
-      button.getAttribute("aria-label"),
-      button.getAttribute("title")
-    ].map(normalizeLower).filter(Boolean).join(" ")).filter(Boolean);
-    const bodyText = normalizeLower(document.body?.innerText);
-    const haystacks = [bodyText, ...buttonTexts];
-    const matchingSignals = (phrases) => haystacks.flatMap(
-      (text) => phrases.map((phrase) => phrase.toLowerCase()).filter((phrase) => text.includes(phrase))
-    );
-    const activeSignals = matchingSignals(args.stop);
-    const stoppedSignals = matchingSignals(args.stopped);
+    const elementValues = (element) => [
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.innerText,
+      element.textContent
+    ].map(normalizeLower).filter(Boolean);
+    const matchingLabels2 = (element, phrases) => {
+      const values = elementValues(element);
+      return phrases.filter((phrase) => values.includes(normalizeLower(phrase)));
+    };
+    const isScopedStopControl = (button) => {
+      if (button.matches("[data-testid='stop-button'], [data-testid*='stop' i]")) return true;
+      if (button.closest("[data-testid*='composer' i], [aria-label*='composer' i]") !== null) return true;
+      const form = button.closest("form");
+      return form?.querySelector("textarea, [contenteditable='true'], [role='textbox']") !== null;
+    };
+    const visibleStopButtons = Array.from(document.querySelectorAll("button")).filter((button) => isVisible(button) && button.disabled !== true && button.getAttribute("aria-disabled") !== "true" && isScopedStopControl(button) && matchingLabels2(button, args.send).length === 0 && matchingLabels2(button, args.stop).length > 0);
+    const activeSignals = [...new Set(visibleStopButtons.flatMap((button) => matchingLabels2(button, args.stop)))];
+    const latestAssistantTurn = latestAssistant?.closest("[data-testid^='conversation-turn']") ?? Array.from(document.querySelectorAll("[data-testid^='conversation-turn']")).at(-1);
+    const stoppedSignals = latestAssistantTurn === void 0 ? [] : [...new Set(Array.from(latestAssistantTurn.querySelectorAll(
+      "button, [role='status'], [aria-label], [title], p, span, div"
+    )).filter((element) => isVisible(element)).flatMap((element) => matchingLabels2(element, args.stopped)))];
     const generation = {
+      observed: true,
       active: activeSignals.length > 0,
       stopped: stoppedSignals.length > 0,
-      signals: [.../* @__PURE__ */ new Set([...activeSignals, ...stoppedSignals, ...buttonTexts.filter((text) => /stop|cancel|stopped|answering|thinking/i.test(text))])].slice(0, 5)
+      signals: [.../* @__PURE__ */ new Set([...activeSignals, ...stoppedSignals])].slice(0, 5)
     };
     const turns = Array.from(document.querySelectorAll("[data-testid^='conversation-turn']"));
     let hasResponseActions;
@@ -5928,6 +6746,7 @@ async function readWaitDomSnapshot(page) {
     transient: [...localeLabels.transientAssistant],
     stop: [...localeLabels.stopControl],
     stopped: [...localeLabels.stoppedAssistant],
+    send: [...localeLabels.sendButton],
     actions: [...localeLabels.responseActions]
   });
 }
@@ -6039,7 +6858,7 @@ var ProbeTimeoutError = class extends Error {
 
 // src/commands/messages.ts
 function isResponseComplete(snapshot) {
-  return snapshot.latestText.trim().length > 0 && !isTransientAssistantText(snapshot.latestText) && snapshot.textStableForMs >= snapshot.stableMs && !snapshot.generation.active && !snapshot.generation.stopped && snapshot.hasResponseActions;
+  return snapshot.latestText.trim().length > 0 && !isTransientAssistantText(snapshot.latestText) && snapshot.textStableForMs >= snapshot.stableMs && snapshot.generation.observed && !snapshot.generation.active && !snapshot.generation.stopped && snapshot.hasResponseActions;
 }
 async function composeMessage(env, args) {
   const boot = await ensurePage(env);
@@ -6168,6 +6987,243 @@ async function submitMessage(env, args = {}) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
   }
 }
+async function stopGeneration(env, args = {}) {
+  const timeoutMs = Math.max(1, args.timeoutMs ?? 5e3);
+  const deadline = createDeadline(timeoutMs);
+  if (args.confirmStop !== true) {
+    return {
+      ok: false,
+      status: "needs_confirmation",
+      warnings: [],
+      blocker: {
+        kind: "confirmation",
+        code: "stop_generation_confirmation_required",
+        fieldPath: "confirmStop",
+        message: "Stopping the visible ChatGPT response requires an explicit caller decision.",
+        resumable: true
+      },
+      context: env.page === void 0 ? { timestamp: (/* @__PURE__ */ new Date()).toISOString() } : await stopContext(env.page, deadline)
+    };
+  }
+  let boot;
+  try {
+    boot = await withinStopDeadline(deadline, () => ensurePage(env), "ChatGPT page verification");
+  } catch (error) {
+    return stopDeadlineResult(error);
+  }
+  if (!boot.ok) return boot;
+  const page = env.page;
+  const generationProbe = createSingleFlightProbe("generation state", readAssistantGenerationState);
+  const warnings = /* @__PURE__ */ new Set();
+  let stopActivationStarted = false;
+  let beforeActivation;
+  try {
+    const beforeResult = await generationProbe(page, deadline, {
+      timeoutMs: Math.min(1e3, Math.max(1, remainingMs(deadline)))
+    });
+    addWarnings(warnings, beforeResult.warnings);
+    if (!beforeResult.ok || !beforeResult.value.observed) {
+      if (remainingMs(deadline) <= 0) {
+        return stopDeadlineResult(void 0, void 0, [...warnings]);
+      }
+      return {
+        ok: false,
+        status: "blocked",
+        warnings: [...warnings],
+        blocker: {
+          kind: "selector_drift",
+          code: "stop_generation_state_unavailable",
+          message: "ChatGPT generation state could not be inspected safely, so no control was clicked.",
+          resumable: true
+        },
+        context: await stopContext(page, deadline)
+      };
+    }
+    const before = beforeResult.value;
+    beforeActivation = before;
+    if (!before.active) {
+      return resultOk({
+        wasGenerating: false,
+        stopped: false,
+        signalsBefore: before.signals,
+        signalsAfter: before.signals
+      }, await stopContext(page, deadline), [...warnings]);
+    }
+    const resolution = await resolveStopControl(page, deadline);
+    if (!resolution.ok) {
+      return {
+        ok: false,
+        status: "blocked",
+        data: { wasGenerating: true, stopped: false, signalsBefore: before.signals, signalsAfter: before.signals },
+        warnings: [...warnings],
+        blocker: {
+          kind: "selector_drift",
+          code: resolution.code,
+          message: resolution.message,
+          resumable: true
+        },
+        context: await stopContext(page, deadline)
+      };
+    }
+    stopActivationStarted = true;
+    await withinStopDeadline(
+      deadline,
+      () => resolution.control.click?.({ timeout: Math.min(2e3, remainingMs(deadline)) }) ?? Promise.reject(new Error("The resolved Stop control does not support click().")),
+      "Stop control click"
+    );
+    let after = EMPTY_GENERATION_STATE;
+    while (remainingMs(deadline) > 0) {
+      const afterResult = await generationProbe(page, deadline, {
+        timeoutMs: Math.min(1e3, Math.max(1, remainingMs(deadline)))
+      });
+      addWarnings(warnings, afterResult.warnings);
+      if (afterResult.ok) {
+        after = afterResult.value;
+        if (after.observed && !after.active) {
+          return resultOk({
+            wasGenerating: true,
+            stopped: true,
+            signalsBefore: before.signals,
+            signalsAfter: after.signals
+          }, await stopContext(page, deadline), [...warnings]);
+        }
+      }
+      await sleepWithinDeadline(page, deadline, 100);
+    }
+    const data = {
+      wasGenerating: true,
+      stopped: false,
+      signalsBefore: before.signals,
+      signalsAfter: after.signals
+    };
+    return stopDeadlineResult(void 0, data, [...warnings]);
+  } catch (error) {
+    if (remainingMs(deadline) <= 0 || error instanceof StopDeadlineError) {
+      const data = stopActivationStarted && beforeActivation !== void 0 ? {
+        wasGenerating: true,
+        stopped: false,
+        signalsBefore: beforeActivation.signals,
+        signalsAfter: beforeActivation.signals
+      } : void 0;
+      return stopDeadlineResult(error, data, [...warnings]);
+    }
+    return resultError(error instanceof Error ? error : new Error(String(error)), await stopContext(page, deadline));
+  }
+}
+async function resolveStopControl(page, deadline) {
+  const candidates = stopGenerationButton(page);
+  if (typeof candidates.count !== "function") {
+    return {
+      ok: false,
+      code: "stop_generation_control_unavailable",
+      message: "ChatGPT is generating, but the Stop-control candidate set could not be enumerated safely."
+    };
+  }
+  const count = await withinStopDeadline(deadline, () => candidates.count(), "Stop control enumeration");
+  if (count === 0) {
+    return {
+      ok: false,
+      code: "stop_generation_control_unavailable",
+      message: "ChatGPT is generating, but no visible Stop control was found."
+    };
+  }
+  if (count > 8) {
+    return {
+      ok: false,
+      code: "stop_generation_control_ambiguous",
+      message: `ChatGPT exposed ${count} Stop-control candidates; refusing to choose among an unexpectedly broad set.`
+    };
+  }
+  const eligible = [];
+  for (let index = 0; index < count; index += 1) {
+    const control = count === 1 ? candidates : typeof candidates.nth === "function" ? candidates.nth(index) : void 0;
+    if (control === void 0 || typeof control.isVisible !== "function" || typeof control.evaluate !== "function") {
+      continue;
+    }
+    const visible = await withinStopDeadline(
+      deadline,
+      () => control.isVisible({ timeout: Math.min(1e3, remainingMs(deadline)) }),
+      `Stop control ${index + 1} visibility check`
+    );
+    if (!visible) continue;
+    const scoped = await withinStopDeadline(deadline, () => control.evaluate((element) => {
+      const button = element;
+      if (button.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      if (button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+      const visible2 = (node) => {
+        if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && style.pointerEvents !== "none" && (rect.width > 0 || rect.height > 0);
+      };
+      const textboxes = Array.from(document.querySelectorAll(
+        "textarea, [contenteditable='true'], [role='textbox']"
+      )).filter(visible2);
+      const activeComposers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
+      return activeComposers.length === 1 && activeComposers[0].contains(button);
+    }), `Stop control ${index + 1} scope check`);
+    if (scoped) eligible.push(control);
+  }
+  if (eligible.length === 1) {
+    return { ok: true, control: eligible[0] };
+  }
+  if (eligible.length > 1) {
+    return {
+      ok: false,
+      code: "stop_generation_control_ambiguous",
+      message: `ChatGPT exposed ${eligible.length} visible Stop controls in active composer regions; no control was clicked.`
+    };
+  }
+  return {
+    ok: false,
+    code: "stop_generation_control_unavailable",
+    message: "ChatGPT is generating, but no uniquely scoped visible Stop control could be activated."
+  };
+}
+async function withinStopDeadline(deadline, operation, label) {
+  const budget = remainingMs(deadline);
+  if (budget <= 0) throw new StopDeadlineError(label);
+  try {
+    return await withTimeout(operation(), budget, `${label} exceeded the messages.stop deadline.`);
+  } catch (error) {
+    if (remainingMs(deadline) <= 0) throw new StopDeadlineError(label);
+    throw error;
+  }
+}
+async function sleepWithinDeadline(page, deadline, requestedMs) {
+  const waitMs = Math.min(requestedMs, Math.max(0, remainingMs(deadline) - 1));
+  if (waitMs <= 0) return;
+  const wait = page.waitForTimeout?.(waitMs) ?? new Promise((resolve4) => setTimeout(resolve4, waitMs));
+  await withinStopDeadline(deadline, () => wait, "Generation-state polling delay");
+}
+async function stopContext(page, deadline) {
+  const budget = Math.min(250, remainingMs(deadline));
+  if (budget <= 0) return { timestamp: (/* @__PURE__ */ new Date()).toISOString() };
+  return withTimeout(contextFromPage(page), budget, "Stop-result context capture timed out.").catch(() => ({ timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
+}
+function stopDeadlineResult(error, data, warnings = []) {
+  const message = data?.wasGenerating === true ? "Stop activation was started, but its outcome could not be verified before the single operation deadline. Do not retry automatically because the original click may still complete." : "ChatGPT generation could not be inspected and stopped before the single operation deadline.";
+  const result = {
+    ok: false,
+    status: "timeout",
+    warnings: error === void 0 ? warnings : [...warnings, error instanceof Error ? error.message : String(error)],
+    blocker: {
+      kind: "selector_drift",
+      code: data?.wasGenerating === true ? "stop_generation_unverified" : "stop_generation_deadline_exhausted",
+      message,
+      resumable: data?.wasGenerating !== true
+    },
+    context: { timestamp: (/* @__PURE__ */ new Date()).toISOString() }
+  };
+  if (data !== void 0) result.data = data;
+  return result;
+}
+var StopDeadlineError = class extends Error {
+  constructor(label) {
+    super(`${label} could not complete before the messages.stop deadline.`);
+    this.name = "StopDeadlineError";
+  }
+};
 async function clickSendControl(page) {
   try {
     await sendButton(page).click?.();
@@ -6359,7 +7415,7 @@ async function waitForMessage(env, args = {}) {
         context: await contextFromPage(page)
       });
     }
-    const metadataComplete = targetReached && snapshot.text.length > 0 && !snapshot.text.transient && Date.now() - lastChangedAt >= stableMs && !snapshot.generation.active && !snapshot.generation.stopped && hasResponseActions;
+    const metadataComplete = targetReached && snapshot.text.length > 0 && !snapshot.text.transient && Date.now() - lastChangedAt >= stableMs && snapshot.generation.observed && !snapshot.generation.active && !snapshot.generation.stopped && hasResponseActions;
     if (metadataComplete) {
       const latestText = normalizeWhitespace(await fetchLatestAssistantText(page) ?? "");
       const fetchedMetadata = waitTextMetadata(latestText);
@@ -7906,7 +8962,8 @@ async function setMode(env, args) {
       return selectorDrift(page, "No unique ChatGPT mode menu opener was found.");
     }
     await page.waitForTimeout?.(250);
-    const candidates = await enumerateVisibleMenuItems(page);
+    let candidates = await enumerateVisibleMenuItems(page);
+    const observedCandidates = [...candidates];
     const selected = [];
     if (requested.length > 0 && shouldRejectAsWrongModeMenu(candidates)) {
       const candidateLabels2 = candidates.map((candidate) => candidate.label);
@@ -7919,9 +8976,20 @@ async function setMode(env, args) {
       };
     }
     for (const request of requested) {
-      const match = findModeMenuItem(candidates, request);
+      let match = findModeMenuItem(candidates, request);
       if (match === void 0) {
-        const candidateLabels2 = candidates.map((candidate) => candidate.label);
+        const sliderSelection = await selectModeWithPowerSlider(page, request);
+        if (sliderSelection !== void 0) {
+          selected.push(sliderSelection);
+          continue;
+        }
+        const nested = await openEffortSubmenu(page, candidates, request);
+        observedCandidates.push(...nested);
+        candidates = nested;
+        match = findModeMenuItem(candidates, request);
+      }
+      if (match === void 0) {
+        const candidateLabels2 = dedupeLabels(observedCandidates.map((candidate) => candidate.label));
         return {
           ok: false,
           status: "unsupported",
@@ -7930,12 +8998,12 @@ async function setMode(env, args) {
           context: await contextFromPage(page)
         };
       }
-      if (!await clickMenuItem(page, match.label)) {
+      if (!await clickResolvedMenuItem(page, match)) {
         return selectorDrift(page, `Mode option "${match.label}" was visible but could not be clicked.`, candidates.map((candidate) => candidate.label));
       }
       selected.push(match.label);
     }
-    let candidateLabels = candidates.map((candidate) => candidate.label);
+    let candidateLabels = dedupeLabels(observedCandidates.map((candidate) => candidate.label));
     if (requestedVersion !== void 0) {
       const versionResult = await selectModelVersion(page, requestedVersion, candidates, args.timeoutMs ?? 3e4);
       candidateLabels = dedupeLabels([...candidateLabels, ...versionResult.candidates]);
@@ -7955,6 +9023,59 @@ async function setMode(env, args) {
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
   }
+}
+async function selectModeWithPowerSlider(page, request) {
+  const wanted = request.modeId === void 0 ? void 0 : CANONICAL_INTELLIGENCE_ORDER.get(request.modeId);
+  const slider = page.locator?.("[role='slider'][aria-valuemin='0'][aria-valuemax='4']");
+  if (wanted === void 0 || slider?.count === void 0 || slider.evaluate === void 0 || slider.press === void 0 || slider.isVisible === void 0 || !await slider.isVisible().catch(() => false) || await slider.count().catch(() => 0) !== 1) {
+    return void 0;
+  }
+  const state = await slider.evaluate((element) => ({
+    min: Number(element.getAttribute("aria-valuemin")),
+    max: Number(element.getAttribute("aria-valuemax")),
+    now: Number(element.getAttribute("aria-valuenow"))
+  })).catch(() => void 0);
+  if (state === void 0 || state.min !== 0 || state.max !== CANONICAL_INTELLIGENCE_ORDER.size - 1 || !Number.isInteger(state.now) || state.now < state.min || state.now > state.max) {
+    return void 0;
+  }
+  const key = wanted > state.now ? "ArrowRight" : "ArrowLeft";
+  for (let step = 0; step < Math.abs(wanted - state.now); step += 1) {
+    await slider.press(key);
+  }
+  await page.waitForTimeout?.(150);
+  return findUniqueVisibleLabelForRequest(await visibleModeButtonLabelList(page), request);
+}
+async function openEffortSubmenu(page, rootItems, request) {
+  const axisLabels = [
+    ...localeLabels.configurationAxes.effort,
+    ...localeLabels.configurationAxes.intelligence
+  ].map(normalizeForLabelMatch);
+  const effortRows = (items) => items.filter((item) => {
+    if (item.role === "menuitemradio") return false;
+    const normalized = normalizeForLabelMatch(item.label);
+    return axisLabels.some((axis) => normalized === axis || normalized.startsWith(`${axis} `));
+  });
+  let visibleRootItems = rootItems;
+  let rows = effortRows(visibleRootItems);
+  if (rows.length === 0) {
+    const advancedLabels = localeLabels.configurationAxes.advanced.map(normalizeForLabelMatch);
+    const advancedRows = visibleRootItems.filter((item) => {
+      const normalized = normalizeForLabelMatch(item.label);
+      return advancedLabels.some((label) => normalized === label || visibleLabelMatches(item.label, label));
+    });
+    if (advancedRows.length !== 1 || !await clickResolvedMenuItem(page, advancedRows[0])) {
+      return [];
+    }
+    await page.waitForTimeout?.(250);
+    visibleRootItems = await enumerateVisibleMenuItems(page);
+    rows = effortRows(visibleRootItems);
+  }
+  if (rows.length !== 1 || !await clickResolvedMenuItem(page, rows[0])) {
+    return [];
+  }
+  await page.waitForTimeout?.(250);
+  const nested = await enumerateVisibleMenuItems(page);
+  return findModeMenuItem(nested, request) === void 0 ? [] : nested;
 }
 async function modeVerificationWarnings(page, requested, selected) {
   if (requested.length === 0) {
@@ -8047,7 +9168,7 @@ async function selectTool(env, args) {
         context: await contextFromPage(page)
       };
     }
-    if (!await clickMenuItem(page, match.label)) {
+    if (!await clickMenuItem(page, match)) {
       return selectorDrift(page, `Tool "${match.label}" was visible but could not be clicked.`, candidates.map((candidate) => candidate.label));
     }
     return resultOk({ selected: match.label, candidates: candidates.map((candidate) => candidate.label) }, await contextFromPage(page));
@@ -8115,25 +9236,25 @@ function shouldRejectAsWrongModeMenu(items) {
   }
   return items.some((item) => isThreadActionLabel(item.label));
 }
-async function clickMenuItem(page, label) {
-  if (await clickModelSwitcherMenuItem(page, label)) {
+async function clickMenuItem(page, item) {
+  if (await clickModelSwitcherMenuItem(page, item)) {
     return true;
   }
-  if (await clickMenuItemByPointer(page, label)) {
+  if (await clickMenuItemByPointer(page, item)) {
     return true;
   }
-  if (await clickMenuItemByDom(page, label)) {
-    return true;
+  if (item.role !== void 0) {
+    const accessibleName = item.ariaLabel ?? item.label;
+    if (await clickIfUniqueMenuControl(
+      page.getByRole?.(item.role, { name: accessibleName, exact: true }),
+      item
+    )) return true;
   }
-  const roleLocator = page.locator?.("[role='menuitem'], [role='menuitemradio'], [role='option']")?.filter?.({ hasText: label });
-  if (await clickIfUnique2(roleLocator)) {
-    return true;
-  }
-  const textLocator = page.getByText?.(label, { exact: true });
-  return clickIfUnique2(textLocator);
+  const roleLocator = page.locator?.("[role='menuitem'], [role='menuitemradio'], [role='option']")?.filter?.({ hasText: new RegExp(`^\\s*${escapeRegExp3(item.label)}\\s*$`, "i") });
+  return clickIfUniqueMenuControl(roleLocator, item);
 }
-async function clickMenuItemByPointer(page, label) {
-  const point = await menuItemCenter(page, { label });
+async function clickMenuItemByPointer(page, item) {
+  const point = await menuItemCenter(page, item);
   if (point === void 0) {
     return false;
   }
@@ -8148,43 +9269,27 @@ async function clickMenuItemByPointer(page, label) {
   }
   return false;
 }
-async function clickModelSwitcherMenuItem(page, label) {
+async function clickModelSwitcherMenuItem(page, item) {
   if (typeof page.evaluate !== "function" || typeof page.locator !== "function") {
     return false;
   }
   const testId = await page.evaluate((wanted) => {
-    const normalizedWanted = wanted.replace(/\s+/g, " ").trim().toLowerCase();
+    const normalizedWanted = wanted.label.replace(/\s+/g, " ").trim().toLowerCase();
     const candidates = Array.from(document.querySelectorAll("[data-testid^='model-switcher-']"));
     const matches = candidates.filter((node) => {
       const element = node;
       const candidateTestId = element.getAttribute("data-testid") ?? "";
       if (candidateTestId.endsWith("-effort")) return false;
+      if (wanted.testId !== void 0 && candidateTestId !== wanted.testId) return false;
       const text = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim().toLowerCase();
       return text === normalizedWanted;
     }).map((node) => node.getAttribute("data-testid")).filter((value) => value !== null);
     return matches.length === 1 ? matches[0] : void 0;
-  }, label).catch(() => void 0);
+  }, item.testId === void 0 ? { label: item.label } : { label: item.label, testId: item.testId }).catch(() => void 0);
   if (testId === void 0) {
     return false;
   }
-  return clickIfUnique2(page.locator(`[data-testid="${escapeAttributeValue(testId)}"]`));
-}
-async function clickMenuItemByDom(page, label) {
-  if (typeof page.evaluate !== "function") {
-    return false;
-  }
-  return page.evaluate((wanted) => {
-    const normalizedWanted = wanted.replace(/\s+/g, " ").trim().toLowerCase();
-    const candidates = Array.from(document.querySelectorAll("[role='menuitem'], [role='menuitemradio'], [role='option']"));
-    const matches = candidates.filter((node) => {
-      const element = node;
-      const text = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim().toLowerCase();
-      return text === normalizedWanted;
-    });
-    if (matches.length !== 1) return false;
-    matches[0].click();
-    return true;
-  }, label).catch(() => false);
+  return clickIfUniqueMenuControl(page.locator(`[data-testid="${escapeAttributeValue(testId)}"]`), item);
 }
 async function clickIfUnique2(locator) {
   if (locator === void 0 || typeof locator.count !== "function" || typeof locator.click !== "function") {
@@ -8194,6 +9299,32 @@ async function clickIfUnique2(locator) {
   if (count !== 1) {
     return false;
   }
+  await locator.click();
+  return true;
+}
+async function clickIfUniqueMenuControl(locator, item) {
+  if (locator === void 0 || typeof locator.count !== "function" || typeof locator.evaluate !== "function" || typeof locator.click !== "function") {
+    return false;
+  }
+  if (await locator.count().catch(() => 0) !== 1) return false;
+  const safe = await locator.evaluate((element) => {
+    const control = element;
+    if (control.disabled || control.getAttribute("aria-disabled") === "true") return false;
+    if (control.hidden || control.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+    const style = window.getComputedStyle(control);
+    const rect = control.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") return false;
+    const containers = Array.from(document.querySelectorAll(
+      "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]"
+    )).filter((container) => {
+      if (container.hidden || container.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const containerStyle = window.getComputedStyle(container);
+      const containerRect = container.getBoundingClientRect();
+      return containerRect.width > 0 && containerRect.height > 0 && containerStyle.display !== "none" && containerStyle.visibility !== "hidden" && containerStyle.opacity !== "0";
+    });
+    return containers.length > 0 && containers.some((container) => container.contains(control));
+  }).catch(() => false);
+  if (!safe) return false;
   await locator.click();
   return true;
 }
@@ -8280,6 +9411,9 @@ function findUniqueVisibleLabel(labels, wanted) {
   const fuzzy = labels.filter((label) => visibleLabelMatches(normalizeLabel(label), normalized));
   return fuzzy.length === 1 ? fuzzy[0] : void 0;
 }
+function escapeRegExp3(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 function escapeAttributeValue(value) {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
@@ -8320,17 +9454,19 @@ function isModelVersionSubmenuOpener(item) {
   return item.hasPopup === true || item.role !== "menuitemradio" && MODEL_VERSION_FAMILY_PATTERN.test(item.label);
 }
 async function clickResolvedMenuItem(page, item) {
-  if (item.testId !== void 0 && await clickIfUnique2(
-    page.locator?.(`[data-testid="${escapeAttributeValue(item.testId)}"]`)
+  if (item.testId !== void 0 && await clickIfUniqueMenuControl(
+    page.locator?.(`[data-testid="${escapeAttributeValue(item.testId)}"]`),
+    item
   )) {
     return true;
   }
-  if (item.role !== void 0 && await clickIfUnique2(
-    page.getByRole?.(item.role, { name: item.label, exact: true })
+  if (item.role !== void 0 && await clickIfUniqueMenuControl(
+    page.getByRole?.(item.role, { name: item.ariaLabel ?? item.label, exact: true }),
+    item
   )) {
     return true;
   }
-  return clickMenuItem(page, item.label);
+  return clickMenuItem(page, item);
 }
 async function openModelVersionSubmenu(page, candidates) {
   const submenuOpeners = candidates.filter((item) => item.hasPopup === true || MODEL_VERSION_FAMILY_PATTERN.test(item.label));
@@ -8344,7 +9480,7 @@ async function openModelVersionSubmenu(page, candidates) {
         return true;
       }
     }
-    if (await clickMenuItem(page, candidate.label)) {
+    if (await clickMenuItem(page, candidate)) {
       await page.waitForTimeout?.(250);
       if (await modelVersionMenuItemsAreVisible(page)) {
         return true;
@@ -8381,18 +9517,26 @@ async function menuItemCenter(page, item, roles = ["menuitem", "menuitemradio", 
     const normalize = (value) => value.replace(/\s+/g, " ").trim().toLowerCase();
     const normalizedLabel = normalize(target2.label);
     const roleSelector = target2.roles.map((role) => `[role='${role}']`).join(",");
+    const visible = (element) => {
+      if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const rect2 = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect2.width > 0 && rect2.height > 0 && style.visibility !== "hidden" && style.display !== "none" && style.opacity !== "0" && style.pointerEvents !== "none";
+    };
+    const containers = Array.from(document.querySelectorAll(
+      "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]"
+    )).filter(visible);
     const matches = Array.from(document.querySelectorAll(roleSelector)).filter((node) => {
       const element = node;
       if (target2.testId !== void 0 && element.getAttribute("data-testid") !== target2.testId) {
         return false;
       }
+      if (element.disabled || element.getAttribute("aria-disabled") === "true") return false;
       const label = normalize(element.innerText ?? element.textContent ?? "");
       if (label !== normalizedLabel) {
         return false;
       }
-      const rect2 = element.getBoundingClientRect();
-      const style = window.getComputedStyle(element);
-      return rect2.width > 0 && rect2.height > 0 && style.visibility !== "hidden" && style.display !== "none" && style.opacity !== "0";
+      return visible(element) && containers.length > 0 && containers.some((container) => container.contains(element));
     });
     if (matches.length !== 1) return void 0;
     const rect = matches[0].getBoundingClientRect();
@@ -8470,6 +9614,11 @@ async function visibleModeButtonLabelList(page) {
     ));
     return Array.from(document.querySelectorAll("button, [role='button']")).map((node) => {
       const element = node;
+      if (element.hidden || element.getAttribute("aria-hidden") === "true" || typeof element.closest === "function" && element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return "";
+      const style = typeof window?.getComputedStyle === "function" ? window.getComputedStyle(element) : void 0;
+      if (style?.display === "none" || style?.visibility === "hidden" || style?.opacity === "0" || style?.pointerEvents === "none") return "";
+      const rect = typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : { width: 1, height: 1 };
+      if (rect.width <= 0 && rect.height <= 0) return "";
       if (scopedRoots.length > 0 && !scopedRoots.some((root) => root.contains(node))) return "";
       const visibleText = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim();
       const ariaLabel = (element.getAttribute("aria-label") ?? "").replace(/\s+/g, " ").trim();
@@ -8530,6 +9679,7 @@ async function inspectConfiguration(env, args = {}) {
       };
     }
     const experience = detected.data.experience;
+    const initialPanel = await readConfigurationPanel(page);
     const rootOpened = experience !== "unknown" && await waitForConfigurationRoot(
       page,
       experience,
@@ -8543,6 +9693,9 @@ async function inspectConfiguration(env, args = {}) {
       await page.waitForTimeout?.(150);
     }
     const panel = await readConfigurationPanel(page);
+    if (panel.openerLabel === void 0 && initialPanel.openerLabel !== void 0) {
+      panel.openerLabel = initialPanel.openerLabel;
+    }
     const rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
     const data = configurationInspectionFromSurface(
       experience,
@@ -8909,14 +10062,12 @@ async function openConfigurationRoot(page, experience) {
         }
         return true;
       };
-      const composerRoots = Array.from(document.querySelectorAll(
-        "main form, main [data-testid*='composer' i], main [class*='composer' i]"
-      ));
+      const formRoots = Array.from(document.querySelectorAll("main form"));
+      const testIdRoots = Array.from(document.querySelectorAll("main [data-testid*='composer' i]"));
+      const classRoots = Array.from(document.querySelectorAll("main [class*='composer' i]"));
+      const composerRoots = formRoots.length > 0 ? formRoots : testIdRoots.length > 0 ? testIdRoots : classRoots;
       const main = document.querySelector("main");
-      const roots = Array.from(/* @__PURE__ */ new Set([
-        ...composerRoots,
-        ...main === null ? [] : [main]
-      ]));
+      const roots = Array.from(new Set(composerRoots.length > 0 ? composerRoots : main === null ? [] : [main]));
       const controls = Array.from(new Set(roots.flatMap(
         (root) => Array.from(root.querySelectorAll("button, [role='button']"))
       ))).filter(visible);
@@ -9052,14 +10203,12 @@ async function readConfigurationPanel(page) {
         break;
       }
     }
-    const composerRoots = Array.from(document.querySelectorAll(
-      "main form, main [data-testid*='composer' i], main [class*='composer' i]"
-    ));
+    const formRoots = Array.from(document.querySelectorAll("main form"));
+    const testIdRoots = Array.from(document.querySelectorAll("main [data-testid*='composer' i]"));
+    const classRoots = Array.from(document.querySelectorAll("main [class*='composer' i]"));
+    const composerRoots = formRoots.length > 0 ? formRoots : testIdRoots.length > 0 ? testIdRoots : classRoots;
     const main = document.querySelector("main");
-    const openerRoots = Array.from(/* @__PURE__ */ new Set([
-      ...composerRoots,
-      ...main === null ? [] : [main]
-    ]));
+    const openerRoots = Array.from(new Set(composerRoots.length > 0 ? composerRoots : main === null ? [] : [main]));
     const openerCandidates = Array.from(new Set(openerRoots.flatMap(
       (root) => Array.from(root.querySelectorAll("button, [role='button']"))
     ))).filter(visible).map((control) => {
@@ -9082,7 +10231,7 @@ async function readConfigurationPanel(page) {
 async function findWorkAxisRow(page, axis) {
   const labels = axis === "modelVersion" ? [] : localeLabels.configurationAxes[axis] ?? [];
   for (const label of labels) {
-    const pattern = new RegExp(`^${escapeRegExp3(label)}(?:\\s|$)`, "i");
+    const pattern = new RegExp(`^${escapeRegExp4(label)}(?:\\s|$)`, "i");
     for (const role of ["button", "menuitem"]) {
       const locator = page.getByRole?.(role, { name: pattern });
       if (locator?.count !== void 0 && await locator.count().catch(() => 0) === 1) {
@@ -9096,12 +10245,28 @@ async function clickVisibleMenuItem(page, item) {
   if (item.testId !== void 0 && await clickIfUnique3(page.locator?.(`[data-testid="${escapeAttributeValue2(item.testId)}"]`))) {
     return true;
   }
-  for (const role of ["menuitemradio", "menuitem", "option"]) {
+  const roles = [...new Set([
+    item.role,
+    "menuitemradio",
+    "menuitem",
+    "option"
+  ].filter((role) => role !== void 0))];
+  if (item.ariaLabel !== void 0) {
+    for (const role of roles) {
+      if (await clickIfUnique3(page.getByRole?.(role, { name: item.ariaLabel, exact: true }))) {
+        return true;
+      }
+    }
+  }
+  for (const role of roles) {
     if (await clickIfUnique3(page.getByRole?.(role, { name: item.label, exact: true }))) {
       return true;
     }
   }
-  return clickIfUnique3(page.getByText?.(item.label, { exact: true }));
+  const exactText = new RegExp(`^\\s*${escapeRegExp4(item.label)}\\s*$`, "i");
+  return clickIfUnique3(page.locator?.(
+    "button, [role='button'], [role='menuitem'], [role='menuitemradio'], [role='option']"
+  )?.filter?.({ hasText: exactText }));
 }
 function findConfigurationOption(items, requested) {
   const normalizedRequested = normalizeConfigurationId(requested);
@@ -9280,7 +10445,7 @@ async function configurationFailure(page, before, desired, selected, message, co
     })
   };
 }
-function escapeRegExp3(value) {
+function escapeRegExp4(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function escapeAttributeValue2(value) {
@@ -9464,45 +10629,39 @@ async function attachFiles(env, args) {
     return boot;
   }
   const page = env.page;
+  const deadline = createDeadline(Math.max(1, args.timeoutMs ?? 3e4));
+  const mutationState = { handoffStarted: false };
   try {
     const files = preflight.data.files.map((file) => ({
       path: file.path,
       name: file.name,
       bytes: file.bytes
     }));
-    await uploadFiles(page, files, args.timeoutMs ?? 3e4);
-    const browserInput = args.includeDiagnostics === true ? await readBrowserInputDiagnostic(page).catch(() => void 0) : void 0;
-    await page.waitForTimeout?.(args.timeoutMs === void 0 ? 1e3 : Math.min(args.timeoutMs, 3e3));
-    const readiness = await waitForAttachedFilesReady(page, files, args.timeoutMs ?? 3e4);
+    const rawBaseline = await withinAttachmentDeadline(
+      deadline,
+      () => readAttachmentEvidenceBaseline(page),
+      "Pre-upload attachment baseline"
+    ).catch(() => ({ supported: false, inputFiles: [], attachmentLabels: [] }));
+    const baseline = rawBaseline !== null && typeof rawBaseline === "object" && Array.isArray(rawBaseline.inputFiles) && Array.isArray(rawBaseline.attachmentLabels) ? rawBaseline : { supported: false, inputFiles: [], attachmentLabels: [] };
+    await uploadFiles(page, files, deadline, mutationState);
+    const browserInput = args.includeDiagnostics === true ? await withinAttachmentDeadline(
+      deadline,
+      () => readBrowserInputDiagnostic(page),
+      "Browser input diagnostic"
+    ).catch(() => void 0) : void 0;
+    await attachmentDelay(
+      page,
+      deadline,
+      Math.min(250, Math.max(1, Math.floor(remainingMs(deadline) / 4)))
+    );
+    const readiness = await waitForAttachedFilesReady(page, files, baseline, deadline);
     if (!readiness.ready) {
-      const blocker = {
-        kind: "upload_failed",
-        code: "attachment_processing",
-        message: "ChatGPT still appears to be processing the attached file, so the prompt was not submitted.",
-        remediation: [
-          {
-            label: "Wait for upload",
-            instruction: "Wait until the visible attachment finishes uploading or processing, then retry the askWithFiles call.",
-            userActionRequired: false
-          },
-          {
-            label: "Retry smaller file",
-            instruction: "If processing never finishes, retry with a smaller file or a different supported file type.",
-            userActionRequired: true
-          }
-        ],
-        resumable: true
-      };
-      if (readiness.processingText !== void 0) {
-        blocker.visibleText = readiness.processingText;
-      }
-      return {
-        ok: false,
-        status: "blocked",
-        warnings: [],
-        blocker,
-        context: await contextFromPage(page)
-      };
+      return attachmentOutcomeIndeterminate(
+        files,
+        [],
+        await attachmentContext(page, deadline),
+        readiness.processingText
+      );
     }
     const data = { files };
     if (args.includeDiagnostics === true) {
@@ -9511,9 +10670,60 @@ async function attachFiles(env, args) {
         data.diagnostics.browserInput = browserInput;
       }
     }
-    return resultOk(data, await contextFromPage(page), preflight.warnings);
+    return resultOk(data, await attachmentContext(page, deadline), preflight.warnings);
   } catch (error) {
-    if (isUploadBridgeBlocker(error)) {
+    if (mutationState.handoffStarted) {
+      const permissionFailure = isUploadPermissionBlocker(error);
+      return attachmentOutcomeIndeterminate(
+        preflight.data.files,
+        [error instanceof Error ? error.message : String(error)],
+        await attachmentContext(page, deadline),
+        permissionFailure ? uploadPermissionDetails(error) : void 0,
+        permissionFailure ? uploadPermissionRemediation() : void 0
+      );
+    }
+    if (error instanceof AttachmentDeadlineError || remainingMs(deadline) <= 0) {
+      return {
+        ok: false,
+        status: "timeout",
+        warnings: error instanceof Error ? [error.message] : [],
+        blocker: {
+          kind: "upload_failed",
+          code: "attachment_deadline_exhausted",
+          message: "ChatGPT file attachment did not complete before the caller's single operation deadline. The prompt was not submitted.",
+          resumable: true
+        },
+        context: { timestamp: (/* @__PURE__ */ new Date()).toISOString() }
+      };
+    }
+    if (isUploadTransportFailure(error)) {
+      return {
+        ok: false,
+        status: "blocked",
+        warnings: [],
+        blocker: {
+          kind: "browser_bridge_unavailable",
+          code: "upload_transport_failed",
+          message: "The Codex Chrome bridge disconnected while handing files to ChatGPT's visible composer. File attachment did not complete, so callers must not submit the prompt.",
+          visibleText: error instanceof Error ? error.message : String(error),
+          remediation: [
+            {
+              label: "Retry live attachment",
+              instruction: "Retry the attachment from the live Codex Chrome runtime; the operation is safe to resume because file attachment did not complete.",
+              userActionRequired: false
+            },
+            {
+              label: "Restart bridge if repeated",
+              instruction: "If the bridge disconnects again, restart Chrome or Codex before retrying. Do not change upload permissions unless Chrome explicitly reports a permission denial.",
+              userActionRequired: true
+            }
+          ],
+          resumable: true
+        },
+        context: await attachmentContext(page, deadline)
+      };
+    }
+    if (isUploadPermissionBlocker(error)) {
       return {
         ok: false,
         status: "blocked",
@@ -9526,11 +10736,53 @@ async function attachFiles(env, args) {
           remediation: uploadPermissionRemediation(),
           resumable: true
         },
-        context: await contextFromPage(page)
+        context: await attachmentContext(page, deadline)
       };
     }
-    return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
+    if (isUploadPathFailure(error)) {
+      return {
+        ok: false,
+        status: "blocked",
+        warnings: [],
+        blocker: {
+          kind: "upload_failed",
+          code: "upload_path_unavailable",
+          message: "None of the browser's supported ChatGPT file-attachment paths completed. Callers must not submit the prompt.",
+          visibleText: error instanceof Error ? error.message : String(error),
+          remediation: [
+            {
+              label: "Retry live attachment",
+              instruction: "Retry from the live Codex Chrome runtime after confirming the ChatGPT composer is visible. Do not change upload permissions unless Chrome explicitly reports a permission denial.",
+              userActionRequired: false
+            }
+          ],
+          resumable: true
+        },
+        context: await attachmentContext(page, deadline)
+      };
+    }
+    return resultError(error instanceof Error ? error : new Error(String(error)), await attachmentContext(page, deadline));
   }
+}
+function attachmentOutcomeIndeterminate(files, warnings, context, visibleText, remediation) {
+  const blocker = {
+    kind: "upload_failed",
+    code: "attachment_outcome_indeterminate",
+    message: "The native file handoff started, but its outcome could not be verified. Inspect the current composer; do not submit or retry automatically because the original attachment may still complete or already be present.",
+    resumable: false
+  };
+  if (visibleText !== void 0) blocker.visibleText = visibleText;
+  if (remediation !== void 0) blocker.remediation = remediation;
+  return {
+    ok: false,
+    status: "partial",
+    data: {
+      files: files.map((file) => ({ path: file.path, name: file.name, bytes: file.bytes }))
+    },
+    warnings,
+    blocker,
+    context
+  };
 }
 function filePreflightBlocker(args) {
   return {
@@ -9642,44 +10894,119 @@ function guessFileType(extension) {
 function isNodeError2(error) {
   return error instanceof Error && "code" in error;
 }
-async function waitForAttachedFilesReady(page, files, timeoutMs) {
-  const started = Date.now();
-  let lastProcessingText;
-  while (Date.now() - started < timeoutMs) {
-    const snapshot = await readAttachmentReadiness(page, files).catch(() => void 0);
-    if (snapshot === void 0) {
-      return { ready: true };
+async function readAttachmentEvidenceBaseline(page) {
+  if (typeof page.evaluate !== "function") {
+    return { supported: false, inputFiles: [], attachmentLabels: [] };
+  }
+  return page.evaluate(() => {
+    const visible = (element) => {
+      if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const style = window.getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 || rect.height > 0;
+    };
+    const textboxes = Array.from(document.querySelectorAll(
+      "textarea, [contenteditable='true'], [role='textbox']"
+    )).filter(visible);
+    const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
+    if (composers.length !== 1) {
+      return { supported: false, inputFiles: [], attachmentLabels: [] };
     }
-    const allNamesVisible = snapshot.files.length > 0 && snapshot.files.every((file) => file.visible);
+    const composer = composers[0];
+    const allInputs = Array.from(composer.querySelectorAll("input[type='file']")).filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+    const preferred = allInputs.filter((input) => input.id === "upload-files");
+    const nonImage = allInputs.filter((input) => input.getAttribute("accept") !== "image/*");
+    const inputs = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : allInputs;
+    if (inputs.length !== 1) {
+      return { supported: false, inputFiles: [], attachmentLabels: [] };
+    }
+    const attachmentSelector = [
+      "[data-testid*='attachment' i]",
+      "[data-testid*='file' i]",
+      "[aria-label*='attachment' i]",
+      "[aria-label*='upload' i]",
+      "[aria-label*='file' i]",
+      "[class*='attachment' i]",
+      "[class*='upload' i]",
+      "[class*='file' i]",
+      "[role='progressbar']"
+    ].join(", ");
+    const labels = Array.from(composer.querySelectorAll(attachmentSelector)).filter(visible).map((element) => [
+      element.textContent ?? "",
+      element.getAttribute("aria-label") ?? "",
+      element.getAttribute("title") ?? ""
+    ].join(" ").replace(/\s+/g, " ").trim().toLocaleLowerCase()).filter(Boolean);
+    return {
+      supported: true,
+      inputFiles: Array.from(inputs[0].files ?? []).map((file) => `${file.name.toLocaleLowerCase()}\0${file.size}`),
+      attachmentLabels: labels
+    };
+  });
+}
+async function waitForAttachedFilesReady(page, files, baseline, deadline) {
+  let lastProcessingText;
+  let sawProcessing = false;
+  while (remainingMs(deadline) > 0) {
+    const snapshot = await withinAttachmentDeadline(
+      deadline,
+      () => readAttachmentReadiness(page, files, baseline),
+      "Attachment readiness inspection"
+    ).catch(() => void 0);
+    if (snapshot === void 0 || snapshot.supported === false) {
+      return { ready: false, reason: "unverified" };
+    }
+    const allNamesVisible = snapshot.files.length === files.length && snapshot.files.every((file) => file.visible);
     if (!snapshot.processing && allNamesVisible) {
       return { ready: true };
     }
-    if (!snapshot.processing && Date.now() - started >= Math.min(timeoutMs, 1e3)) {
-      return { ready: true };
-    }
+    sawProcessing ||= snapshot.processing;
     if (snapshot.processingText !== void 0) {
       lastProcessingText = snapshot.processingText;
     }
-    await page.waitForTimeout?.(250);
+    const pollBudget = remainingMs(deadline);
+    if (pollBudget <= 10) break;
+    await attachmentDelay(page, deadline, Math.min(250, pollBudget - 10));
   }
-  const blocked2 = { ready: false };
+  const blocked2 = {
+    ready: false,
+    reason: sawProcessing ? "processing" : "unverified"
+  };
   if (lastProcessingText !== void 0) {
     blocked2.processingText = lastProcessingText;
   }
   return blocked2;
 }
-async function readAttachmentReadiness(page, files) {
+async function readAttachmentReadiness(page, files, baseline) {
   if (typeof page.evaluate !== "function") {
     return void 0;
   }
-  return page.evaluate((fileNames) => {
-    const visibleText = document.body?.innerText ?? "";
+  return page.evaluate((args) => {
+    const expectedFiles = args.expectedFiles;
     const normalize = (value) => value.toLocaleLowerCase();
-    const normalizedVisibleText = normalize(visibleText);
-    const files2 = fileNames.map((name) => ({
-      name,
-      visible: normalizedVisibleText.includes(normalize(name))
-    }));
+    const visible = (element) => {
+      if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const style = window.getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 || rect.height > 0;
+    };
+    const textboxes = Array.from(document.querySelectorAll(
+      "textarea, [contenteditable='true'], [role='textbox']"
+    )).filter(visible);
+    const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
+    if (composers.length !== 1) {
+      return { supported: false, files: expectedFiles.map((file) => ({ name: file.name, visible: false })), processing: false };
+    }
+    const composer = composers[0];
+    const allInputs = Array.from(composer.querySelectorAll("input[type='file']")).filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
+    const preferred = allInputs.filter((input2) => input2.id === "upload-files");
+    const nonImage = allInputs.filter((input2) => input2.getAttribute("accept") !== "image/*");
+    const inputs = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : allInputs;
+    if (inputs.length !== 1) {
+      return { supported: false, files: expectedFiles.map((file) => ({ name: file.name, visible: false })), processing: false };
+    }
+    const input = inputs[0];
     const attachmentSelectors = [
       "[data-testid*='attachment' i]",
       "[data-testid*='file' i]",
@@ -9691,88 +11018,170 @@ async function readAttachmentReadiness(page, files) {
       "[class*='file' i]",
       "[role='progressbar']"
     ].join(", ");
-    const attachmentText = Array.from(document.querySelectorAll(attachmentSelectors)).map((element) => [
+    const attachmentElements = Array.from(composer.querySelectorAll(attachmentSelectors)).filter(visible);
+    const attachmentText = attachmentElements.map((element) => [
       element.textContent ?? "",
       element.getAttribute("aria-label") ?? "",
       element.getAttribute("title") ?? ""
     ].join(" ")).join(" ");
-    const relevantText = attachmentText.length > 0 ? attachmentText : visibleText;
-    const processingMatch = /\b(uploading|processing|attaching|preparing|reading|scanning|analyzing)\b/i.exec(relevantText);
+    const inputFiles = Array.from(input.files ?? []).map((file) => ({
+      name: normalize(file.name),
+      size: file.size,
+      signature: `${normalize(file.name)}\0${file.size}`
+    }));
+    const attachmentLabels = attachmentElements.map((element) => normalize([
+      element.textContent ?? "",
+      element.getAttribute("aria-label") ?? "",
+      element.getAttribute("title") ?? ""
+    ].join(" ")));
+    const occurrence = (values, index) => values.slice(0, index + 1).filter((value) => value === values[index]).length;
+    const inputSignatures = inputFiles.map((file) => file.signature);
+    const newInputIndices = new Set(inputSignatures.map((signature, index) => occurrence(inputSignatures, index) > args.baseline.inputFiles.filter((value) => value === signature).length ? index : -1).filter((index) => index >= 0));
+    const newLabelIndices = new Set(attachmentLabels.map((label, index) => args.baseline.supported && occurrence(attachmentLabels, index) > args.baseline.attachmentLabels.filter((value) => value === label).length ? index : -1).filter((index) => index >= 0));
+    const usedInputs = /* @__PURE__ */ new Set();
+    const usedLabels = /* @__PURE__ */ new Set();
+    const visibleFiles = expectedFiles.map((expected) => {
+      const expectedName = normalize(expected.name);
+      const inputIndex = inputFiles.findIndex(
+        (candidate, index) => !usedInputs.has(index) && newInputIndices.has(index) && candidate.name === expectedName && candidate.size === expected.bytes
+      );
+      if (inputIndex >= 0) {
+        usedInputs.add(inputIndex);
+        return { name: expected.name, visible: true };
+      }
+      const labelIndex = attachmentLabels.findIndex(
+        (label, index) => !usedLabels.has(index) && newLabelIndices.has(index) && label.includes(expectedName)
+      );
+      if (labelIndex >= 0) usedLabels.add(labelIndex);
+      return { name: expected.name, visible: labelIndex >= 0 };
+    });
+    const processingMatch = /\b(uploading|processing|attaching|preparing|reading|scanning|analyzing)\b/i.exec(attachmentText);
     const snapshot = {
-      files: files2,
+      supported: true,
+      files: visibleFiles,
       processing: processingMatch !== null
     };
     if (processingMatch !== null) {
-      snapshot.processingText = relevantText.slice(0, 500);
+      snapshot.processingText = attachmentText.slice(0, 500);
     }
     return snapshot;
-  }, files.map((file) => file.name));
+  }, {
+    expectedFiles: files.map((file) => ({ name: file.name, bytes: file.bytes })),
+    baseline
+  });
 }
-async function uploadFiles(page, files, timeoutMs) {
+async function uploadFiles(page, files, deadline, mutationState) {
   const paths = files.map((file) => file.path);
   const errors = [];
-  const attempts = [
-    {
+  let activeComposerInput;
+  try {
+    activeComposerInput = await resolveUniqueActiveComposerFileInput(page, deadline);
+  } catch (error) {
+    errors.push(`active-composer-input: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const attempts = [];
+  if (activeComposerInput !== void 0) {
+    const resolvedInput = activeComposerInput;
+    attempts.push({
       name: "visible-chatgpt-file-input",
       run: async () => {
-        await clickFileChooserTarget(page, "#upload-files", paths, timeoutMs, { requireVisible: true });
+        if (resolvedInput.isVisible !== void 0 && !await withinAttachmentDeadline(
+          deadline,
+          () => resolvedInput.isVisible({ timeoutMs: Math.min(attachmentBudget(deadline), 1e3) }),
+          "Active-composer file-input visibility check"
+        )) {
+          throw new Error("The active-composer upload target is hidden.");
+        }
+        await clickFileChooserLocator(page, resolvedInput, paths, deadline, mutationState);
       }
-    },
+    });
+  }
+  attempts.push(
     {
       name: "add-photos-files-menu-item",
       run: async () => {
-        await clickChatGPTAddPhotosMenuItem(page, paths, timeoutMs);
+        await clickChatGPTAddPhotosMenuItem(page, paths, deadline, mutationState);
       }
     },
     {
       name: "generic-add-files-button",
       run: async () => {
-        await clickFileChooserLocator(page, addFilesButton(page), paths, timeoutMs);
+        const control = addFilesButton(page);
+        await assertControlInUniqueActiveComposer(control, deadline, "Generic Add files control");
+        await clickFileChooserLocator(page, control, paths, deadline, mutationState);
       }
     },
     {
-      name: "direct-file-input-set",
+      name: "cdp-file-input-chooser",
       run: async () => {
-        await setHiddenFileInput(page, files);
+        await clickHiddenFileInputWithCdp(page, paths, deadline, mutationState);
       }
     }
-  ];
+  );
+  if (activeComposerInput !== void 0) {
+    const resolvedInput = activeComposerInput;
+    attempts.push({
+      name: "direct-file-input-set",
+      run: async () => {
+        await setResolvedFileInput(resolvedInput, files, deadline, mutationState);
+      }
+    });
+  }
   for (const attempt of attempts) {
+    if (remainingMs(deadline) <= 0) {
+      errors.push(`${attempt.name}: skipped because the single attachment deadline was exhausted`);
+      break;
+    }
     try {
       await attempt.run();
       return;
     } catch (error) {
+      if (mutationState.handoffStarted) {
+        throw error;
+      }
+      if (isUploadPermissionBlocker(error) || isUploadTransportFailure(error)) {
+        throw error;
+      }
       errors.push(`${attempt.name}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   throw new Error(`No ChatGPT upload path completed.
 ${errors.join("\n")}`);
 }
-async function clickChatGPTAddPhotosMenuItem(page, paths, timeoutMs) {
-  const addPhotosFilesText = localeLabels.addPhotosFilesMenuItem[0];
-  const menuItem = requiredLocator(page, "div[role='menuitem']").filter?.({ hasText: addPhotosFilesText });
-  if (await locatorCount(menuItem) !== 1) {
+async function clickChatGPTAddPhotosMenuItem(page, paths, deadline, mutationState) {
+  const addPhotosFilesLabels = localeLabels.addPhotosFilesMenuItem;
+  let menuItem = await findChatGPTUploadMenuItem(page, addPhotosFilesLabels, deadline);
+  if (menuItem === void 0) {
     const plusButton = requiredLocator(page, "#composer-plus-btn, button[aria-label='Add files and more']");
-    if (await locatorCount(plusButton) !== 1) {
+    if (await withinAttachmentDeadline(deadline, () => locatorCount(plusButton), "Add files control enumeration") !== 1) {
       throw new Error("ChatGPT Add files button was not uniquely available.");
     }
-    await plusButton.click?.({ timeoutMs: Math.min(timeoutMs, 1e4) });
-    await page.waitForTimeout?.(250);
+    await assertControlInUniqueActiveComposer(plusButton, deadline, "ChatGPT Add files control");
+    if (plusButton.click === void 0) throw new Error("ChatGPT Add files button does not expose click().");
+    await withinAttachmentDeadline(
+      deadline,
+      () => plusButton.click({ timeoutMs: Math.min(attachmentBudget(deadline), 1e4) }),
+      "ChatGPT Add files control click"
+    );
+    await attachmentDelay(page, deadline, 250);
   }
-  const refreshedMenuItem = requiredLocator(page, "div[role='menuitem']").filter?.({ hasText: addPhotosFilesText });
-  await clickFileChooserLocator(page, refreshedMenuItem, paths, timeoutMs);
+  menuItem = await findChatGPTUploadMenuItem(page, addPhotosFilesLabels, deadline);
+  if (menuItem === void 0) {
+    throw new Error("ChatGPT's visible Add photos & files upload row was not uniquely available.");
+  }
+  const refreshedMenuItem = menuItem;
+  await clickFileChooserLocator(page, refreshedMenuItem, paths, deadline, mutationState);
 }
-async function clickFileChooserTarget(page, selector, paths, timeoutMs, options = {}) {
-  const locator = requiredLocator(page, selector);
-  if (await locatorCount(locator) !== 1) {
-    throw new Error(`Upload target was not uniquely available: ${selector}`);
-  }
-  if (options.requireVisible === true && locator.isVisible !== void 0 && !await locator.isVisible({ timeoutMs: 1e3 })) {
-    throw new Error(`Upload target is hidden: ${selector}`);
-  }
-  await clickFileChooserLocator(page, locator, paths, timeoutMs);
+async function findChatGPTUploadMenuItem(page, addPhotosFilesLabels, deadline) {
+  const pattern = new RegExp(addPhotosFilesLabels.map(escapeRegExp).join("|"), "i");
+  const candidate = requiredLocator(page, "div[tabindex='0']").filter?.({ hasText: pattern });
+  return await withinAttachmentDeadline(
+    deadline,
+    () => locatorCount(candidate),
+    "Upload menu-item enumeration"
+  ) === 1 ? candidate : void 0;
 }
-async function clickFileChooserLocator(page, locator, paths, timeoutMs) {
+async function clickFileChooserLocator(page, locator, paths, deadline, mutationState) {
   if (locator === void 0) {
     throw new Error("Upload locator was not available.");
   }
@@ -9782,26 +11191,128 @@ async function clickFileChooserLocator(page, locator, paths, timeoutMs) {
   if (typeof locator.click !== "function") {
     throw new Error("Upload locator does not expose click().");
   }
-  const chooserPromise = waitForFileChooser(page, timeoutMs);
+  const chooserPromise = waitForFileChooser(page, deadline).then(
+    (chooser2) => ({ ok: true, chooser: chooser2 }),
+    (error) => ({ ok: false, error })
+  );
   try {
-    await locator.click({ timeoutMs: Math.min(timeoutMs, 1e4) });
+    await withinAttachmentDeadline(
+      deadline,
+      () => locator.click({ timeoutMs: Math.min(attachmentBudget(deadline), 1e4) }),
+      "ChatGPT upload-control click"
+    );
   } catch (error) {
-    await chooserPromise.catch(() => void 0);
+    await chooserPromise;
     throw error;
   }
-  const chooser = await chooserPromise;
-  await validateChooserMultiplicity(chooser, paths);
+  const chooserResult = await chooserPromise;
+  if (!chooserResult.ok) {
+    throw chooserResult.error;
+  }
+  const chooser = chooserResult.chooser;
+  await validateChooserTarget(chooser, deadline);
+  await withinAttachmentDeadline(
+    deadline,
+    () => validateChooserMultiplicity(chooser, paths),
+    "File-chooser multiplicity validation"
+  );
   try {
-    await chooser.setFiles(paths);
+    mutationState.handoffStarted = true;
+    await withinAttachmentDeadline(
+      deadline,
+      () => chooser.setFiles(paths),
+      "File-chooser handoff"
+    );
   } catch (error) {
     throw new Error(`fileChooser.setFiles failed. ${error instanceof Error ? error.message : String(error)}`);
   }
 }
-async function waitForFileChooser(page, timeoutMs) {
-  const rawChooser = await page.waitForEvent?.("filechooser", {
+async function clickHiddenFileInputWithCdp(page, paths, deadline, mutationState) {
+  if (typeof page.waitForEvent !== "function") {
+    throw new Error("The active browser page does not expose file chooser events.");
+  }
+  const rawCapability = await withinAttachmentDeadline(
+    deadline,
+    () => Promise.resolve(page.capabilities?.get?.("cdp")),
+    "Scoped CDP upload capability resolution"
+  );
+  const cdp = rawCapability;
+  if (typeof cdp?.send !== "function") {
+    throw new Error("The active browser page does not expose the scoped CDP capability needed to click a hidden file input.");
+  }
+  const chooserPromise = waitForFileChooser(page, deadline).then(
+    (chooser) => ({ ok: true, chooser }),
+    (error) => ({ ok: false, error })
+  );
+  try {
+    const evaluation = await withinAttachmentDeadline(deadline, () => Promise.resolve(cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const visible = element => {
+          if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']")) return false;
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
+            && (rect.width > 0 || rect.height > 0);
+        };
+        const textboxes = [...document.querySelectorAll("textarea, [contenteditable='true'], [role='textbox']")].filter(visible);
+        const composers = [...new Set(textboxes.map(textbox =>
+          textbox.closest("form")
+            ?? textbox.closest("[data-testid*='composer' i]")
+            ?? textbox.closest("[aria-label*='composer' i]")
+            ?? textbox.closest("[class*='composer' i]")
+        ).filter(Boolean))];
+        if (composers.length !== 1) return { ok: false, reason: "active composer was not unique" };
+        const all = [...composers[0].querySelectorAll("input[type='file']")]
+          .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+        const preferred = all.filter(input => input.id === "upload-files");
+        const nonImage = all.filter(input => input.getAttribute("accept") !== "image/*");
+        const candidates = preferred.length ? preferred : nonImage.length ? nonImage : all;
+        if (candidates.length !== 1) return { ok: false, reason: "active composer file input was not unique" };
+        candidates[0].click();
+        return { ok: true };
+      })()`,
+      userGesture: true,
+      awaitPromise: true,
+      returnByValue: true
+    }, {
+      timeoutMs: Math.min(attachmentBudget(deadline), 1e4)
+    })), "Scoped CDP file-input click");
+    const wrappedValue = evaluation?.result?.value;
+    const value = wrappedValue ?? evaluation;
+    if (value?.ok !== true) {
+      throw new Error(`Scoped CDP file-input click was refused: ${value?.reason ?? "no success result"}.`);
+    }
+  } catch (error) {
+    await chooserPromise;
+    throw error;
+  }
+  const chooserResult = await chooserPromise;
+  if (!chooserResult.ok) {
+    throw chooserResult.error;
+  }
+  await validateChooserTarget(chooserResult.chooser, deadline);
+  await withinAttachmentDeadline(
+    deadline,
+    () => validateChooserMultiplicity(chooserResult.chooser, paths),
+    "File-chooser multiplicity validation"
+  );
+  try {
+    mutationState.handoffStarted = true;
+    await withinAttachmentDeadline(
+      deadline,
+      () => chooserResult.chooser.setFiles(paths),
+      "File-chooser handoff"
+    );
+  } catch (error) {
+    throw new Error(`fileChooser.setFiles failed. ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+async function waitForFileChooser(page, deadline) {
+  const timeoutMs = attachmentBudget(deadline);
+  const rawChooser = await withinAttachmentDeadline(deadline, () => Promise.resolve(page.waitForEvent?.("filechooser", {
     timeout: timeoutMs,
     timeoutMs
-  });
+  })), "File-chooser event wait");
   if (!isFileChooserLike(rawChooser)) {
     throw new Error("File chooser event did not return a setFiles-capable chooser.");
   }
@@ -9819,11 +11330,84 @@ async function validateChooserMultiplicity(chooser, paths) {
 function isFileChooserLike(value) {
   return value !== null && typeof value === "object" && typeof value.setFiles === "function";
 }
+async function validateChooserTarget(chooser, deadline) {
+  if (typeof chooser.element !== "function") {
+    throw new Error("The file chooser did not expose its backing input, so its active-composer identity could not be verified.");
+  }
+  const element = await withinAttachmentDeadline(
+    deadline,
+    () => Promise.resolve(chooser.element()),
+    "File-chooser backing-input resolution"
+  );
+  if (typeof element?.evaluate !== "function") {
+    throw new Error("The file chooser backing input could not be inspected safely.");
+  }
+  const scoped = await withinAttachmentDeadline(deadline, () => element.evaluate((candidate) => {
+    const visible = (node) => {
+      if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && style.pointerEvents !== "none" && (rect.width > 0 || rect.height > 0);
+    };
+    const textboxes = Array.from(document.querySelectorAll(
+      "textarea, [contenteditable='true'], [role='textbox']"
+    )).filter(visible);
+    const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
+    if (composers.length !== 1 || !composers[0].contains(candidate)) return false;
+    const all = Array.from(composers[0].querySelectorAll("input[type='file']")).filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+    const preferred = all.filter((input) => input.id === "upload-files");
+    const nonImage = all.filter((input) => input.getAttribute("accept") !== "image/*");
+    const resolved = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : all;
+    return resolved.length === 1 && resolved[0] === candidate;
+  }), "File-chooser active-composer identity check");
+  if (!scoped) {
+    throw new Error("The file chooser backing input was not the unique active-composer upload target.");
+  }
+}
 async function locatorCount(locator) {
   if (locator === void 0 || typeof locator.count !== "function") {
     return 0;
   }
   return locator.count();
+}
+function attachmentBudget(deadline) {
+  const budget = remainingMs(deadline);
+  if (budget <= 0) {
+    throw new AttachmentDeadlineError("Attachment operation");
+  }
+  return budget;
+}
+var AttachmentDeadlineError = class extends Error {
+  constructor(label) {
+    super(`${label} exceeded the single attachment deadline.`);
+    this.name = "AttachmentDeadlineError";
+  }
+};
+async function withinAttachmentDeadline(deadline, operation, label) {
+  const budget = attachmentBudget(deadline);
+  try {
+    return await withTimeout(operation(), budget, `${label} exceeded the single attachment deadline.`);
+  } catch (error) {
+    if (remainingMs(deadline) <= 0 || error instanceof Error && error.message.includes("exceeded the single attachment deadline")) {
+      throw new AttachmentDeadlineError(label);
+    }
+    throw error;
+  }
+}
+async function attachmentDelay(page, deadline, requestedMs) {
+  const budget = attachmentBudget(deadline);
+  const delayMs = Math.min(Math.max(0, requestedMs), Math.max(0, budget - 1));
+  if (delayMs <= 0) {
+    if (requestedMs > 0) throw new AttachmentDeadlineError("Attachment settling delay");
+    return;
+  }
+  const delay = page.waitForTimeout?.(delayMs) ?? new Promise((resolve4) => setTimeout(resolve4, delayMs));
+  await withinAttachmentDeadline(deadline, () => delay, "Attachment settling delay");
+}
+async function attachmentContext(page, deadline) {
+  const budget = Math.min(250, remainingMs(deadline));
+  if (budget <= 0) return { timestamp: (/* @__PURE__ */ new Date()).toISOString() };
+  return withTimeout(contextFromPage(page), budget, "Attachment-result context capture timed out.").catch(() => ({ timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
 }
 async function downloadLatestFile(env, args) {
   const boot = await ensurePage(env);
@@ -9915,7 +11499,8 @@ async function tryGeneratedFilePreviewDownload(page, args) {
     }
     const assistant = assistantMessages.nth?.(selected.assistantIndex) ?? assistantMessages;
     const role = selected.tag === "button" ? "button" : "link";
-    const affordance = assistant.getByRole?.(role, { name: selected.filename, exact: true }) ?? assistant.locator?.(`${selected.tag}[aria-label="${escapeCssAttribute(selected.filename)}"]`);
+    const controlLabel = selected.controlLabel ?? selected.filename;
+    const affordance = assistant.getByRole?.(role, { name: controlLabel, exact: true }) ?? assistant.locator?.(`${selected.tag}[aria-label="${escapeCssAttribute(controlLabel)}"]`);
     const affordanceCount = await locatorCountWithTimeout(
       affordance,
       localGuardTimeout(timeoutMs, 5e3),
@@ -9935,7 +11520,15 @@ async function tryGeneratedFilePreviewDownload(page, args) {
       return resultOk(downloaded2, await contextFromPage(page));
     }
     await affordance.click({ timeoutMs: localGuardTimeout(timeoutMs, 1e4) });
-    const preview = requiredLocator(page, `section[aria-label="${escapeCssAttribute(selected.filename)}"]`);
+    const labelledPreview = requiredLocator(page, `section[aria-label="${escapeCssAttribute(selected.filename)}"]`);
+    const labelledPreviewCount = typeof labelledPreview.count === "function" ? await locatorCountWithTimeout(
+      labelledPreview,
+      localGuardTimeout(timeoutMs, 2e3),
+      "generated_file_labelled_preview_count_timeout"
+    ) : void 0;
+    const workbookPreviews = requiredLocator(page, "section[data-testid^='popcorn-']");
+    const workbookPreview = workbookPreviews.filter?.({ hasText: selected.filename }) ?? workbookPreviews;
+    const preview = labelledPreviewCount === 0 ? workbookPreview : labelledPreview;
     const download = await waitForPreviewDownloadControl(page, preview, timeoutMs);
     if (download === void 0) {
       throw new Error(`The artifact preview for ${selected.filename} did not expose a visible Download control.`);
@@ -9955,7 +11548,7 @@ async function tryGeneratedFilePreviewDownload(page, args) {
 async function inspectGeneratedFileAffordances(page, timeoutMs) {
   if (typeof page.evaluate === "function") {
     const fromDom = await withTimeout(
-      page.evaluate(() => {
+      page.evaluate((downloadLabels) => {
         const visible = (element) => {
           let current = element;
           while (current !== null) {
@@ -9969,14 +11562,32 @@ async function inspectGeneratedFileAffordances(page, timeoutMs) {
           return true;
         };
         const fileLike = (value) => /^[^\\/\r\n]{1,255}\.[a-z0-9][a-z0-9._-]{0,15}$/i.test(value);
+        const normalizedFilename = (value) => {
+          const trimmed = value.trim();
+          const lowered = trimmed.toLocaleLowerCase();
+          const prefix = downloadLabels.map((label) => label.trim()).filter(Boolean).sort((left, right) => right.length - left.length).find((label) => lowered.startsWith(`${label.toLocaleLowerCase()} `));
+          return prefix === void 0 ? trimmed : trimmed.slice(prefix.length).trim();
+        };
         const assistants = Array.from(document.querySelectorAll("[data-message-author-role='assistant']"));
-        return assistants.flatMap((assistant, assistantIndex) => Array.from(assistant.querySelectorAll("button[aria-label], a[download], a[href*='/backend-api/files/']")).filter(visible).map((element) => ({
-          assistantIndex,
-          filename: (element.getAttribute("aria-label") ?? element.textContent ?? "").trim(),
-          tag: element.tagName.toLocaleLowerCase(),
-          text: (element.textContent ?? "").trim()
-        })).filter((item) => (item.tag === "button" || item.tag === "a") && fileLike(item.filename) && item.filename === item.text).map(({ assistantIndex: assistantIndex2, filename, tag }) => ({ assistantIndex: assistantIndex2, filename, tag })));
-      }),
+        return assistants.flatMap(
+          (assistant, assistantIndex) => Array.from(assistant.querySelectorAll("button[aria-label], a[download], a[href*='/backend-api/files/']")).filter(visible).map((element) => {
+            const controlLabel = (element.getAttribute("aria-label") ?? element.textContent ?? "").trim();
+            const text = (element.textContent ?? "").trim();
+            return {
+              assistantIndex,
+              filename: normalizedFilename(controlLabel),
+              controlLabel,
+              tag: element.tagName.toLocaleLowerCase(),
+              textFilename: normalizedFilename(text)
+            };
+          }).filter((item) => (item.tag === "button" || item.tag === "a") && fileLike(item.filename) && item.filename === item.textFilename).map(({ assistantIndex: index, filename, controlLabel, tag }) => ({
+            assistantIndex: index,
+            filename,
+            ...controlLabel === filename ? {} : { controlLabel },
+            tag
+          }))
+        );
+      }, [...localeLabels.download]),
       timeoutMs,
       "Timed out while inspecting generated-file buttons."
     ).catch(() => void 0);
@@ -9992,13 +11603,29 @@ async function inspectGeneratedFileAffordances(page, timeoutMs) {
   const buttonPattern = /<(button|a)\b[^>]*\baria-label=(['"])(.*?)\2[^>]*>([\s\S]*?)<\/\1>/gi;
   let match;
   while ((match = buttonPattern.exec(html)) !== null) {
-    const filename = decodeBasicHtml(match[3] ?? "").trim();
+    const controlLabel = decodeBasicHtml(match[3] ?? "").trim();
     const text = decodeBasicHtml((match[4] ?? "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
-    if (/^[^\\/\r\n]{1,255}\.[a-z0-9][a-z0-9._-]{0,15}$/i.test(filename) && filename === text) {
-      candidates.push({ assistantIndex: 0, filename, tag: (match[1] ?? "button").toLocaleLowerCase() });
+    const filename = normalizeGeneratedFileControlLabel(controlLabel);
+    const textFilename = normalizeGeneratedFileControlLabel(text);
+    if (/^[^\\/\r\n]{1,255}\.[a-z0-9][a-z0-9._-]{0,15}$/i.test(filename) && filename === textFilename) {
+      candidates.push({
+        assistantIndex: 0,
+        filename,
+        ...controlLabel === filename ? {} : { controlLabel },
+        tag: (match[1] ?? "button").toLocaleLowerCase()
+      });
     }
   }
   return candidates;
+}
+function normalizeGeneratedFileControlLabel(value) {
+  return stripLocalizedDownloadPrefix(value, localeLabels.download);
+}
+function stripLocalizedDownloadPrefix(value, labels) {
+  const trimmed = value.trim();
+  const lowered = trimmed.toLocaleLowerCase();
+  const prefix = labels.map((label) => label.trim()).filter(Boolean).sort((left, right) => right.length - left.length).find((label) => lowered.startsWith(`${label.toLocaleLowerCase()} `));
+  return prefix === void 0 ? trimmed : trimmed.slice(prefix.length).trim();
 }
 function selectGeneratedFileAffordance(candidates, args) {
   let scoped = candidates;
@@ -10044,26 +11671,95 @@ function escapeCssAttribute(value) {
 function decodeBasicHtml(value) {
   return value.replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&amp;/gi, "&");
 }
-async function setHiddenFileInput(page, files) {
-  if (page === void 0) {
-    throw new Error("No active page is available for file upload.");
+async function resolveUniqueActiveComposerFileInput(page, deadline) {
+  const candidates = requiredLocator(page, cssSelectors.hiddenFileInputs);
+  if (typeof candidates.count !== "function") {
+    throw new Error("ChatGPT file inputs could not be enumerated safely.");
   }
-  const input = requiredLocator(page, cssSelectors.hiddenFileInputs).last?.() ?? requiredLocator(page, cssSelectors.hiddenFileInputs);
+  const count = await withinAttachmentDeadline(deadline, () => candidates.count(), "File-input enumeration");
+  const eligible = [];
+  for (let index = 0; index < count; index += 1) {
+    const input = count === 1 ? candidates : candidates.nth?.(index);
+    if (input === void 0 || typeof input.evaluate !== "function") continue;
+    const scoped = await withinAttachmentDeadline(deadline, () => input.evaluate((element) => {
+      const candidate = element;
+      const visible = (node) => {
+        if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && (rect.width > 0 || rect.height > 0);
+      };
+      const textboxes = Array.from(document.querySelectorAll(
+        "textarea, [contenteditable='true'], [role='textbox']"
+      )).filter(visible);
+      const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
+      if (composers.length !== 1 || !composers[0].contains(candidate)) return false;
+      const all = Array.from(composers[0].querySelectorAll("input[type='file']")).filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
+      const preferred = all.filter((input2) => input2.id === "upload-files");
+      const nonImage = all.filter((input2) => input2.getAttribute("accept") !== "image/*");
+      const resolved = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : all;
+      return resolved.length === 1 && resolved[0] === candidate;
+    }), `File-input ${index + 1} scope check`);
+    if (scoped) eligible.push(input);
+  }
+  if (eligible.length !== 1) {
+    throw new Error("The active browser exposes no sanctioned native file handoff because the active composer file input was not uniquely available.");
+  }
+  return eligible[0];
+}
+async function assertControlInUniqueActiveComposer(control, deadline, label) {
+  if (control === void 0 || typeof control.evaluate !== "function") {
+    throw new Error(`${label} could not be scoped to the active composer.`);
+  }
+  const scoped = await withinAttachmentDeadline(deadline, () => control.evaluate((element) => {
+    const visible = (node) => {
+      if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && (rect.width > 0 || rect.height > 0);
+    };
+    const textboxes = Array.from(document.querySelectorAll(
+      "textarea, [contenteditable='true'], [role='textbox']"
+    )).filter(visible);
+    const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
+    return composers.length === 1 && composers[0].contains(element);
+  }), `${label} scope check`);
+  if (!scoped) throw new Error(`${label} was outside the unique active composer.`);
+}
+async function setResolvedFileInput(input, files, deadline, mutationState) {
   if (typeof input.setInputFiles !== "function") {
-    await setFilesViaDomDataTransfer(page, files);
-    return;
+    throw new Error("The active browser exposes no sanctioned native file handoff for ChatGPT's file input.");
   }
-  await input.setInputFiles(files.map((file) => file.path));
+  mutationState.handoffStarted = true;
+  await withinAttachmentDeadline(
+    deadline,
+    () => input.setInputFiles(files.map((file) => file.path)),
+    "Direct file-input handoff"
+  );
 }
 async function readBrowserInputDiagnostic(page) {
   if (typeof page.evaluate !== "function") {
     return void 0;
   }
   return page.evaluate(() => {
-    const input = document.querySelector("#upload-files") || document.querySelector("input[type='file']:not([accept='image/*'])") || document.querySelector("input[type='file']");
-    if (!input) {
-      return { files: [] };
-    }
+    const visible = (element) => {
+      if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const style = window.getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 || rect.height > 0;
+    };
+    const textboxes = Array.from(document.querySelectorAll(
+      "textarea, [contenteditable='true'], [role='textbox']"
+    )).filter(visible);
+    const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
+    if (composers.length !== 1) return void 0;
+    const allInputs = Array.from(composers[0].querySelectorAll("input[type='file']")).filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
+    const preferred = allInputs.filter((input2) => input2.id === "upload-files");
+    const nonImage = allInputs.filter((input2) => input2.getAttribute("accept") !== "image/*");
+    const inputs = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : allInputs;
+    if (inputs.length !== 1) return void 0;
+    const input = inputs[0];
     return {
       files: Array.from(input.files ?? []).map((file) => {
         const diagnostic2 = {
@@ -10081,42 +11777,6 @@ async function readBrowserInputDiagnostic(page) {
     };
   });
 }
-async function setFilesViaDomDataTransfer(page, files) {
-  const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
-  const maxInlineBytes = 25 * 1024 * 1024;
-  if (totalBytes > maxInlineBytes) {
-    throw new Error(`No file chooser or setInputFiles support is available for large uploads. ${CODEX_UPLOAD_PERMISSION_FIX} ${CHROME_FILE_URL_PERMISSION_FIX}`);
-  }
-  if (typeof page.evaluate !== "function") {
-    throw new Error(`No file chooser, setInputFiles, or page.evaluate support is available for file upload. ${CODEX_UPLOAD_PERMISSION_FIX} ${CHROME_FILE_URL_PERMISSION_FIX}`);
-  }
-  const payload = await Promise.all(files.map(async (file) => ({
-    name: file.name,
-    bytesBase64: (await readFile3(file.path)).toString("base64"),
-    type: guessMimeType(file.name)
-  })));
-  await page.evaluate(
-    async (payload2) => {
-      const input = document.querySelector("#upload-files") || document.querySelector("input[type='file']:not([accept='image/*'])") || document.querySelector("input[type='file']");
-      if (!input) {
-        throw new Error("No ChatGPT file input found in the DOM.");
-      }
-      const dataTransfer = new DataTransfer();
-      for (const item of payload2) {
-        const binary = atob(item.bytesBase64);
-        const bytes = new Uint8Array(binary.length);
-        for (let index = 0; index < binary.length; index += 1) {
-          bytes[index] = binary.charCodeAt(index);
-        }
-        dataTransfer.items.add(new File([bytes], item.name, { type: item.type }));
-      }
-      input.files = dataTransfer.files;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    },
-    payload
-  );
-}
 function guessMimeType(name) {
   if (/\.txt$/i.test(name)) return "text/plain";
   if (/\.pdf$/i.test(name)) return "application/pdf";
@@ -10125,9 +11785,17 @@ function guessMimeType(name) {
   if (/\.md$/i.test(name)) return "text/markdown";
   return "application/octet-stream";
 }
-function isUploadBridgeBlocker(error) {
+function isUploadPermissionBlocker(error) {
   const message = error instanceof Error ? error.message : String(error);
-  return /DataTransfer is not a constructor|No file chooser|setInputFiles|Allow access to file URLs|file upload|fileChooser\.setFiles failed|Not allowed|No ChatGPT upload path completed/i.test(message);
+  return /Allow access to file URLs|Codex Settings > Computer Use|Browser Use rejected|requested that files not be uploaded|permission denied|browser blocked|fileChooser\.setFiles failed[^\n]*(?:Not allowed|permission|denied|rejected)/i.test(message);
+}
+function isUploadTransportFailure(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /native pipe closed before response|browser bridge.*(?:closed|disconnect)|connection (?:was )?closed|target page, context or browser has been closed/i.test(message);
+}
+function isUploadPathFailure(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /No ChatGPT upload path completed/i.test(message);
 }
 function uploadPermissionMessage(error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -11265,6 +12933,8 @@ async function executeStep(step, env, previousResults) {
       return readLatest(env, step.args);
     case "messages.status":
       return messageStatus(env, step.args);
+    case "messages.stop":
+      return stopGeneration(env, step.args);
     case "messages.waitAndRead":
       return waitAndRead(env, step.args);
     case "artifacts.listLatest":
@@ -11639,6 +13309,8 @@ var REQUIRED_LOCALE_KEYS = [
 ];
 var REQUIRED_TOOL_IDS = ["web_search", "deep_research", "create_image"];
 var REQUIRED_MODE_OPTION_IDS = ["latest", "instant", "thinking", "extended", "medium", "high", "extraHigh", "pro"];
+var REQUIRED_CONFIGURATION_AXIS_IDS = ["power", "model", "intelligence", "effort", "speed", "advanced"];
+var REQUIRED_CONFIGURATION_OPTION_IDS = ["instant", "light", "medium", "high", "extraHigh", "max", "ultra", "pro", "standard", "fast"];
 async function doctor(env, args = {}) {
   const wanted = args.check ?? DEFAULT_CHECKS;
   const checks = {};
@@ -11839,8 +13511,12 @@ function localizationCheck(env) {
   const requiredKeysMissing = REQUIRED_LOCALE_KEYS.filter((key) => localeLabels[key].length === 0);
   const missingToolIds = REQUIRED_TOOL_IDS.filter((id2) => (localeLabels.tools[id2]?.length ?? 0) === 0);
   const missingModeOptionIds = REQUIRED_MODE_OPTION_IDS.filter((id2) => (localeLabels.modeOptions[id2]?.length ?? 0) === 0);
+  const missingConfigurationAxisIds = REQUIRED_CONFIGURATION_AXIS_IDS.filter((id2) => (localeLabels.configurationAxes[id2]?.length ?? 0) === 0);
+  const missingConfigurationOptionIds = REQUIRED_CONFIGURATION_OPTION_IDS.filter((id2) => (localeLabels.configurationOptions[id2]?.length ?? 0) === 0);
   const toolIds = Object.keys(localeLabels.tools);
   const modeOptionIds = Object.keys(localeLabels.modeOptions);
+  const configurationAxisIds = Object.keys(localeLabels.configurationAxes);
+  const configurationOptionIds = Object.keys(localeLabels.configurationOptions);
   const proAliases = [...localeLabels.modeOptions.pro];
   const supportsProExtendedAlias = proAliases.some((alias) => /pro\s*(?:•\s*)?extended/i.test(alias)) && proAliases.some((alias) => /extended\s+pro/i.test(alias));
   const runningStateLocalizationSupport = runningStateSupport();
@@ -11852,15 +13528,19 @@ function localizationCheck(env) {
     registeredLocaleCount: localeCoverageSummary.registeredLocaleCount,
     nonEnglishLocaleCount: localeCoverageSummary.nonEnglishLocaleCount
   };
-  const englishCanonicalPresent = localeLabels.composerTextbox[0] === "Chat with ChatGPT" && localeLabels.sendButton[0] === "Send prompt" && localeLabels.modeLabels.includes("Thinking") && localeLabels.modeOptions.pro?.[0] === "Pro" && localeLabels.tools.web_search?.[0] === "Web search";
-  const labelCandidateCount = REQUIRED_LOCALE_KEYS.reduce((total, key) => total + localeLabels[key].length, 0) + Object.values(localeLabels.tools).reduce((total, values) => total + values.length, 0) + Object.values(localeLabels.modeOptions).reduce((total, values) => total + values.length, 0);
+  const englishCanonicalPresent = localeLabels.composerTextbox[0] === "Chat with ChatGPT" && localeLabels.sendButton[0] === "Send prompt" && localeLabels.modeLabels.includes("Thinking") && localeLabels.modeOptions.pro?.[0] === "Pro" && localeLabels.configurationAxes.power?.[0] === "Power" && localeLabels.configurationAxes.advanced?.[0] === "Advanced" && localeLabels.configurationOptions.ultra?.[0] === "Ultra" && localeLabels.tools.web_search?.[0] === "Web search";
+  const labelCandidateCount = REQUIRED_LOCALE_KEYS.reduce((total, key) => total + localeLabels[key].length, 0) + Object.values(localeLabels.tools).reduce((total, values) => total + values.length, 0) + Object.values(localeLabels.modeOptions).reduce((total, values) => total + values.length, 0) + Object.values(localeLabels.configurationAxes).reduce((total, values) => total + values.length, 0) + Object.values(localeLabels.configurationOptions).reduce((total, values) => total + values.length, 0);
   const details = {
     englishCanonicalPresent,
     requiredKeysMissing,
     missingToolIds,
     missingModeOptionIds,
+    missingConfigurationAxisIds,
+    missingConfigurationOptionIds,
     toolIds,
     modeOptionIds,
+    configurationAxisIds,
+    configurationOptionIds,
     proAliases,
     supportsProExtendedAlias,
     runningStateLabelCoverage,
@@ -11868,7 +13548,7 @@ function localizationCheck(env) {
     pageAvailable: env.page !== void 0,
     runtimeSelectorCoverage: "registry_only_stage_2"
   };
-  if (englishCanonicalPresent && requiredKeysMissing.length === 0 && missingToolIds.length === 0 && missingModeOptionIds.length === 0) {
+  if (englishCanonicalPresent && requiredKeysMissing.length === 0 && missingToolIds.length === 0 && missingModeOptionIds.length === 0 && missingConfigurationAxisIds.length === 0 && missingConfigurationOptionIds.length === 0) {
     const runningStateMessage = runningStateLocalizationSupport === "complete" ? "running-state labels are present for every registered non-English locale" : runningStateLocalizationSupport === "partial" ? "running-state labels are partially localized" : runningStateLocalizationSupport === "english_only" ? "running-state labels are English-only" : "running-state labels are missing";
     return unknown(`The locale registry is loaded; localized runtime selector coverage is registry-only in Stage 2 and ${runningStateMessage}.`, void 0, details);
   }
@@ -12106,6 +13786,7 @@ var commandRisk = {
   "messages.wait": "low",
   "messages.readLatest": "medium",
   "messages.status": "medium",
+  "messages.stop": "medium",
   "messages.waitAndRead": "medium",
   "artifacts.listLatest": "medium",
   "artifacts.wait": "low",
@@ -12219,6 +13900,7 @@ var descriptors = [
   primitive("messages.wait", "Wait for the latest assistant response to stabilize.", 12e4),
   primitive("messages.readLatest", "Read the latest message as Markdown, normalized text, blocks, or HTML.", 3e4),
   primitive("messages.status", "Read a compact latest-assistant progress snapshot without treating partial text as complete.", 5e3),
+  primitive("messages.stop", "Stop the current visible ChatGPT response after explicit confirmation and verify generation became inactive.", 5e3),
   primitive("messages.waitAndRead", "Wait for completion and read the latest message.", 12e4),
   primitive("artifacts.listLatest", "Detect the latest visible generated ChatGPT artifact, such as an image-only result.", 3e4),
   primitive("artifacts.wait", "Wait for a visible generated ChatGPT artifact to appear and stabilize.", 12e4),
@@ -12392,6 +14074,7 @@ function primitiveArgs(name) {
   };
   if (name === "messages.readLatest") return { role: "assistant or user", format: "markdown, normalized_text, visible_text, html, blocks, or all" };
   if (name === "messages.status") return { maxPreviewChars: "maximum latest-assistant preview characters to return; defaults to 240" };
+  if (name === "messages.stop") return { confirmStop: "must be true to stop a visible response", timeoutMs: "maximum time to verify generation became inactive" };
   if (name === "experience.detect") return { timeoutMs: "optional timeout for attaching to the ChatGPT page" };
   if (name === "experience.open") return { experience: "chat or work", timeoutMs: "optional verified-switch timeout" };
   if (name === "configuration.inspect") return { experience: "optional expected chat or work surface", includeOptions: "open visible axis menus to enumerate options; defaults to true", timeoutMs: "optional inspection timeout" };
@@ -13171,6 +14854,7 @@ function createChatGPT(options = {}) {
       wait: (args) => waitForMessage(env, args),
       readLatest: (args) => readLatest(env, args),
       status: (args) => messageStatus(env, args),
+      stop: (args) => stopGeneration(env, args),
       waitAndRead: (args) => waitAndRead(env, args)
     },
     files: {
@@ -13901,6 +15585,7 @@ var backendCommands = [
   "messages.wait",
   "messages.readLatest",
   "messages.status",
+  "messages.stop",
   "messages.waitAndRead",
   "artifacts.listLatest",
   "artifacts.wait",
@@ -14094,6 +15779,7 @@ function createChatGPTBackendClient(transport) {
       wait: (args) => request("messages.wait", args ?? {}),
       readLatest: (args) => request("messages.readLatest", args ?? {}),
       status: (args) => request("messages.status", args ?? {}),
+      stop: (args) => request("messages.stop", args),
       waitAndRead: (args) => request("messages.waitAndRead", args)
     },
     artifacts: {
@@ -14634,6 +16320,8 @@ async function dispatchBackendCommand(client, request) {
       return client.messages.readLatest(emptyToUndefined(payload));
     case "messages.status":
       return client.messages.status(emptyToUndefined(payload));
+    case "messages.stop":
+      return client.messages.stop(payload);
     case "messages.waitAndRead":
       return client.messages.waitAndRead(payload);
     case "artifacts.listLatest":
@@ -14816,6 +16504,7 @@ export {
   htmlToText,
   inspectConfiguration,
   interruptionFromCommandResult,
+  isChatGPTUrl,
   isHighRiskCommand,
   isResponseComplete,
   isTransientAssistantText,
@@ -14891,7 +16580,10 @@ export {
   sha256Text,
   startWork,
   steerWork,
+  stopGeneration,
+  stopGenerationButton,
   streamFromRunResult,
+  stripLocalizedDownloadPrefix,
   stripTags,
   submitMessage,
   submittedUserTurnMatches,

@@ -6,19 +6,24 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const my = {
   configurationAxes: {
+    power: ["စွမ်းအား"],
     model: ["မော်ဒယ်"],
     effort: ["အားထုတ်မှု"],
     speed: ["အမြန်နှုန်း"],
+    advanced: ["အဆင့်မြင့်"],
   },
   configurationOptions: {
+    instant: ["ချက်ချင်း"],
     light: ["ပေါ့ပါး"],
     medium: ["အလယ်အလတ်"],
     high: ["အမြင့်"],
     extraHigh: ["အလွန်မြင့်"],
+    max: ["အမြင့်ဆုံး"],
+    ultra: ["အယ်လ်ထရာ"],
     standard: ["ပုံမှန်"],
     fast: ["အမြန်"],
   },
@@ -39,6 +44,9 @@ export const my = {
     extraHigh: ["အလွန်မြင့်"],
   },
   modeOpenerExtra: ["ပြုပြင်မွမ်းမံရန်"],
+  experienceOptions: {
+    work: ["အလုပ်"],
+  },
   tools: {
     web_search: ["ဝဘ်ရှာဖွေရန်"],
     deep_research: ["နက်နဲသော သုတေသန"],

@@ -6,19 +6,24 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const mn = {
   configurationAxes: {
+    power: ["Чадал"],
     model: ["Загвар"],
-    effort: ["Хүчин чармайлт"],
+    effort: ["Хүчин чармайлт", "Тооцоолол"],
     speed: ["Хурд"],
+    advanced: ["Дэвшилтэт"],
   },
   configurationOptions: {
+    instant: ["Шуурхай"],
     light: ["Хөнгөн"],
     medium: ["Дунд"],
-    high: ["Их"],
-    extraHigh: ["Маш их"],
+    high: ["Их", "Өндөр"],
+    extraHigh: ["Маш их", "Маш өндөр"],
+    max: ["Хамгийн их"],
+    ultra: ["Ультра"],
     standard: ["Стандарт"],
     fast: ["Хурдан"],
   },
@@ -40,6 +45,10 @@ export const mn = {
     pro: ["Про"],
   },
   modeOpenerExtra: ["Тохируулах..."],
+  experienceOptions: {
+    chat: ["Чат"],
+    work: ["Ажил"],
+  },
   tools: {
     web_search: ["Веб хайлт"],
     deep_research: ["Гүн судалгаа"],

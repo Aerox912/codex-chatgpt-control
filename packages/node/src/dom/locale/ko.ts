@@ -6,18 +6,23 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const ko = {
   configurationAxes: {
+    power: ["성능"],
     model: ["모델"],
-    effort: ["추론 수준"],
+    effort: ["추론 수준", "추론 강도"],
     speed: ["속도"],
+    advanced: ["고급"],
   },
   configurationOptions: {
+    instant: ["즉시"],
     medium: ["중간"],
     high: ["높음"],
     extraHigh: ["매우 높음"],
+    max: ["최대"],
+    ultra: ["울트라"],
     fast: ["빠름"],
   },
   composerTextbox: ["ChatGPT와 채팅"],

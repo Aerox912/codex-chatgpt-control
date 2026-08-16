@@ -5,12 +5,10 @@ The full set of languages ChatGPT exposes in **Settings → General → Language
 localization rollout described in [`localization.md`](./localization.md). Strings are
 stored per-locale under `src/dom/locale/<bcp47>.ts`.
 
-The status table covers the pre-existing Chat/localization registry, not the new
-Chat/Work profile graph introduced in July 2026. Work composer,
-experience-switch, configuration-axis, and configuration-option coverage is
-currently verified only for the sanitized English profiles. Do not interpret a
-green row below as full Work support until that locale has matching profile
-evidence.
+The status table began as the pre-existing Chat/localization registry. On
+2026-08-08, English plus all 64 non-English entries were recaptured against the
+current Chat and Work Power/Advanced selector graph. The latest record for
+every locale passed; see the [reviewed sweep summary](./2026-08-08-model-selection-locale-sweep.md).
 
 - Speaker counts are **crude guesstimates** (native + second-language, rounded), not
   researched figures. They exist only to prioritize the rollout.
@@ -134,16 +132,17 @@ writes only bounded composer/configuration structure under
 `outputs/surface-profiles/`.
 
 Use the repository capture script to drive the visible ChatGPT UI through Settings → General
-→ Language, then open the composer Intelligence picker and record the localized labels:
+→ Language, then open the current composer selector and record localized labels:
 
 ```bash
 npm run capture:intelligence-locales -- --auto-switch --all --if-missing open
 ```
 
-For a complete Chat/Work selector and Work configuration localization sweep,
-add `--capture-surfaces`. This reads the two ordered pane radios plus the three
-ordered Work rows and their visible submenus, restores Chat after every locale,
-and restores the initial language after the sweep:
+For a complete current selector sweep, add `--capture-surfaces`. This reads the
+two ordered pane radios, both Power controls, both Advanced labels, Chat's
+ordered Model/Effort rows, Work's ordered Model/Effort/Speed rows, and every
+visible submenu option. It restores the original compact/advanced state, Chat
+pane, and initial rendered language:
 
 ```bash
 npm run capture:intelligence-locales -- \
@@ -177,9 +176,10 @@ changes the settings or picker DOM, the run should emit a blocker record instead
 
 1. Switch ChatGPT **Settings → General → Language** to the target, reload, and confirm via
    `document.documentElement.lang` + visible text.
-2. Read static controls (composer, add-files, new chat, current model label) via JS.
-3. Open the model switcher and the `+` menu with **real** clicks (Radix menus ignore
-   synthetic `.click()`) and read the menu items → mode + tool labels.
+2. Read static controls (composer, add-files, new chat, current selector label) via JS.
+3. Open the selector with a **real** click, record the Power slider, expand
+   Advanced when needed, and read the ordered Chat Model/Effort or Work
+   Model/Effort/Speed menus. Restore the initial compact/advanced state.
 4. Open search → placeholder; observe a conversation → copy-response + response-actions.
    `stopControl` is present only mid-generation and should be captured with
    `--capture-generation-state`; login/captcha/rate-limit copy needs a logged-out/limited

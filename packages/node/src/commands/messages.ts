@@ -3,7 +3,7 @@ import { readPageState, type PageState } from "../browser/page-state.js";
 import { resultError, resultOk } from "../errors.js";
 import { EMPTY_GENERATION_STATE, latestAssistantTurnHasResponseActions, readAssistantGenerationState, type AssistantGenerationState } from "../dom/generation-state.js";
 import { countPageMessages, isTransientAssistantText, readLatestMessage, readLatestMessageText, readLatestMessageTextSnapshot, readMessages } from "../dom/messages.js";
-import { composerTextbox, copyResponseButtons, sendButton } from "../dom/selectors.js";
+import { composerTextbox, copyResponseButtons, sendButton, stopGenerationButton } from "../dom/selectors.js";
 import { readWaitDomSnapshot, waitTextMetadata, type WaitDomSnapshot } from "../dom/wait-snapshot.js";
 import { normalizeLineBreaks, normalizeWhitespace } from "../dom/visible-text.js";
 import type {
@@ -21,15 +21,18 @@ import type {
   RuntimeEnv,
   SubmitArgs,
   SubmitData,
+  StopGenerationArgs,
+  StopGenerationData,
   WaitAndReadArgs,
   WaitArgs,
   WaitData
 } from "../types.js";
 import { contextFromPage } from "./context.js";
-import { createDeadline } from "./deadline.js";
+import { createDeadline, remainingMs, type Deadline } from "./deadline.js";
 import { withCommandOutputText } from "./output.js";
 import { createSingleFlightProbe, type ProbeResult } from "./probes.js";
 import { ensurePage } from "./session.js";
+import { withTimeout } from "./timeouts.js";
 
 export type CompletionSnapshot = {
   textStableForMs: number;
@@ -59,6 +62,7 @@ export function isResponseComplete(snapshot: CompletionSnapshot): boolean {
   return snapshot.latestText.trim().length > 0
     && !isTransientAssistantText(snapshot.latestText)
     && snapshot.textStableForMs >= snapshot.stableMs
+    && snapshot.generation.observed
     && !snapshot.generation.active
     && !snapshot.generation.stopped
     && snapshot.hasResponseActions;
@@ -211,6 +215,295 @@ export async function submitMessage(
     );
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
+  }
+}
+
+export async function stopGeneration(
+  env: RuntimeEnv,
+  args: StopGenerationArgs = {}
+): Promise<CommandResult<StopGenerationData>> {
+  const timeoutMs = Math.max(1, args.timeoutMs ?? 5_000);
+  const deadline = createDeadline(timeoutMs);
+  if (args.confirmStop !== true) {
+    return {
+      ok: false,
+      status: "needs_confirmation",
+      warnings: [],
+      blocker: {
+        kind: "confirmation",
+        code: "stop_generation_confirmation_required",
+        fieldPath: "confirmStop",
+        message: "Stopping the visible ChatGPT response requires an explicit caller decision.",
+        resumable: true
+      },
+      context: env.page === undefined
+        ? { timestamp: new Date().toISOString() }
+        : await stopContext(env.page, deadline)
+    };
+  }
+
+  let boot: CommandResult<unknown>;
+  try {
+    boot = await withinStopDeadline(deadline, () => ensurePage(env), "ChatGPT page verification");
+  } catch (error) {
+    return stopDeadlineResult(error);
+  }
+  if (!boot.ok) return boot as CommandResult<StopGenerationData>;
+  const page = env.page!;
+  const generationProbe = createSingleFlightProbe("generation state", readAssistantGenerationState);
+  const warnings = new Set<string>();
+  let stopActivationStarted = false;
+  let beforeActivation: AssistantGenerationState | undefined;
+
+  try {
+    const beforeResult = await generationProbe(page, deadline, {
+      timeoutMs: Math.min(1_000, Math.max(1, remainingMs(deadline)))
+    });
+    addWarnings(warnings, beforeResult.warnings);
+    if (!beforeResult.ok || !beforeResult.value.observed) {
+      if (remainingMs(deadline) <= 0) {
+        return stopDeadlineResult(undefined, undefined, [...warnings]);
+      }
+      return {
+        ok: false,
+        status: "blocked",
+        warnings: [...warnings],
+        blocker: {
+          kind: "selector_drift",
+          code: "stop_generation_state_unavailable",
+          message: "ChatGPT generation state could not be inspected safely, so no control was clicked.",
+          resumable: true
+        },
+        context: await stopContext(page, deadline)
+      };
+    }
+    const before = beforeResult.value;
+    beforeActivation = before;
+    if (!before.active) {
+      return resultOk({
+        wasGenerating: false,
+        stopped: false,
+        signalsBefore: before.signals,
+        signalsAfter: before.signals
+      }, await stopContext(page, deadline), [...warnings]);
+    }
+
+    const resolution = await resolveStopControl(page, deadline);
+    if (!resolution.ok) {
+      return {
+        ok: false,
+        status: "blocked",
+        data: { wasGenerating: true, stopped: false, signalsBefore: before.signals, signalsAfter: before.signals },
+        warnings: [...warnings],
+        blocker: {
+          kind: "selector_drift",
+          code: resolution.code,
+          message: resolution.message,
+          resumable: true
+        },
+        context: await stopContext(page, deadline)
+      };
+    }
+
+    stopActivationStarted = true;
+    await withinStopDeadline(
+      deadline,
+      () => resolution.control.click?.({ timeout: Math.min(2_000, remainingMs(deadline)) })
+        ?? Promise.reject(new Error("The resolved Stop control does not support click().")),
+      "Stop control click"
+    );
+
+    let after = EMPTY_GENERATION_STATE;
+    while (remainingMs(deadline) > 0) {
+      const afterResult = await generationProbe(page, deadline, {
+        timeoutMs: Math.min(1_000, Math.max(1, remainingMs(deadline)))
+      });
+      addWarnings(warnings, afterResult.warnings);
+      if (afterResult.ok) {
+        after = afterResult.value;
+        if (after.observed && !after.active) {
+          return resultOk({
+            wasGenerating: true,
+            stopped: true,
+            signalsBefore: before.signals,
+            signalsAfter: after.signals
+          }, await stopContext(page, deadline), [...warnings]);
+        }
+      }
+      await sleepWithinDeadline(page, deadline, 100);
+    }
+    const data: StopGenerationData = {
+      wasGenerating: true,
+      stopped: false,
+      signalsBefore: before.signals,
+      signalsAfter: after.signals
+    };
+    return stopDeadlineResult(undefined, data, [...warnings]);
+  } catch (error) {
+    if (remainingMs(deadline) <= 0 || error instanceof StopDeadlineError) {
+      const data = stopActivationStarted && beforeActivation !== undefined
+        ? {
+            wasGenerating: true,
+            stopped: false,
+            signalsBefore: beforeActivation.signals,
+            signalsAfter: beforeActivation.signals
+          }
+        : undefined;
+      return stopDeadlineResult(error, data, [...warnings]);
+    }
+    return resultError(error instanceof Error ? error : new Error(String(error)), await stopContext(page, deadline));
+  }
+}
+
+type StopControlResolution =
+  | { ok: true; control: NonNullable<ReturnType<typeof stopGenerationButton>> }
+  | { ok: false; code: "stop_generation_control_unavailable" | "stop_generation_control_ambiguous"; message: string };
+
+async function resolveStopControl(page: PageLike, deadline: Deadline): Promise<StopControlResolution> {
+  const candidates = stopGenerationButton(page);
+  if (typeof candidates.count !== "function") {
+    return {
+      ok: false,
+      code: "stop_generation_control_unavailable",
+      message: "ChatGPT is generating, but the Stop-control candidate set could not be enumerated safely."
+    };
+  }
+  const count = await withinStopDeadline(deadline, () => candidates.count!(), "Stop control enumeration");
+  if (count === 0) {
+    return {
+      ok: false,
+      code: "stop_generation_control_unavailable",
+      message: "ChatGPT is generating, but no visible Stop control was found."
+    };
+  }
+  if (count > 8) {
+    return {
+      ok: false,
+      code: "stop_generation_control_ambiguous",
+      message: `ChatGPT exposed ${count} Stop-control candidates; refusing to choose among an unexpectedly broad set.`
+    };
+  }
+
+  const eligible: Array<ReturnType<typeof stopGenerationButton>> = [];
+  for (let index = 0; index < count; index += 1) {
+    const control = count === 1
+      ? candidates
+      : typeof candidates.nth === "function"
+        ? candidates.nth(index)
+        : undefined;
+    if (control === undefined || typeof control.isVisible !== "function" || typeof control.evaluate !== "function") {
+      continue;
+    }
+    const visible = await withinStopDeadline(
+      deadline,
+      () => control.isVisible!({ timeout: Math.min(1_000, remainingMs(deadline)) }),
+      `Stop control ${index + 1} visibility check`
+    );
+    if (!visible) continue;
+    const scoped = await withinStopDeadline(deadline, () => control.evaluate!((element: Element) => {
+      const button = element as HTMLButtonElement;
+      if (button.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      if (button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+      const visible = (node: HTMLElement) => {
+        if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== "none"
+          && style.visibility !== "hidden"
+          && style.opacity !== "0"
+          && style.pointerEvents !== "none"
+          && (rect.width > 0 || rect.height > 0);
+      };
+      const textboxes = Array.from(document.querySelectorAll<HTMLElement>(
+        "textarea, [contenteditable='true'], [role='textbox']"
+      )).filter(visible);
+      const activeComposers = [...new Set(textboxes
+        .map(textbox => textbox.closest<HTMLElement>("form")
+          ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
+          ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
+          ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
+        .filter((value): value is HTMLElement => value !== null))];
+      return activeComposers.length === 1 && activeComposers[0]!.contains(button);
+    }), `Stop control ${index + 1} scope check`);
+    if (scoped) eligible.push(control);
+  }
+
+  if (eligible.length === 1) {
+    return { ok: true, control: eligible[0]! };
+  }
+  if (eligible.length > 1) {
+    return {
+      ok: false,
+      code: "stop_generation_control_ambiguous",
+      message: `ChatGPT exposed ${eligible.length} visible Stop controls in active composer regions; no control was clicked.`
+    };
+  }
+  return {
+    ok: false,
+    code: "stop_generation_control_unavailable",
+    message: "ChatGPT is generating, but no uniquely scoped visible Stop control could be activated."
+  };
+}
+
+async function withinStopDeadline<T>(
+  deadline: Deadline,
+  operation: () => Promise<T>,
+  label: string
+): Promise<T> {
+  const budget = remainingMs(deadline);
+  if (budget <= 0) throw new StopDeadlineError(label);
+  try {
+    return await withTimeout(operation(), budget, `${label} exceeded the messages.stop deadline.`);
+  } catch (error) {
+    if (remainingMs(deadline) <= 0) throw new StopDeadlineError(label);
+    throw error;
+  }
+}
+
+async function sleepWithinDeadline(page: PageLike, deadline: Deadline, requestedMs: number): Promise<void> {
+  const waitMs = Math.min(requestedMs, Math.max(0, remainingMs(deadline) - 1));
+  if (waitMs <= 0) return;
+  const wait = page.waitForTimeout?.(waitMs) ?? new Promise<void>(resolve => setTimeout(resolve, waitMs));
+  await withinStopDeadline(deadline, () => wait, "Generation-state polling delay");
+}
+
+async function stopContext(page: PageLike, deadline: Deadline) {
+  const budget = Math.min(250, remainingMs(deadline));
+  if (budget <= 0) return { timestamp: new Date().toISOString() };
+  return withTimeout(contextFromPage(page), budget, "Stop-result context capture timed out.")
+    .catch(() => ({ timestamp: new Date().toISOString() }));
+}
+
+function stopDeadlineResult(
+  error?: unknown,
+  data?: StopGenerationData,
+  warnings: string[] = []
+): CommandResult<StopGenerationData> {
+  const message = data?.wasGenerating === true
+    ? "Stop activation was started, but its outcome could not be verified before the single operation deadline. Do not retry automatically because the original click may still complete."
+    : "ChatGPT generation could not be inspected and stopped before the single operation deadline.";
+  const result: CommandResult<StopGenerationData> = {
+    ok: false,
+    status: "timeout",
+    warnings: error === undefined
+      ? warnings
+      : [...warnings, error instanceof Error ? error.message : String(error)],
+    blocker: {
+      kind: "selector_drift",
+      code: data?.wasGenerating === true ? "stop_generation_unverified" : "stop_generation_deadline_exhausted",
+      message,
+      resumable: data?.wasGenerating !== true
+    },
+    context: { timestamp: new Date().toISOString() }
+  };
+  if (data !== undefined) result.data = data;
+  return result;
+}
+
+class StopDeadlineError extends Error {
+  constructor(label: string) {
+    super(`${label} could not complete before the messages.stop deadline.`);
+    this.name = "StopDeadlineError";
   }
 }
 
@@ -460,6 +753,7 @@ export async function waitForMessage(
       && snapshot.text.length > 0
       && !snapshot.text.transient
       && Date.now() - lastChangedAt >= stableMs
+      && snapshot.generation.observed
       && !snapshot.generation.active
       && !snapshot.generation.stopped
       && hasResponseActions;

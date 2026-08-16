@@ -189,7 +189,7 @@ class CrossLanguageConformanceTests(unittest.TestCase):
                             "warnings": ["contains sensitive preview"],
                             "blocker": {
                                 "kind": "browser_bridge_unavailable",
-                                "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.",
+                                "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it.",
                                 "visibleText": "private@example.com",
                             },
                             "context": {"timestamp": "2026-06-06T00:00:00.000Z"},
