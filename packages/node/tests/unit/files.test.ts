@@ -1491,6 +1491,76 @@ describe("downloadLatestFile", () => {
     await expect(readFile(join(dest, "chatgpt-live-smoke.csv"), "utf8")).resolves.toBe("name,value\nsmoke,1\n");
   });
 
+  it("waits beyond the former 15-second cap for a generated-file preview control", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-control-delayed-preview-download-"));
+    const dest = join(dir, "out");
+    const browserDownload = join(dir, "chatgpt-live-smoke.csv");
+    await mkdir(dest);
+    await writeFile(browserDownload, "name,value\nsmoke,1\n");
+
+    let now = 0;
+    let previewOpen = false;
+    let downloadClicked = false;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const missing: LocatorLike = { count: async () => 0 };
+    const filenameButton: LocatorLike = {
+      count: async () => 1,
+      click: async () => {
+        previewOpen = true;
+      }
+    };
+    const previewDownload: LocatorLike = {
+      count: async () => previewOpen && now >= 16000 ? 1 : 0,
+      click: async () => {
+        downloadClicked = true;
+      }
+    };
+    const assistant: LocatorLike = {
+      getByRole: (_role, options) => options?.name === "chatgpt-live-smoke.csv" ? filenameButton : missing
+    };
+    const assistants: LocatorLike = {
+      count: async () => 1,
+      nth: () => assistant
+    };
+    const preview: LocatorLike = {
+      count: async () => previewOpen && now >= 3000 ? 1 : 0,
+      getByRole: (_role, options) => options?.name === "Download" ? previewDownload : missing
+    };
+    const page: PageLike = {
+      content: async () => [
+        "<main><div data-message-author-role='assistant'>",
+        "<button aria-label='chatgpt-live-smoke.csv'>chatgpt-live-smoke.csv</button>",
+        "</div></main>"
+      ].join(""),
+      locator: selector => {
+        if (selector === "[data-message-author-role='assistant']") return assistants;
+        if (selector === "section[aria-label=\"chatgpt-live-smoke.csv\"]") return preview;
+        return missing;
+      },
+      waitForEvent: async () => ({ path: async () => browserDownload }),
+      waitForTimeout: async timeoutMs => {
+        now += timeoutMs;
+      },
+      title: async () => "ChatGPT",
+      url: () => "https://chatgpt.com/c/mock"
+    };
+
+    try {
+      const result = await downloadLatestFile({ page }, {
+        destDir: dest,
+        filenamePattern: "^chatgpt-live-smoke\\.csv$",
+        timeoutMs: 20000
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.data?.suggestedFilename).toBe("chatgpt-live-smoke.csv");
+      expect(downloadClicked).toBe(true);
+      expect(now).toBeGreaterThanOrEqual(16000);
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
   it("normalizes Chat's download-prefixed artifact control and uses the workbook preview", async () => {
     const dir = await mkdtemp(join(tmpdir(), "chatgpt-control-generated-workbook-download-"));
     const dest = join(dir, "out");

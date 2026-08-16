@@ -1367,17 +1367,13 @@ async function tryGeneratedFilePreviewDownload(
 
     await affordance.click({ timeoutMs: localGuardTimeout(timeoutMs, 10000) });
     const labelledPreview = requiredLocator(page, `section[aria-label="${escapeCssAttribute(selected.filename)}"]`);
-    const labelledPreviewCount = typeof labelledPreview.count === "function"
-      ? await locatorCountWithTimeout(
-          labelledPreview,
-          localGuardTimeout(timeoutMs, 2000),
-          "generated_file_labelled_preview_count_timeout"
-        )
-      : undefined;
     const workbookPreviews = requiredLocator(page, "section[data-testid^='popcorn-']");
     const workbookPreview = workbookPreviews.filter?.({ hasText: selected.filename }) ?? workbookPreviews;
-    const preview = labelledPreviewCount === 0 ? workbookPreview : labelledPreview;
-    const download = await waitForPreviewDownloadControl(page, preview, timeoutMs);
+    const download = await waitForPreviewDownloadControl(
+      page,
+      [labelledPreview, workbookPreview],
+      timeoutMs
+    );
     if (download === undefined) {
       throw new Error(`The artifact preview for ${selected.filename} did not expose a visible Download control.`);
     }
@@ -1524,16 +1520,18 @@ function filenameMatches(filename: string, pattern: string): boolean {
 
 async function waitForPreviewDownloadControl(
   page: RuntimeEnv["page"] & {},
-  preview: LocatorLike,
+  previews: LocatorLike[],
   timeoutMs: number
 ): Promise<LocatorLike | undefined> {
-  const deadline = Date.now() + Math.min(timeoutMs, 15000);
+  const deadline = Date.now() + Math.min(timeoutMs, 60000);
   while (Date.now() < deadline) {
-    for (const label of localeLabels.download) {
-      const control = preview.getByRole?.("button", { name: label, exact: true })
-        ?? preview.locator?.(`button[aria-label="${escapeCssAttribute(label)}"]`);
-      if (await locatorCountWithTimeout(control, localGuardTimeout(timeoutMs, 2000), "artifact_preview_download_count_timeout") === 1) {
-        return control;
+    for (const preview of previews) {
+      for (const label of localeLabels.download) {
+        const control = preview.getByRole?.("button", { name: label, exact: true })
+          ?? preview.locator?.(`button[aria-label="${escapeCssAttribute(label)}"]`);
+        if (await locatorCountWithTimeout(control, localGuardTimeout(timeoutMs, 2000), "artifact_preview_download_count_timeout") === 1) {
+          return control;
+        }
       }
     }
     if (typeof page.waitForTimeout === "function") {
