@@ -11177,6 +11177,7 @@ function uploadPermissionRemediation() {
 var CHATGPT_ORIGIN = "https://chatgpt.com";
 var DEFAULT_PROJECT_SOURCE_BATCH_SIZE = 10;
 var PROJECT_SOURCE_CANDIDATE_LIMIT = 20;
+var CHOOSER_PROBE_INTERVAL_MS = 100;
 function normalizeProjectSourcesUrl(value) {
   let parsed;
   try {
@@ -11550,14 +11551,21 @@ async function uploadProjectSourceBatch(page, batch, timeoutMs) {
     if (typeof page.waitForEvent !== "function") {
       throw new Error("The active Project Sources page does not expose file chooser events.");
     }
-    let chooserPromise = waitForFileChooser2(page, timeoutMs);
-    await clickProjectSourceControl(page, localeLabels.projectSourcesAddSource, "button", timeoutMs);
-    const opened = await raceFileChooserOpen(chooserPromise, page, 300);
-    if (!opened) {
-      chooserPromise = waitForFileChooser2(page, timeoutMs);
-      await clickProjectSourceControl(page, localeLabels.projectSourcesUploadFiles, "button", timeoutMs);
+    const deadlineMs = Date.now() + Math.max(0, timeoutMs);
+    const chooserOutcome = waitForFileChooser2(page, timeoutMs).then(
+      (chooser2) => ({ kind: "chooser", chooser: chooser2 }),
+      (error) => ({ kind: "error", error })
+    );
+    const addControl = await requireProjectSourceControl(page, localeLabels.projectSourcesAddSource, "button");
+    const chooserFromAddClick = await clickControlWhileChooserPending(addControl, chooserOutcome, deadlineMs);
+    const outcome = chooserFromAddClick ?? await waitForChooserOrUploadControl(page, chooserOutcome, deadlineMs);
+    let chooser;
+    if (outcome.kind === "chooser") {
+      chooser = outcome.chooser;
+    } else {
+      const chooserFromUploadClick = await clickControlWhileChooserPending(outcome.control, chooserOutcome, deadlineMs);
+      chooser = chooserFromUploadClick?.kind === "chooser" ? chooserFromUploadClick.chooser : unwrapChooserOutcome(await chooserOutcome);
     }
-    const chooser = await chooserPromise;
     await chooser.setFiles(paths);
     return resultOk({ files: batch.files.map((file) => ({ name: file.name, bytes: file.bytes })) }, await contextFromPage(page));
   } catch (error) {
@@ -11589,20 +11597,28 @@ async function clickSourcesTabIfAvailable(page, timeoutMs) {
   }
 }
 async function clickProjectSourceControl(page, labels, role, timeoutMs) {
+  const control = await requireProjectSourceControl(page, labels, role);
+  await control.click?.({ timeout: Math.min(timeoutMs, 1e4) });
+  await page.waitForTimeout?.(250);
+}
+async function requireProjectSourceControl(page, labels, role) {
+  const control = await findProjectSourceControl(page, labels, role);
+  if (control === void 0) {
+    throw new Error(`Project Sources ${role} was not available for labels: ${labels.join(", ")}`);
+  }
+  return control;
+}
+async function findProjectSourceControl(page, labels, role) {
   const locator = page.getByRole?.(role, { name: anyLabelPattern(labels) });
   if (locator !== void 0 && await locatorCount3(locator) > 0) {
-    await (locator.first?.() ?? locator).click?.({ timeout: Math.min(timeoutMs, 1e4) });
-    await page.waitForTimeout?.(250);
-    return;
+    return locator.first?.() ?? locator;
   }
   const selector = labels.map((label) => `button[aria-label*='${cssString(label)}'], [role='${role}'][aria-label*='${cssString(label)}']`).join(", ");
   const fallback = page.locator?.(selector);
   if (fallback !== void 0 && await locatorCount3(fallback) > 0) {
-    await (fallback.first?.() ?? fallback).click?.({ timeout: Math.min(timeoutMs, 1e4) });
-    await page.waitForTimeout?.(250);
-    return;
+    return fallback.first?.() ?? fallback;
   }
-  throw new Error(`Project Sources ${role} was not available for labels: ${labels.join(", ")}`);
+  return void 0;
 }
 async function waitForFileChooser2(page, timeoutMs) {
   const rawChooser = await page.waitForEvent?.("filechooser", { timeout: timeoutMs, timeoutMs });
@@ -11611,11 +11627,104 @@ async function waitForFileChooser2(page, timeoutMs) {
   }
   return rawChooser;
 }
-async function raceFileChooserOpen(chooserPromise, page, waitMs) {
+async function waitForChooserOrUploadControl(page, chooserOutcome, deadlineMs) {
+  const safeTimeoutMs = Math.max(0, deadlineMs - Date.now());
+  const attempts = Math.max(1, Math.ceil(safeTimeoutMs / CHOOSER_PROBE_INTERVAL_MS));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const remainingMs2 = Math.max(0, deadlineMs - Date.now());
+    if (remainingMs2 === 0) {
+      break;
+    }
+    const raced = await Promise.race([
+      chooserOutcome,
+      waitMs(page, Math.min(CHOOSER_PROBE_INTERVAL_MS, remainingMs2)).then(() => ({ kind: "probe" }))
+    ]);
+    if (raced.kind === "chooser") {
+      return raced;
+    }
+    if (raced.kind === "error") {
+      throw raced.error;
+    }
+    const uploadControl = await findSingleVisibleProjectSourceControl(page, localeLabels.projectSourcesUploadFiles, "button");
+    if (uploadControl !== void 0) {
+      const latestChooserOutcome = await observeChooserOutcome(chooserOutcome);
+      if (latestChooserOutcome.kind === "chooser") {
+        return latestChooserOutcome;
+      }
+      if (latestChooserOutcome.kind === "error") {
+        throw latestChooserOutcome.error;
+      }
+      return { kind: "upload_control", control: uploadControl };
+    }
+  }
+  return { kind: "chooser", chooser: unwrapChooserOutcome(await chooserOutcome) };
+}
+async function clickControlWhileChooserPending(control, chooserOutcome, deadlineMs) {
+  try {
+    await control.click?.({ timeout: remainingInteractionTimeout(deadlineMs) });
+    return void 0;
+  } catch (clickError) {
+    const outcome = await observeChooserOutcome(chooserOutcome);
+    if (outcome.kind === "chooser") {
+      return outcome;
+    }
+    if (outcome.kind === "error") {
+      throw outcome.error;
+    }
+    throw clickError;
+  }
+}
+async function observeChooserOutcome(chooserOutcome) {
   return Promise.race([
-    chooserPromise.then(() => true, () => false),
-    (page.waitForTimeout?.(waitMs) ?? new Promise((resolve5) => setTimeout(resolve5, waitMs))).then(() => false)
+    chooserOutcome,
+    Promise.resolve({ kind: "pending" })
   ]);
+}
+function unwrapChooserOutcome(outcome) {
+  if (outcome.kind === "error") {
+    throw outcome.error;
+  }
+  return outcome.chooser;
+}
+function remainingInteractionTimeout(deadlineMs) {
+  const remainingMs2 = deadlineMs - Date.now();
+  if (remainingMs2 <= 0) {
+    throw new Error("Timed out waiting for the Project Sources file chooser or upload control.");
+  }
+  return Math.min(remainingMs2, 1e4);
+}
+async function findSingleVisibleProjectSourceControl(page, labels, role) {
+  const byRole = page.getByRole?.(role, { name: anyLabelPattern(labels) });
+  const roleMatch = await findSingleVisibleLocator(byRole, labels, role);
+  if (roleMatch !== void 0) {
+    return roleMatch;
+  }
+  const selector = labels.map((label) => `button[aria-label*='${cssString(label)}'], [role='${role}'][aria-label*='${cssString(label)}']`).join(", ");
+  return findSingleVisibleLocator(page.locator?.(selector), labels, role);
+}
+async function findSingleVisibleLocator(locator, labels, role) {
+  if (locator === void 0) {
+    return void 0;
+  }
+  const count = await locatorCount3(locator);
+  let visible;
+  for (let index = 0; index < count; index += 1) {
+    const candidate = locator.nth?.(index) ?? (count === 1 ? locator : void 0);
+    if (candidate === void 0 || typeof candidate.isVisible !== "function") {
+      throw new Error(`Project Sources ${role} visibility could not be verified for labels: ${labels.join(", ")}`);
+    }
+    if (!await candidate.isVisible()) {
+      continue;
+    }
+    if (visible !== void 0) {
+      throw new Error(`Multiple visible Project Sources ${role}s matched labels: ${labels.join(", ")}`);
+    }
+    visible = candidate;
+  }
+  return visible;
+}
+async function waitMs(page, ms2) {
+  await (page.waitForTimeout?.(ms2) ?? new Promise((resolve5) => setTimeout(resolve5, ms2)));
 }
 async function locatorCount3(locator) {
   if (typeof locator.count !== "function") {

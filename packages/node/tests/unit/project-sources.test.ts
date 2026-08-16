@@ -132,7 +132,7 @@ describe("Project Sources browser commands", () => {
     const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-upload-"));
     const file = join(dir, "smoke.txt");
     await writeFile(file, "hello");
-    const page = projectSourcesUploadMenuPage("smoke.txt");
+    const page = projectSourcesUploadPage("smoke.txt");
     const chatgpt = createChatGPT({ page });
 
     const result = await chatgpt.projects.sources.add({
@@ -145,6 +145,8 @@ describe("Project Sources browser commands", () => {
     expect(result.ok).toBe(true);
     expect(page.clicks).toEqual(["Sources", "Add sources", "Upload"]);
     expect(page.uploadedPaths).toEqual([file]);
+    expect(page.chooserWaiters).toBe(1);
+    expect(page.setFilesCalls).toBe(1);
     expect(result.data?.dryRun).toBe(false);
     if (result.data === undefined || result.data.dryRun !== false) {
       throw new Error("Expected confirmed Project Sources add data.");
@@ -152,6 +154,50 @@ describe("Project Sources browser commands", () => {
     expect(result.data.before).toEqual([]);
     expect(result.data.after).toEqual([{ name: "smoke.txt", status: "processing" }]);
     expect(result.data.added).toEqual([{ name: "smoke.txt", status: "processing" }]);
+  });
+
+  it("uploads through a file chooser that opens later than the former 300 ms probe window", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-delayed-chooser-"));
+    const file = join(dir, "smoke.txt");
+    await writeFile(file, "hello");
+    const page = projectSourcesUploadPage("smoke.txt", { chooserDelayMs: 900 });
+    const chatgpt = createChatGPT({ page });
+
+    const result = await chatgpt.projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      batchSize: 1
+    });
+
+    expect(result.ok).toBe(true);
+    expect(page.clicks).toEqual(["Sources", "Add sources"]);
+    expect(page.uploadedPaths).toEqual([file]);
+    expect(page.chooserWaiters).toBe(1);
+    expect(page.setFilesCalls).toBe(1);
+    expect(page.elapsedMsAtChooserOpen).toBeGreaterThan(300);
+  });
+
+  it("treats chooser rejection as terminal without retrying through the upload menu", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-rejected-chooser-"));
+    const file = join(dir, "smoke.txt");
+    await writeFile(file, "hello");
+    const page = projectSourcesUploadPage("smoke.txt", { chooserRejectAfterMs: 100 });
+    const chatgpt = createChatGPT({ page });
+
+    const result = await chatgpt.projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      batchSize: 1
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker?.message).toContain("simulated chooser rejection");
+    expect(page.clicks).toEqual(["Sources", "Add sources"]);
+    expect(page.chooserWaiters).toBe(1);
+    expect(page.setFilesCalls).toBe(0);
+    expect(page.uploadedPaths).toEqual([]);
   });
 
   it("extracts source names and statuses from a fixture list without source content", () => {
@@ -340,13 +386,31 @@ function mutationFailingPage(): PageLike & { mutationCalls: string[] } {
   };
 }
 
-function projectSourcesUploadMenuPage(uploadedName: string): PageLike & { clicks: string[]; uploadedPaths: string[] } {
+type ProjectSourcesUploadPage = PageLike & {
+  clicks: string[];
+  uploadedPaths: string[];
+  chooserWaiters: number;
+  setFilesCalls: number;
+  elapsedMsAtChooserOpen: number;
+};
+
+function projectSourcesUploadPage(
+  uploadedName: string,
+  options: { chooserDelayMs?: number; chooserRejectAfterMs?: number } = {}
+): ProjectSourcesUploadPage {
   const clicks: string[] = [];
   const uploadedPaths: string[] = [];
+  const chooserWaiters: Array<{
+    resolve: (chooser: FileChooserLike) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  const directChooser = options.chooserDelayMs !== undefined || options.chooserRejectAfterMs !== undefined;
+  let addSourcesClicked = false;
   let menuOpen = false;
-  const chooserResolvers: Array<(chooser: FileChooserLike) => void> = [];
+  let elapsedMs = 0;
   const chooser: FileChooserLike = {
     setFiles: async paths => {
+      page.setFilesCalls += 1;
       uploadedPaths.push(...paths);
     }
   };
@@ -354,6 +418,7 @@ function projectSourcesUploadMenuPage(uploadedName: string): PageLike & { clicks
   const locatorFor = (label: string, count: () => number, onClick?: () => void): LocatorLike => {
     const locator: LocatorLike = {
       count: async () => count(),
+      isVisible: async () => count() > 0,
       click: async () => {
         clicks.push(label);
         onClick?.();
@@ -363,44 +428,64 @@ function projectSourcesUploadMenuPage(uploadedName: string): PageLike & { clicks
     return locator;
   };
 
-  return {
+  const openChooser = (): void => {
+    page.elapsedMsAtChooserOpen = elapsedMs;
+    for (const waiter of chooserWaiters.splice(0)) {
+      waiter.resolve(chooser);
+    }
+  };
+
+  const page: ProjectSourcesUploadPage = {
     clicks,
     uploadedPaths,
+    chooserWaiters: 0,
+    setFilesCalls: 0,
+    elapsedMsAtChooserOpen: 0,
     url: () => PROJECT_URL,
     title: async () => "ChatGPT Project",
     content: async () => uploadedPaths.length === 0
       ? `<main><button role="tab" aria-selected="true">Sources</button></main>`
       : `<main><button role="tab" aria-selected="true">Sources</button><div data-testid="project-source"><span>${uploadedName}</span><span>Processing</span></div></main>`,
-    locator: selector => selector === "input[type='file']"
-      ? locatorFor("input[type='file']", () => 0)
-      : locatorFor(selector, () => 0),
-    getByRole: (role, options) => {
+    locator: (selector: string) => locatorFor(selector, () => 0),
+    getByRole: (role: string, options?: Record<string, unknown>) => {
       const pattern = options?.name instanceof RegExp ? options.name : undefined;
       if (role === "tab" && pattern?.test("Sources")) {
         return locatorFor("Sources", () => 1);
       }
       if (role === "button" && pattern?.test("Add sources")) {
         return locatorFor("Add sources", () => 1, () => {
-          menuOpen = true;
+          addSourcesClicked = true;
+          menuOpen = !directChooser;
         });
       }
       if (role === "button" && pattern?.test("Upload")) {
-        return locatorFor("Upload", () => menuOpen ? 1 : 0, () => {
-          for (const resolve of chooserResolvers.splice(0)) {
-            resolve(chooser);
-          }
-        });
+        return locatorFor("Upload", () => menuOpen ? 1 : 0, openChooser);
       }
       return locatorFor(role, () => 0);
     },
-    waitForEvent: async event => {
+    waitForEvent: async (event: string) => {
       if (event !== "filechooser") {
         throw new Error(`Unexpected event: ${event}`);
       }
-      return new Promise(resolve => {
-        chooserResolvers.push(resolve);
+      page.chooserWaiters += 1;
+      return new Promise<FileChooserLike>((resolve, reject) => {
+        chooserWaiters.push({ resolve, reject });
       });
     },
-    waitForTimeout: async () => undefined
+    waitForTimeout: async (ms: number) => {
+      if (!directChooser || !addSourcesClicked) {
+        return;
+      }
+      elapsedMs += ms;
+      if (options.chooserRejectAfterMs !== undefined && elapsedMs >= options.chooserRejectAfterMs) {
+        for (const waiter of chooserWaiters.splice(0)) {
+          waiter.reject(new Error("simulated chooser rejection"));
+        }
+      } else if (options.chooserDelayMs !== undefined && elapsedMs >= options.chooserDelayMs && chooserWaiters.length > 0) {
+        openChooser();
+      }
+    }
   };
+
+  return page;
 }
