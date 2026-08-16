@@ -33,6 +33,67 @@ describe("existing Chrome tab bootstrap", () => {
     ]);
   });
 
+  it("prefers the user-open selected tab over a stale controlled selection for explicit reuse", async () => {
+    const claimed: unknown[] = [];
+    const browser: BrowserLike = {
+      name: "chrome",
+      tabs: {
+        selected: async () => fakeChatGPTPage(
+          "controlled-stale",
+          "https://chatgpt.com/c/controlled-stale",
+          "Controlled stale"
+        ),
+        list: async () => [
+          fakeChatGPTPage("controlled-stale", "https://chatgpt.com/c/controlled-stale", "Controlled stale")
+        ]
+      },
+      user: {
+        openTabs: async () => [
+          { id: "user-current", url: "https://chatgpt.com/c/user-current", title: "User current" }
+        ],
+        claimTab: async tab => {
+          claimed.push(tab);
+          return fakeChatGPTPage("user-current", "https://chatgpt.com/c/user-current", "User current");
+        }
+      }
+    };
+
+    const result = await bootstrap({ browser }, { existingTab: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.context.tabId).toBe("user-current");
+    expect(claimed).toHaveLength(1);
+  });
+
+  it("blocks instead of creating a replacement when existingTab true has no open match", async () => {
+    let created = false;
+    const browser: BrowserLike = {
+      name: "chrome",
+      user: {
+        openTabs: async () => [],
+        claimTab: async () => {
+          throw new Error("claimTab should not run");
+        }
+      },
+      tabs: {
+        list: async () => [],
+        create: async () => {
+          created = true;
+          return fakeChatGPTPage("created", "https://chatgpt.com/", "ChatGPT");
+        }
+      }
+    };
+
+    const result = await bootstrap({ browser }, { existingTab: true });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "blocked",
+      blocker: { code: "existing_tab_not_found" }
+    });
+    expect(created).toBe(false);
+  });
+
   it("uses user-open Chrome tabs for default preferred existing-tab discovery", async () => {
     const claimed: unknown[] = [];
     const browser: BrowserLike = {
@@ -58,6 +119,134 @@ describe("existing Chrome tab bootstrap", () => {
     expect(claimed).toEqual([
       { id: "user-tab-1", url: "https://chatgpt.com/c/abc-123", title: "SDK Review" }
     ]);
+  });
+
+  it("uses user-open Chrome tabs when controlled tab enumeration is unavailable", async () => {
+    const claimed: unknown[] = [];
+    const browser: BrowserLike = {
+      name: "chrome",
+      user: {
+        openTabs: async () => [
+          { id: "user-only", url: "https://chatgpt.com/c/user-only", title: "User-only APIs" }
+        ],
+        claimTab: async tab => {
+          claimed.push(tab);
+          return fakeChatGPTPage("user-only", "https://chatgpt.com/c/user-only", "User-only APIs");
+        }
+      }
+    };
+
+    const result = await bootstrap({ browser }, { preferExistingTab: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.context.tabId).toBe("user-only");
+    expect(claimed).toHaveLength(1);
+  });
+
+  it.each([
+    "https://evil.example/?next=https://chatgpt.com/c/abc",
+    "https://evil.example/chatgpt.com/c/abc",
+    "https://chatgpt.com.evil.example/c/abc",
+    "https://notchatgpt.com/c/abc"
+  ])("does not reuse a lookalike controlled URL: %s", async lookalike => {
+    const created: string[] = [];
+    const lookalikePage = fakeChatGPTPage("lookalike", lookalike, "Lookalike");
+    const browser: BrowserLike = {
+      name: "chrome",
+      tabs: {
+        selected: async () => lookalikePage,
+        list: async () => [lookalikePage],
+        create: async url => {
+          created.push(url);
+          return fakeChatGPTPage("fresh", url, "ChatGPT");
+        }
+      }
+    };
+
+    const result = await bootstrap({ browser }, { preferExistingTab: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.context.tabId).toBe("fresh");
+    expect(created).toEqual(["https://chatgpt.com/"]);
+  });
+
+  it("blocks when a newly created page redirects away from ChatGPT", async () => {
+    let currentUrl = "about:blank";
+    const page: PageLike = {
+      id: "redirected-new-page",
+      url: () => currentUrl,
+      goto: async () => {
+        currentUrl = "https://evil.example/";
+      },
+      title: async () => "Redirected"
+    };
+    const browser: BrowserLike = {
+      name: "chrome",
+      newPage: async () => page
+    };
+
+    const result = await bootstrap({ browser }, { preferExistingTab: false });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "blocked",
+      blocker: {
+        kind: "selector_drift",
+        code: "unsafe_chatgpt_origin"
+      },
+      error: { recoverable: false }
+    });
+  });
+
+  it("blocks when a claimed ChatGPT tab changes origin during the claim", async () => {
+    const browser: BrowserLike = {
+      name: "chrome",
+      user: {
+        openTabs: async () => [
+          { id: "claim-race", url: "https://chatgpt.com/c/claim-race", title: "Claim race" }
+        ],
+        claimTab: async () => fakeChatGPTPage("claim-race", "https://evil.example/", "Redirected")
+      }
+    };
+
+    const result = await bootstrap({ browser }, { existingTab: true });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "blocked",
+      blocker: {
+        kind: "selector_drift",
+        code: "unsafe_chatgpt_origin"
+      },
+      error: { recoverable: false }
+    });
+  });
+
+  it.each([
+    "http://chatgpt.com/c/abc",
+    "https://chatgpt.com:444/c/abc",
+    "https://user@chatgpt.com/c/abc",
+    "file://chatgpt.com/c/abc"
+  ])("does not reuse a ChatGPT hostname through a disallowed URL form: %s", async unsafeUrl => {
+    const created: string[] = [];
+    const unsafePage = fakeChatGPTPage("unsafe", unsafeUrl, "Unsafe");
+    const browser: BrowserLike = {
+      name: "chrome",
+      tabs: {
+        selected: async () => unsafePage,
+        list: async () => [unsafePage],
+        create: async url => {
+          created.push(url);
+          return fakeChatGPTPage("fresh", url, "ChatGPT");
+        }
+      }
+    };
+
+    const result = await bootstrap({ browser }, { preferExistingTab: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.context.tabId).toBe("fresh");
+    expect(created).toEqual(["https://chatgpt.com/"]);
   });
 
   it("falls back to a fresh tab when implicit user-tab reuse is already claimed", async () => {

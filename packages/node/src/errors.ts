@@ -3,7 +3,7 @@ import type { BlockerKind, CommandContext, CommandResult } from "./types.js";
 type BlockerDetails = Partial<Omit<NonNullable<CommandResult["blocker"]>, "kind" | "message" | "visibleText">>;
 
 export const BROWSER_BRIDGE_UNAVAILABLE_MESSAGE =
-  "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.";
+  "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it.";
 
 export const BROWSER_BRIDGE_REMEDIATION: NonNullable<NonNullable<CommandResult["blocker"]>["remediation"]> = [
   {
@@ -13,7 +13,7 @@ export const BROWSER_BRIDGE_REMEDIATION: NonNullable<NonNullable<CommandResult["
   },
   {
     label: "Codex Chrome bootstrap",
-    instruction: "For a live run, initialize the Chrome plugin runtime in node_repl with setupBrowserRuntime({ globals: globalThis }), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
+    instruction: "For a live run, initialize the Chrome plugin runtime in node_repl with globalThis.agent = await setupBrowserRuntime(), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
     userActionRequired: false
   },
   {

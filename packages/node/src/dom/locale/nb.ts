@@ -6,19 +6,23 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const nb = {
   configurationAxes: {
+    power: ["Styrke"],
     model: ["Modell"],
-    effort: ["Innsats"],
+    effort: ["Innsats", "Resonneringsnivå"],
     speed: ["Hastighet"],
+    advanced: ["Avansert"],
   },
   configurationOptions: {
+    instant: ["Øyeblikkelig"],
     light: ["Lett"],
     medium: ["Middels"],
     high: ["Høy"],
     extraHigh: ["Ekstra høy"],
+    max: ["Maks"],
     fast: ["Rask"],
   },
   composerTextbox: ["Spør om hva som helst"],

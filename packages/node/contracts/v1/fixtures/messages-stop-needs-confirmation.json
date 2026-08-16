@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "requestId": "req_messages_stop",
+  "result": {
+    "blocker": {
+      "code": "stop_generation_confirmation_required",
+      "fieldPath": "confirmStop",
+      "kind": "confirmation",
+      "message": "Stopping the visible ChatGPT response requires an explicit caller decision.",
+      "resumable": true
+    },
+    "context": {
+      "timestamp": "2026-06-06T00:00:00.000Z"
+    },
+    "ok": false,
+    "status": "needs_confirmation",
+    "warnings": []
+  },
+  "schemaVersion": "chatgpt.browser_control.backend_response.v1"
+}

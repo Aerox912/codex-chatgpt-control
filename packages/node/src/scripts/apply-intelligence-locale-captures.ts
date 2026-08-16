@@ -12,10 +12,22 @@ type CaptureRecord = {
   surfaceCapture?: {
     status: "ok" | "blocked";
     restoredChat: boolean;
-    chat?: { optionLabel: string; composerLabels: string[] };
+    chat?: {
+      optionLabel: string;
+      composerLabels: string[];
+      power?: { axisLabel: string };
+      advanced?: { label: string };
+      configurationRows?: Array<{
+        axis: "model" | "effort";
+        axisLabel: string;
+        options: Array<{ label: string; checked: boolean }>;
+      }>;
+    };
     work?: {
       optionLabel: string;
       composerLabels: string[];
+      power?: { axisLabel: string };
+      advanced?: { label: string };
       configurationRows: Array<{
         axis: "model" | "effort" | "speed";
         axisLabel: string;
@@ -34,8 +46,8 @@ type ApplyOptions = {
 
 type IntelligenceModeOptionId = "instant" | "medium" | "high" | "extraHigh" | "pro";
 type ExperienceOptionId = "chat" | "work";
-type ConfigurationAxisId = "model" | "effort" | "speed";
-type ConfigurationOptionId = "light" | "medium" | "high" | "extraHigh" | "max" | "ultra" | "standard" | "fast";
+type ConfigurationAxisId = "model" | "intelligence" | "effort" | "speed" | "power" | "advanced";
+type ConfigurationOptionId = "instant" | "light" | "medium" | "high" | "extraHigh" | "max" | "ultra" | "pro" | "standard" | "fast";
 type SurfaceContribution = {
   workComposerTextbox: string[];
   experienceOptions: Partial<Record<ExperienceOptionId, string[]>>;
@@ -45,6 +57,11 @@ type SurfaceContribution = {
 
 const ENGLISH_MODE_LABELS = new Set(["Latest", "Instant", "Thinking", "Extended", "Medium", "High", "Extra High", "Pro"]);
 const ENGLISH_STOP_CONTROL = new Set(["stop generating", "stop streaming", "stop answering", "cancel"]);
+// These labels are unsafe regardless of language provenance: they are generic
+// controls that can describe Send, dialog dismissal, or unrelated cancellation.
+// Keep this separate from the English-exclusion set so changing the canonical
+// English registry can never make them eligible for a locale stop selector.
+const UNSAFE_GENERIC_STOP_CONTROLS = new Set(["cancel"]);
 const ENGLISH_STOPPED_ASSISTANT = new Set(["stopped thinking", "stopped answering", "generation stopped"]);
 const INTELLIGENCE_MODE_OPTION_IDS: IntelligenceModeOptionId[] = ["instant", "medium", "high", "extraHigh", "pro"];
 const ENGLISH_INTELLIGENCE_MODE_OPTIONS: Record<IntelligenceModeOptionId, string> = {
@@ -55,24 +72,36 @@ const ENGLISH_INTELLIGENCE_MODE_OPTIONS: Record<IntelligenceModeOptionId, string
   pro: "Pro",
 };
 const EXPERIENCE_OPTION_IDS: ExperienceOptionId[] = ["chat", "work"];
-const CONFIGURATION_AXIS_IDS: ConfigurationAxisId[] = ["model", "effort", "speed"];
-const CONFIGURATION_OPTION_IDS: ConfigurationOptionId[] = ["light", "medium", "high", "extraHigh", "max", "ultra", "standard", "fast"];
+const WORK_CONFIGURATION_AXIS_IDS = ["model", "effort", "speed"] as const;
+const CHAT_CONFIGURATION_AXIS_IDS = ["model", "effort"] as const;
+const CONFIGURATION_AXIS_IDS: ConfigurationAxisId[] = ["power", "model", "intelligence", "effort", "speed", "advanced"];
+const CONFIGURATION_OPTION_IDS: ConfigurationOptionId[] = ["instant", "light", "medium", "high", "extraHigh", "max", "ultra", "pro", "standard", "fast"];
+const CHAT_EFFORT_OPTION_IDS: ConfigurationOptionId[] = ["instant", "medium", "high", "extraHigh", "pro"];
 const EFFORT_OPTION_IDS: ConfigurationOptionId[] = ["light", "medium", "high", "extraHigh", "max", "ultra"];
 const SPEED_OPTION_IDS: ConfigurationOptionId[] = ["standard", "fast"];
 const ENGLISH_EXPERIENCE_OPTIONS = new Set(["chat", "quick chat", "work"]);
-const ENGLISH_CONFIGURATION_AXES: Record<ConfigurationAxisId, string> = { model: "Model", effort: "Effort", speed: "Speed" };
+const ENGLISH_CONFIGURATION_AXES: Record<ConfigurationAxisId, string> = {
+  model: "Model",
+  intelligence: "Intelligence",
+  effort: "Effort",
+  speed: "Speed",
+  power: "Power",
+  advanced: "Advanced"
+};
 const ENGLISH_CONFIGURATION_OPTIONS: Record<ConfigurationOptionId, string> = {
+  instant: "Instant",
   light: "Light",
   medium: "Medium",
   high: "High",
   extraHigh: "Extra High",
   max: "Max",
   ultra: "Ultra",
+  pro: "Pro",
   standard: "Standard",
   fast: "Fast",
 };
 const ENGLISH_COMPOSER_LABELS = new Set(["chat with chatgpt", "ask chatgpt", "work on anything", "work on something"]);
-const UPDATE_NOTE = " * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.";
+const UPDATE_NOTE = " * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.";
 
 class ApplyUsageError extends Error {
   constructor(message: string, readonly exitCode = 2) {
@@ -214,7 +243,9 @@ function observedNonEnglishGenerationLabels(
 ): string[] {
   return dedupe((values ?? [])
     .map(value => value.replace(/\s+/g, " ").trim())
-    .filter(value => value.length > 0 && !englishValues.has(value.toLowerCase())));
+    .filter(value => value.length > 0
+      && !englishValues.has(value.toLowerCase())
+      && !UNSAFE_GENERIC_STOP_CONTROLS.has(value.toLowerCase())));
 }
 
 function observedNonEnglishSurface(record: CaptureRecord): SurfaceContribution {
@@ -246,17 +277,39 @@ function observedNonEnglishSurface(record: CaptureRecord): SurfaceContribution {
       && !sharedComposerLabels.has(normalizedLower(label))
       && !ENGLISH_COMPOSER_LABELS.has(normalizedLower(label))));
 
+  addLocalizedConfigurationAxis(contribution.configurationAxes, "power", capture.chat.power?.axisLabel);
+  addLocalizedConfigurationAxis(contribution.configurationAxes, "power", capture.work.power?.axisLabel);
+  addLocalizedConfigurationAxis(contribution.configurationAxes, "advanced", capture.chat.advanced?.label);
+  addLocalizedConfigurationAxis(contribution.configurationAxes, "advanced", capture.work.advanced?.label);
+
+  const chatRows = capture.chat.configurationRows;
+  if (chatRows !== undefined) {
+    if (chatRows.length !== CHAT_CONFIGURATION_AXIS_IDS.length
+      || chatRows.some((row, index) => row.axis !== CHAT_CONFIGURATION_AXIS_IDS[index])) {
+      throw new ApplyUsageError(`${record.requestedLocale} did not capture the ordered Chat Model/Effort rows.`, 1);
+    }
+    for (const row of chatRows) {
+      addLocalizedConfigurationAxis(contribution.configurationAxes, row.axis, row.axisLabel);
+      if (row.axis === "effort") {
+        assignOrderedLocalizedOptions(
+          record.requestedLocale,
+          row.options,
+          CHAT_EFFORT_OPTION_IDS,
+          contribution.configurationOptions,
+          "Chat Effort"
+        );
+      }
+    }
+  }
+
   const rows = capture.work.configurationRows;
-  if (rows.length !== CONFIGURATION_AXIS_IDS.length
-    || rows.some((row, index) => row.axis !== CONFIGURATION_AXIS_IDS[index])) {
+  if (rows.length !== WORK_CONFIGURATION_AXIS_IDS.length
+    || rows.some((row, index) => row.axis !== WORK_CONFIGURATION_AXIS_IDS[index])) {
     throw new ApplyUsageError(`${record.requestedLocale} did not capture the ordered Model/Effort/Speed rows.`, 1);
   }
 
   for (const row of rows) {
-    const axisLabel = normalized(row.axisLabel);
-    if (axisLabel.length > 0 && axisLabel !== ENGLISH_CONFIGURATION_AXES[row.axis]) {
-      contribution.configurationAxes[row.axis] = [axisLabel];
-    }
+    addLocalizedConfigurationAxis(contribution.configurationAxes, row.axis, row.axisLabel);
     if (row.axis === "effort") {
       assignOrderedLocalizedOptions(
         record.requestedLocale,
@@ -278,6 +331,16 @@ function observedNonEnglishSurface(record: CaptureRecord): SurfaceContribution {
   return contribution;
 }
 
+function addLocalizedConfigurationAxis(
+  target: Partial<Record<ConfigurationAxisId, string[]>>,
+  axis: ConfigurationAxisId,
+  value: string | undefined
+): void {
+  const label = normalized(value);
+  if (label.length === 0 || label === ENGLISH_CONFIGURATION_AXES[axis]) return;
+  target[axis] = dedupe([...(target[axis] ?? []), label]);
+}
+
 function assignOrderedLocalizedOptions(
   locale: string,
   options: readonly { label: string }[],
@@ -292,7 +355,7 @@ function assignOrderedLocalizedOptions(
     const id = ids[index]!;
     const label = normalized(option.label);
     if (label.length > 0 && label !== ENGLISH_CONFIGURATION_OPTIONS[id]) {
-      target[id] = [label];
+      target[id] = dedupe([...(target[id] ?? []), label]);
     }
   });
 }
@@ -485,7 +548,8 @@ function parseNestedOptions<T extends string>(
 function mergeStringArrayProperty(source: string, property: "stopControl" | "stoppedAssistant", values: readonly string[]): string {
   if (values.length === 0) return source;
   const existing = parseExistingStringArrayProperty(source, property);
-  const merged = dedupe([...existing, ...values]);
+  const merged = dedupe([...existing, ...values])
+    .filter(value => property !== "stopControl" || !UNSAFE_GENERIC_STOP_CONTROLS.has(value.toLowerCase()));
   const line = `  ${property}: [${merged.map(value => JSON.stringify(value)).join(", ")}],`;
   const propertyPattern = new RegExp(`^\\s*${property}:\\s*\\[[^\\]]*\\],`, "m");
   if (propertyPattern.test(source)) {
@@ -534,8 +598,8 @@ function parseJsonStringList(body: string): string[] {
   return values;
 }
 
-function normalized(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+function normalized(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
 function normalizedLower(value: string): string {

@@ -6,19 +6,24 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const ml = {
   configurationAxes: {
+    power: ["പവർ"],
     model: ["മോഡൽ"],
     effort: ["ശ്രമം"],
     speed: ["വേഗത"],
+    advanced: ["വിപുലമായത്"],
   },
   configurationOptions: {
+    instant: ["തൽക്ഷണം"],
     light: ["ലളിതം"],
     medium: ["ഇടത്തരം"],
     high: ["ഉയർന്നത്"],
     extraHigh: ["അത്യധികം ഉയർന്നത്"],
+    max: ["പരമാവധി"],
+    ultra: ["അൾട്രാ"],
     standard: ["അടിസ്ഥാനം"],
     fast: ["വേഗം"],
   },
@@ -40,6 +45,10 @@ export const ml = {
     pro: ["പ്രോ"],
   },
   modeOpenerExtra: ["കോൺഫിഗർ ചെയ്യുക…"],
+  experienceOptions: {
+    chat: ["ചാറ്റ്"],
+    work: ["ജോലി"],
+  },
   tools: {
     web_search: ["വെബ് തിരയൽ"],
     deep_research: ["ഡീപ്പ് റിസേർച്ച്"],

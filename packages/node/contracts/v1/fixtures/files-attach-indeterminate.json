@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "requestId": "req_files_attach_indeterminate",
+  "result": {
+    "blocker": {
+      "code": "attachment_outcome_indeterminate",
+      "kind": "upload_failed",
+      "message": "The native file handoff started, but its outcome could not be verified. The browser request is no longer in flight, though the file may already be present. Inspect the current composer; do not submit or retry automatically.",
+      "resumable": false
+    },
+    "context": {
+      "timestamp": "2026-06-06T00:00:00.000Z"
+    },
+    "data": {
+      "files": [
+        {
+          "bytes": 18,
+          "name": "handoff.txt",
+          "path": "/tmp/contract-fixtures/handoff.txt"
+        }
+      ]
+    },
+    "ok": false,
+    "status": "partial",
+    "warnings": [
+      "File-chooser handoff exceeded the single attachment deadline."
+    ]
+  },
+  "schemaVersion": "chatgpt.browser_control.backend_response.v1"
+}

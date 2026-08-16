@@ -6,18 +6,23 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const sq = {
   configurationAxes: {
-    effort: ["Përpjekje"],
+    power: ["Fuqia"],
+    model: ["Modeli"],
+    effort: ["Përpjekje", "Arsyetim"],
     speed: ["Shpejtësi"],
+    advanced: ["Të avancuara"],
   },
   configurationOptions: {
-    light: ["I lehtë"],
+    instant: ["I menjëhershëm"],
+    light: ["I lehtë", "E lehtë"],
     medium: ["Mesatare"],
     high: ["E lartë"],
     extraHigh: ["Tepër e lartë"],
+    max: ["Maks."],
     fast: ["I shpejtë"],
   },
   composerTextbox: ["Pyet për çdo gjë"],
@@ -37,6 +42,10 @@ export const sq = {
     extraHigh: ["Shumë i lartë", "Tepër e lartë"],
   },
   modeOpenerExtra: ["Konfiguro..."],
+  experienceOptions: {
+    chat: ["Bisedë"],
+    work: ["Punë"],
+  },
   tools: {
     web_search: ["Kërkim në ueb"],
     deep_research: ["Kërkim i thellë"],

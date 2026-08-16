@@ -52,6 +52,19 @@ describe("wait snapshot metadata", () => {
     expect(snapshot?.generation.active).toBe(false);
   });
 
+  it("does not treat a generic cancel control as active generation", async () => {
+    const page = domBackedPage({
+      assistantText: "A finished answer.",
+      stopButtonText: "Cancel",
+      actionButtonText: "Copy response"
+    });
+
+    const snapshot = await readWaitDomSnapshot(page);
+
+    expect(snapshot?.generation.active).toBe(false);
+    expect(snapshot?.hasResponseActions).toBe(true);
+  });
+
   it("returns undefined response actions when no conversation turn markers exist", async () => {
     const page = domBackedPage({
       assistantText: "Answer without turn testids",
@@ -68,7 +81,11 @@ type FakeButton = {
   innerText: string;
   textContent: string;
   disabled: boolean;
+  hidden: boolean;
   getAttribute: (name: string) => string | null;
+  getBoundingClientRect: () => { width: number; height: number };
+  closest: (selector: string) => unknown;
+  matches: (selector: string) => boolean;
 };
 
 function fakeButton(text: string): FakeButton {
@@ -76,7 +93,15 @@ function fakeButton(text: string): FakeButton {
     innerText: text,
     textContent: text,
     disabled: false,
-    getAttribute: () => null
+    hidden: false,
+    getAttribute: () => null,
+    getBoundingClientRect: () => ({ width: 1, height: 1 }),
+    closest: selector => selector.includes("composer")
+      ? {}
+      : selector === "form"
+        ? { querySelector: () => ({}) }
+        : null,
+    matches: () => false
   };
 }
 
@@ -84,7 +109,8 @@ function fakeMessageNode(role: "user" | "assistant", text: string) {
   return {
     getAttribute: (name: string) => name === "data-message-author-role" ? role : null,
     innerText: text,
-    textContent: text
+    textContent: text,
+    closest: () => null
   };
 }
 

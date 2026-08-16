@@ -6,15 +6,18 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const it = {
   configurationAxes: {
+    power: ["Potenza"],
     model: ["Modello"],
     effort: ["Sforzo"],
     speed: ["Velocità"],
+    advanced: ["Avanzate"],
   },
   configurationOptions: {
+    instant: ["Istantaneo"],
     medium: ["Medio"],
     high: ["Alto"],
     extraHigh: ["Molto alto"],
@@ -29,9 +32,9 @@ export const it = {
   addFilesOpenerCandidates: ["Aggiungi file e altro"],
   addPhotosFilesMenuItem: ["Aggiungi foto e file"],
   copyResponse: ["Copia risposta"],
-  modeLabels: ["Istantanea", "Media", "Alta", "Extra elevata", "Medio", "Alto", "Molto alto"],
+  modeLabels: ["Istantanea", "Media", "Alta", "Extra elevata", "Medio", "Alto", "Molto alto", "Istantaneo"],
   modeOptions: {
-    instant: ["Istantanea"],
+    instant: ["Istantanea", "Istantaneo"],
     medium: ["Media", "Medio"],
     high: ["Alta", "Alto"],
     extraHigh: ["Extra elevata", "Molto alto"],

@@ -70,8 +70,30 @@
         },
         "localization": {
           "details": {
+            "configurationAxisIds": [
+              "power",
+              "model",
+              "intelligence",
+              "effort",
+              "speed",
+              "advanced"
+            ],
+            "configurationOptionIds": [
+              "instant",
+              "light",
+              "medium",
+              "high",
+              "extraHigh",
+              "max",
+              "ultra",
+              "pro",
+              "standard",
+              "fast"
+            ],
             "englishCanonicalPresent": true,
-            "labelCandidateCount": 1544,
+            "labelCandidateCount": 2439,
+            "missingConfigurationAxisIds": [],
+            "missingConfigurationOptionIds": [],
             "missingModeOptionIds": [],
             "missingToolIds": [],
             "modeOptionIds": [
@@ -108,11 +130,11 @@
             "requiredKeysMissing": [],
             "runningStateLabelCoverage": {
               "nonEnglishLocaleCount": 64,
-              "nonEnglishStopControlLocaleCount": 64,
+              "nonEnglishStopControlLocaleCount": 63,
               "nonEnglishStoppedAssistantLocaleCount": 0,
               "registeredLocaleCount": 65,
-              "stopControlCandidateCount": 65,
-              "stopControlLocaleCount": 65,
+              "stopControlCandidateCount": 63,
+              "stopControlLocaleCount": 64,
               "stoppedAssistantCandidateCount": 3,
               "stoppedAssistantLocaleCount": 1,
               "support": "partial"

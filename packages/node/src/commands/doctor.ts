@@ -75,6 +75,8 @@ const REQUIRED_LOCALE_KEYS = [
 ] as const;
 const REQUIRED_TOOL_IDS = ["web_search", "deep_research", "create_image"] as const;
 const REQUIRED_MODE_OPTION_IDS = ["latest", "instant", "thinking", "extended", "medium", "high", "extraHigh", "pro"] as const;
+const REQUIRED_CONFIGURATION_AXIS_IDS = ["power", "model", "intelligence", "effort", "speed", "advanced"] as const;
+const REQUIRED_CONFIGURATION_OPTION_IDS = ["instant", "light", "medium", "high", "extraHigh", "max", "ultra", "pro", "standard", "fast"] as const;
 type RunningStateLocalizationSupport = "complete" | "partial" | "english_only" | "missing";
 
 export async function doctor(env: RuntimeEnv, args: DoctorArgs = {}): Promise<CommandResult<DoctorReport>> {
@@ -316,8 +318,14 @@ function localizationCheck(env: RuntimeEnv): CapabilityCheck {
   const requiredKeysMissing = REQUIRED_LOCALE_KEYS.filter(key => localeLabels[key].length === 0);
   const missingToolIds = REQUIRED_TOOL_IDS.filter(id => (localeLabels.tools[id]?.length ?? 0) === 0);
   const missingModeOptionIds = REQUIRED_MODE_OPTION_IDS.filter(id => (localeLabels.modeOptions[id]?.length ?? 0) === 0);
+  const missingConfigurationAxisIds = REQUIRED_CONFIGURATION_AXIS_IDS
+    .filter(id => (localeLabels.configurationAxes[id]?.length ?? 0) === 0);
+  const missingConfigurationOptionIds = REQUIRED_CONFIGURATION_OPTION_IDS
+    .filter(id => (localeLabels.configurationOptions[id]?.length ?? 0) === 0);
   const toolIds = Object.keys(localeLabels.tools);
   const modeOptionIds = Object.keys(localeLabels.modeOptions);
+  const configurationAxisIds = Object.keys(localeLabels.configurationAxes);
+  const configurationOptionIds = Object.keys(localeLabels.configurationOptions);
   const proAliases = [...localeLabels.modeOptions.pro];
   const supportsProExtendedAlias = proAliases.some(alias => /pro\s*(?:•\s*)?extended/i.test(alias))
     && proAliases.some(alias => /extended\s+pro/i.test(alias));
@@ -334,17 +342,26 @@ function localizationCheck(env: RuntimeEnv): CapabilityCheck {
     && localeLabels.sendButton[0] === "Send prompt"
     && localeLabels.modeLabels.includes("Thinking")
     && localeLabels.modeOptions.pro?.[0] === "Pro"
+    && localeLabels.configurationAxes.power?.[0] === "Power"
+    && localeLabels.configurationAxes.advanced?.[0] === "Advanced"
+    && localeLabels.configurationOptions.ultra?.[0] === "Ultra"
     && localeLabels.tools.web_search?.[0] === "Web search";
   const labelCandidateCount = REQUIRED_LOCALE_KEYS.reduce((total, key) => total + localeLabels[key].length, 0)
     + Object.values(localeLabels.tools).reduce((total, values) => total + values.length, 0)
-    + Object.values(localeLabels.modeOptions).reduce((total, values) => total + values.length, 0);
+    + Object.values(localeLabels.modeOptions).reduce((total, values) => total + values.length, 0)
+    + Object.values(localeLabels.configurationAxes).reduce((total, values) => total + values.length, 0)
+    + Object.values(localeLabels.configurationOptions).reduce((total, values) => total + values.length, 0);
   const details = {
     englishCanonicalPresent,
     requiredKeysMissing,
     missingToolIds,
     missingModeOptionIds,
+    missingConfigurationAxisIds,
+    missingConfigurationOptionIds,
     toolIds,
     modeOptionIds,
+    configurationAxisIds,
+    configurationOptionIds,
     proAliases,
     supportsProExtendedAlias,
     runningStateLabelCoverage,
@@ -353,7 +370,12 @@ function localizationCheck(env: RuntimeEnv): CapabilityCheck {
     runtimeSelectorCoverage: "registry_only_stage_2"
   };
 
-  if (englishCanonicalPresent && requiredKeysMissing.length === 0 && missingToolIds.length === 0 && missingModeOptionIds.length === 0) {
+  if (englishCanonicalPresent
+    && requiredKeysMissing.length === 0
+    && missingToolIds.length === 0
+    && missingModeOptionIds.length === 0
+    && missingConfigurationAxisIds.length === 0
+    && missingConfigurationOptionIds.length === 0) {
     const runningStateMessage = runningStateLocalizationSupport === "complete"
       ? "running-state labels are present for every registered non-English locale"
       : runningStateLocalizationSupport === "partial"

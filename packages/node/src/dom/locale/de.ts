@@ -9,15 +9,18 @@ import type { LocaleContribution } from "./types.js";
  * `download`, `downloadImage`, `imageContainerHint`, `transientAssistant`, and the
  * login/captcha/rate-limit blocker copy.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const de = {
   configurationAxes: {
+    power: ["Leistung"],
     model: ["Modell"],
-    effort: ["Aufwand"],
+    effort: ["Aufwand", "Denkaufwand"],
     speed: ["Tempo"],
+    advanced: ["Erweitert"],
   },
   configurationOptions: {
+    instant: ["Sofort"],
     light: ["Leicht"],
     medium: ["Mittel"],
     high: ["Hoch"],

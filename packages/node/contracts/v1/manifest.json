@@ -57,6 +57,11 @@
       "schema": "commandResult"
     },
     {
+      "case": "files_attach_indeterminate",
+      "file": "files-attach-indeterminate.json",
+      "schema": "backendResponse"
+    },
+    {
       "case": "files_preflight_success",
       "file": "files-preflight-success.json",
       "schema": "commandResult"
@@ -64,6 +69,26 @@
     {
       "case": "help_root",
       "file": "help-root.json",
+      "schema": "backendResponse"
+    },
+    {
+      "case": "messages_stop_indeterminate",
+      "file": "messages-stop-indeterminate.json",
+      "schema": "backendResponse"
+    },
+    {
+      "case": "messages_stop_needs_confirmation",
+      "file": "messages-stop-needs-confirmation.json",
+      "schema": "backendResponse"
+    },
+    {
+      "case": "messages_stop_noop",
+      "file": "messages-stop-noop.json",
+      "schema": "backendResponse"
+    },
+    {
+      "case": "messages_stop_success",
+      "file": "messages-stop-success.json",
       "schema": "backendResponse"
     },
     {

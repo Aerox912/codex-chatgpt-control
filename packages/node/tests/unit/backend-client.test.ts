@@ -55,6 +55,26 @@ describe("ChatGPT backend client", () => {
     ]);
   });
 
+  it("maps the Python-parity stop shape to the exact backend payload", async () => {
+    const transport = new RecordingTransport({
+      ok: true,
+      result: {
+        ok: false,
+        status: "needs_confirmation",
+        warnings: [],
+        context: { timestamp: "2026-06-06T00:00:00.000Z" }
+      }
+    });
+    const chatgpt = createChatGPTBackendClient(transport);
+
+    await chatgpt.messages.stop({ confirmStop: true, timeoutMs: 250 });
+
+    expect(transport.requests[0]).toMatchObject({
+      command: "messages.stop",
+      payload: { confirmStop: true, timeoutMs: 250 }
+    });
+  });
+
   it("matches in-process runner plans", async () => {
     const options = deterministicOptions();
     const inProcess = createChatGPT(options);

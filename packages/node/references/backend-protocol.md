@@ -71,6 +71,10 @@ Browser-control blockers are not protocol errors. They are normal command or run
 
 Use `messages.status({ maxPreviewChars })` for a compact latest-assistant progress snapshot when a host tool-call ceiling is shorter than the expected ChatGPT generation. It returns counts, latest-assistant preview length, `completionState`, `generationActive`, and generation signals without treating partial text as final, and without the cost of a full `readLatest`/`wait` probe.
 
+Use `messages.stop({ confirmStop: true })` only after the caller explicitly decides that the current visible response should stop. It clicks one uniquely scoped, visible stop control and succeeds only after generation is observed inactive. Without the exact boolean `confirmStop: true`, it returns `needs_confirmation`; if generation is observably inactive, it is a no-op. An unavailable or ambiguous control, an uninspectable generation state, or an unverified postcondition fails closed.
+
+If the Stop activation starts but its completion races the command deadline, the result is `status: "timeout"` with blocker code `stop_generation_unverified` and `resumable: false`. The browser-native deadline terminates the request before the command returns, so it cannot click later; the click may already have taken effect before termination. Inspect the current visible generation state and never retry Stop automatically.
+
 ## Streaming
 
 Streaming commands emit backend event lines until `completed` or `error`.
@@ -133,6 +137,10 @@ Attachment paths are interpreted on the machine running the Node backend. Use an
 Use `files.preflight` for non-mutating local validation before browser upload workflows. It validates absolute paths, existence, readability, file-vs-directory status, configurable per-file and total byte limits, duplicate basenames, duplicate resolved paths, zero-byte files, and extension-based MIME/category guesses. Zero-byte files are blocked before browser interaction because ChatGPT rejects empty attachments. By default the command does not open ChatGPT, perform a live upload, read file contents for MIME detection, or return file-content fingerprints. Callers may pass `includeHashes: true` to include SHA-256 metadata for local diagnostics; file contents are never returned. `askWithFiles` and `files.attach` run the same preflight before upload attempts so obvious local file failures stop before browser interaction.
 
 `files.attach` accepts `includeDiagnostics: true` to return metadata-only upload diagnostics in `data.diagnostics`: the preflight result plus the browser input's selected file names and sizes when the DOM exposes them. Pair `includeDiagnostics: true` with `includeHashes: true` when diagnosing whether a non-empty local file became an empty browser-side `File`; do not persist these diagnostics in public reports unless the user has approved content fingerprint metadata.
+
+Once the native file handoff starts, any timeout, bridge error, or missing post-handoff composer evidence is indeterminate: `files.attach` returns `status: "partial"`, blocker code `attachment_outcome_indeterminate`, and `resumable: false`. Browser-native deadlines terminate the handoff request before the command returns, so it cannot mutate later; the file may already be present. Inspect the current composer, do not submit, and never retry the attachment automatically.
+
+The Codex Chrome chooser intentionally exposes `isMultiple()` and `setFiles()` but no backing-element accessor. Before accepting that opaque chooser, the Node runtime proves the initiating input or control belongs to the unique active composer; the CDP fallback independently resolves and clicks that exact unique input. Browser providers that expose a chooser backing element receive an additional identity cross-check before handoff.
 
 ## Project Sources
 
@@ -227,13 +235,13 @@ For live browser control, the backend process must have access to a compatible b
 - Explicit `RuntimeEnv.browser` or `RuntimeEnv.page` in a future embedding.
 - A future Python-native/native-host/CDP backend that implements this same protocol.
 
-Important: in Codex, `globalThis.agent` is not present until the Chrome plugin runtime is bootstrapped. Do not diagnose bridge availability by checking `globalThis.agent` in an ordinary shell or before calling the Chrome plugin's `setupBrowserRuntime({ globals: globalThis })`.
+Important: in Codex, `globalThis.agent` is not present until the Chrome plugin runtime is bootstrapped. Do not diagnose bridge availability by checking `globalThis.agent` in an ordinary shell or before assigning the object returned by the Chrome plugin's `setupBrowserRuntime()`.
 
 The live Chrome bootstrap is:
 
 ```js
-const { setupBrowserRuntime } = await import("/example/user/.codex/plugins/cache/openai-bundled/chrome/latest/scripts/browser-client.mjs");
-await setupBrowserRuntime({ globals: globalThis });
+const { setupBrowserRuntime } = await import("/absolute/path/to/the/current/chrome/scripts/browser-client.mjs");
+globalThis.agent = await setupBrowserRuntime();
 globalThis.browser = await agent.browsers.get("extension");
 ```
 

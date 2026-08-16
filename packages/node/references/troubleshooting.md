@@ -33,8 +33,8 @@ Use `chatgpt.explainBlocker(result)` or Python `explain_blocker(result)` when re
 Do not conclude that Chrome or the extension is broken from a plain shell result, or from checking `globalThis.agent` before the Chrome plugin runtime is initialized. For a true Codex Chrome-plugin live run, bootstrap the runtime first:
 
 ```js
-const { setupBrowserRuntime } = await import("/example/user/.codex/plugins/cache/openai-bundled/chrome/latest/scripts/browser-client.mjs");
-await setupBrowserRuntime({ globals: globalThis });
+const { setupBrowserRuntime } = await import("/absolute/path/to/the/current/chrome/scripts/browser-client.mjs");
+globalThis.agent = await setupBrowserRuntime();
 globalThis.browser = await agent.browsers.get("extension");
 ```
 
@@ -150,6 +150,14 @@ const final = await chatgpt.messages.readLatest({ format: "markdown" });
 ```
 
 Active generation may appear as a visible or accessible-name control such as `Stop answering`, `Stop generating`, or `Stop streaming`. Stopped generation may appear as `Stopped thinking`. Treat all of those as incomplete states.
+
+If the caller explicitly supersedes a running request, use `messages.stop({ confirmStop: true })`. The command does nothing when generation is observably inactive and fails closed when it cannot inspect the state, uniquely activate the visible composer stop control, or verify the inactive postcondition. Do not use it as an automatic timeout-recovery retry mechanism.
+
+If Stop returns `stop_generation_unverified` with `resumable: false`, the activation began but its outcome is unknown. The browser request has been terminated and cannot click later, although the click may already have taken effect. Inspect the visible generation state before any further action; never retry Stop automatically.
+
+If attachment returns `attachment_outcome_indeterminate` with `resumable: false`, the native handoff began but the file's composer state is unknown. The browser request has been terminated and cannot attach later, although the file may already be present. Inspect the current composer, do not submit, and do not retry automatically.
+
+The Codex Chrome file chooser does not expose its backing input. This is expected: the SDK proves the unique active-composer trigger before opening the chooser and uses any provider-specific backing-element accessor only as an additional cross-check. A missing chooser `element()` method by itself is not an upload failure.
 
 When the outer host tool-call ceiling is short, poll in bounded chunks instead of issuing a single very long wait:
 

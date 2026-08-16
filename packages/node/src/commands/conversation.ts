@@ -1,4 +1,5 @@
 import { parseConversationId } from "../browser/page-state.js";
+import { isChatGPTUrl, requireChatGPTUrl } from "../browser/chatgpt-url.js";
 import { countPageMessages, readLatestMessageText } from "../dom/messages.js";
 import type { PageLike } from "../types.js";
 
@@ -25,9 +26,12 @@ export async function ensureConversationTarget(
   options: EnsureConversationTargetOptions
 ): Promise<EnsureConversationTargetResult> {
   const targetUrl = absoluteConversationUrl(target);
+  requireChatGPTUrl(targetUrl, "Conversation target URL");
   const expectedConversationId = parseConversationId(targetUrl);
   const currentUrl = typeof page.url === "function" ? await Promise.resolve(page.url()).catch(() => "") : "";
   if (
+    isChatGPTUrl(typeof currentUrl === "string" ? currentUrl : "")
+    &&
     expectedConversationId !== undefined
     && parseConversationId(typeof currentUrl === "string" ? currentUrl : "") === expectedConversationId
   ) {
@@ -36,7 +40,17 @@ export async function ensureConversationTarget(
   }
 
   await page.goto?.(targetUrl, { waitUntil: "domcontentloaded", timeout: options.timeoutMs });
+  const navigatedUrl = typeof page.url === "function" ? await Promise.resolve(page.url()).catch(() => "") : "";
+  requireChatGPTUrl(typeof navigatedUrl === "string" ? navigatedUrl : "", "Conversation navigation result");
   await waitForConversationHydrated(page, options.timeoutMs, expectedConversationId);
+  const finalUrl = typeof page.url === "function" ? await Promise.resolve(page.url()).catch(() => "") : "";
+  requireChatGPTUrl(typeof finalUrl === "string" ? finalUrl : "", "Hydrated conversation URL");
+  if (
+    expectedConversationId !== undefined
+    && parseConversationId(typeof finalUrl === "string" ? finalUrl : "") !== expectedConversationId
+  ) {
+    throw new Error(`Visible Chat navigation did not reach conversation ${expectedConversationId}.`);
+  }
   return ensureResult(true, targetUrl, expectedConversationId);
 }
 

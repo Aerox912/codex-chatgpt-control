@@ -6,19 +6,24 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const zhHans = {
   configurationAxes: {
+    power: ["能力"],
     model: ["模型"],
-    effort: ["推理强度"],
+    effort: ["推理强度", "思考强度"],
     speed: ["速度"],
+    advanced: ["高级"],
   },
   configurationOptions: {
+    instant: ["极速"],
     light: ["轻度"],
     medium: ["中"],
     high: ["高"],
     extraHigh: ["极高"],
+    max: ["最高"],
+    ultra: ["超高"],
     standard: ["标准"],
     fast: ["快速"],
   },
@@ -40,6 +45,10 @@ export const zhHans = {
     pro: ["专业"],
   },
   modeOpenerExtra: ["配置…"],
+  experienceOptions: {
+    chat: ["聊天"],
+    work: ["工作"],
+  },
   tools: {
     web_search: ["网页搜索"],
     deep_research: ["深度研究"],

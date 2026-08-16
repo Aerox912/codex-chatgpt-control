@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const FIXED_ISO = "2026-06-06T00:00:00.000Z";
@@ -11,8 +12,8 @@ const contractRoot = join(root, "contracts", "v1");
 const fixturesDir = join(contractRoot, "fixtures");
 const manifestPath = join(contractRoot, "manifest.json");
 const reportFixtureDir = join(root, "reports", "contract-fixtures");
-const doctorScenarioReportDir = "/tmp/codex-chatgpt-control/reports/contract-fixtures/missing-doctor-reports";
-const filePreflightFixtureDir = "/tmp/codex-chatgpt-control/file-preflight-contract-fixtures";
+const doctorScenarioReportDir = join(tmpdir(), "codex-chatgpt-control", "reports", "contract-fixtures", "missing-doctor-reports");
+const filePreflightFixtureDir = join(tmpdir(), "codex-chatgpt-control", "file-preflight-contract-fixtures");
 
 const {
   createChatGPT,
@@ -63,6 +64,49 @@ await writeGeneratedFixture(
 );
 await writeGeneratedFixture("backend-version.json", "backendResponse", "backend_version", await backendResponse("backend.version"));
 await writeGeneratedFixture("backend-capabilities.json", "capabilities", "backend_capabilities", await backendResult("backend.capabilities"));
+await writeGeneratedFixture(
+  "messages-stop-needs-confirmation.json",
+  "backendResponse",
+  "messages_stop_needs_confirmation",
+  await backendResponse("messages.stop")
+);
+await writeGeneratedFixture(
+  "messages-stop-noop.json",
+  "backendResponse",
+  "messages_stop_noop",
+  await backendResponse("messages.stop", { confirmStop: true }, {
+    page: {
+      url: () => "https://chatgpt.com/c/contract-stop-noop",
+      title: async () => "ChatGPT",
+      content: async () => '<main><div data-message-author-role="assistant">Completed answer.</div></main>'
+    }
+  })
+);
+{
+  let generating = true;
+  const stopControl = {
+    count: async () => 1,
+    isVisible: async () => true,
+    evaluate: async () => true,
+    click: async () => { generating = false; }
+  };
+  await writeGeneratedFixture(
+    "messages-stop-success.json",
+    "backendResponse",
+    "messages_stop_success",
+    await backendResponse("messages.stop", { confirmStop: true }, {
+      page: {
+        url: () => "https://chatgpt.com/c/contract-stop-success",
+        title: async () => "ChatGPT",
+        content: async () => generating
+          ? '<form><textarea></textarea><button aria-label="Stop answering"></button></form>'
+          : '<main><div data-message-author-role="assistant">Partial answer retained.</div></main>',
+        getByRole: () => stopControl,
+        waitForTimeout: async () => undefined
+      }
+    })
+  );
+}
 await writeGeneratedFixture("backend-error-missing-run-input.json", "backendResponse", "backend_error_missing_run_input", await backendResponse("runner.run", {
   agent: { name: "invalid-run-agent" }
 }));
@@ -405,7 +449,7 @@ await writeGeneratedFixture(
       ok: true,
       status: "ok",
       data: {
-        responseText: "private@example.com /example/user/private/report.txt token_12345678901234567890123456789012"
+        responseText: "private@example.com /tmp/private/report.txt token_12345678901234567890123456789012"
       },
       warnings: [],
       context: { timestamp: FIXED_ISO, url: "https://chatgpt.com/c/report-fixture" }
@@ -760,12 +804,18 @@ function normalizeFixtureValue(value) {
 
 function normalizePrimitive(value) {
   if (typeof value !== "string") return value;
+  const normalizedPath = value.replaceAll("\\", "/");
+  const temporaryRoot = tmpdir().replaceAll("\\", "/").replace(/\/$/, "");
+  if (normalizedPath.startsWith(`${temporaryRoot}/codex-chatgpt-control/`)) {
+    return `/tmp/codex-chatgpt-control/${normalizedPath.slice(`${temporaryRoot}/codex-chatgpt-control/`.length)}`;
+  }
   const normalized = value.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g, FIXED_ISO);
   if (normalized !== value) return normalizePrimitive(normalized);
   if (/^run_[a-z0-9]{8,}$/i.test(value)) return "run_fixed";
   if (/^interruption-[a-z0-9]+$/i.test(value)) return "interruption_fixed";
-  if (normalized.includes("/reports/contract-fixtures/") && normalized.includes("contract-report")) {
-    if (normalized.endsWith(".meta.json")) {
+  const comparablePath = normalized.replaceAll("\\", "/");
+  if (comparablePath.includes("/reports/contract-fixtures/") && comparablePath.includes("contract-report")) {
+    if (comparablePath.endsWith(".meta.json")) {
       return "/tmp/codex-chatgpt-control/reports/contract-fixtures/fixed-contract-report.json.meta.json";
     }
     return "/tmp/codex-chatgpt-control/reports/contract-fixtures/fixed-contract-report.json";

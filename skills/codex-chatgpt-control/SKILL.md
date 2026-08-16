@@ -256,6 +256,8 @@ Use `format: "normalized_text"` only for compact assertions, polling checks, or 
 
 For long Pro, Thinking, Deep Research, or file-backed answers, poll with `chatgpt.messages.wait({ responseContent: "metadata", ... })` so repeated partial polls return status metadata instead of re-emitting the growing answer body. Call `readLatest({ format: "markdown" })` once the wait confirms completion.
 
+If the user or calling workflow explicitly decides to supersede a still-running Chat response, use `chatgpt.messages.stop({ confirmStop: true })`. Never infer confirmation from a timeout and never use stop as automatic retry recovery. Preserve and report `needs_confirmation`, selector-drift, ambiguity, or unverified-postcondition results; do not replace the SDK with a broad button click.
+
 ## Python Client
 
 The Python package is a protocol client over the Node backend. Build the backend first:

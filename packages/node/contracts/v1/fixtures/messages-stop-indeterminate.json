@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "requestId": "req_messages_stop_indeterminate",
+  "result": {
+    "blocker": {
+      "code": "stop_generation_unverified",
+      "kind": "selector_drift",
+      "message": "Stop activation reached its browser-native deadline and was terminated, but the click may already have taken effect. Inspect the visible generation state and do not retry automatically.",
+      "resumable": false
+    },
+    "context": {
+      "timestamp": "2026-06-06T00:00:00.000Z"
+    },
+    "data": {
+      "signalsAfter": [
+        "stop answering"
+      ],
+      "signalsBefore": [
+        "stop answering"
+      ],
+      "stopped": false,
+      "wasGenerating": true
+    },
+    "ok": false,
+    "status": "timeout",
+    "warnings": [
+      "Stop control click could not complete before the messages.stop deadline."
+    ]
+  },
+  "schemaVersion": "chatgpt.browser_control.backend_response.v1"
+}

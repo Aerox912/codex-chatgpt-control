@@ -6,19 +6,23 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const vi = {
   configurationAxes: {
+    power: ["Sức mạnh"],
     model: ["Mô hình"],
-    effort: ["Mức độ"],
+    effort: ["Mức độ", "Mức suy luận"],
     speed: ["Tốc độ"],
+    advanced: ["Nâng cao"],
   },
   configurationOptions: {
+    instant: ["Tức thì"],
     light: ["Nhẹ"],
     medium: ["Vừa"],
     high: ["Cao"],
     extraHigh: ["Chuyên sâu"],
+    max: ["Tối đa"],
     standard: ["Tiêu chuẩn"],
     fast: ["Nhanh"],
   },
@@ -39,6 +43,10 @@ export const vi = {
     extraHigh: ["Rất cao", "Chuyên sâu"],
   },
   modeOpenerExtra: ["Định cấu hình"],
+  experienceOptions: {
+    chat: ["Trò chuyện"],
+    work: ["Công việc"],
+  },
   tools: {
     web_search: ["Tìm kiếm trên mạng"],
     deep_research: ["Nghiên cứu chuyên sâu"],

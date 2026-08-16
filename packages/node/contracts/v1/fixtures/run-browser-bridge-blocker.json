@@ -4,7 +4,7 @@
     "blocker": {
       "code": "codex_chrome_bridge_unavailable",
       "kind": "browser_bridge_unavailable",
-      "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.",
+      "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it.",
       "remediation": [
         {
           "instruction": "Treat browser_bridge_unavailable from a plain shell as an expected protocol/blocker-path result, not proof that Chrome, ChatGPT, or the Codex extension is broken.",
@@ -12,7 +12,7 @@
           "userActionRequired": false
         },
         {
-          "instruction": "For a live run, initialize the Chrome plugin runtime in node_repl with setupBrowserRuntime({ globals: globalThis }), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
+          "instruction": "For a live run, initialize the Chrome plugin runtime in node_repl with globalThis.agent = await setupBrowserRuntime(), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
           "label": "Codex Chrome bootstrap",
           "userActionRequired": false
         },
@@ -35,7 +35,7 @@
       "outputText": ""
     },
     "error": {
-      "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.",
+      "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it.",
       "name": "BrowserBridgeUnavailableError",
       "recoverable": true
     },
@@ -44,7 +44,7 @@
         "blocker": {
           "code": "codex_chrome_bridge_unavailable",
           "kind": "browser_bridge_unavailable",
-          "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.",
+          "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it.",
           "remediation": [
             {
               "instruction": "Treat browser_bridge_unavailable from a plain shell as an expected protocol/blocker-path result, not proof that Chrome, ChatGPT, or the Codex extension is broken.",
@@ -52,7 +52,7 @@
               "userActionRequired": false
             },
             {
-              "instruction": "For a live run, initialize the Chrome plugin runtime in node_repl with setupBrowserRuntime({ globals: globalThis }), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
+              "instruction": "For a live run, initialize the Chrome plugin runtime in node_repl with globalThis.agent = await setupBrowserRuntime(), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
               "label": "Codex Chrome bootstrap",
               "userActionRequired": false
             },
@@ -73,14 +73,14 @@
         "fix": {
           "steps": [
             "Treat browser_bridge_unavailable from a plain shell as an expected protocol/blocker-path result, not proof that Chrome, ChatGPT, or the Codex extension is broken.",
-            "For a live run, initialize the Chrome plugin runtime in node_repl with setupBrowserRuntime({ globals: globalThis }), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
+            "For a live run, initialize the Chrome plugin runtime in node_repl with globalThis.agent = await setupBrowserRuntime(), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
             "For Python browser-bridge smokes, keep the bridge-hosted Node backend JS execution alive and run scripts/http_stdio_relay.mjs with CHATGPT_BROWSER_BACKEND_HTTP_URL; a plain Python-spawned Node subprocess cannot inherit globalThis.agent.",
             "If this command was already running inside a bootstrapped bridge host, verify the Codex Chrome extension is installed and enabled, then restart Chrome or Codex before retrying."
           ],
-          "summary": "browser_bridge_unavailable (codex_chrome_bridge_unavailable): Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent."
+          "summary": "browser_bridge_unavailable (codex_chrome_bridge_unavailable): Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it."
         },
         "id": "interruption_fixed",
-        "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.",
+        "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it.",
         "resume": {
           "reason": "The underlying browser-control command did not mark this blocker as resumable.",
           "supported": false
@@ -95,7 +95,7 @@
         "blocker": {
           "code": "codex_chrome_bridge_unavailable",
           "kind": "browser_bridge_unavailable",
-          "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.",
+          "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it.",
           "remediation": [
             {
               "instruction": "Treat browser_bridge_unavailable from a plain shell as an expected protocol/blocker-path result, not proof that Chrome, ChatGPT, or the Codex extension is broken.",
@@ -103,7 +103,7 @@
               "userActionRequired": false
             },
             {
-              "instruction": "For a live run, initialize the Chrome plugin runtime in node_repl with setupBrowserRuntime({ globals: globalThis }), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
+              "instruction": "For a live run, initialize the Chrome plugin runtime in node_repl with globalThis.agent = await setupBrowserRuntime(), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
               "label": "Codex Chrome bootstrap",
               "userActionRequired": false
             },
@@ -129,7 +129,7 @@
         "blocker": {
           "code": "codex_chrome_bridge_unavailable",
           "kind": "browser_bridge_unavailable",
-          "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, bootstrap the Chrome plugin runtime with setupBrowserRuntime({ globals: globalThis }) before using globalThis.agent.",
+          "message": "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it.",
           "remediation": [
             {
               "instruction": "Treat browser_bridge_unavailable from a plain shell as an expected protocol/blocker-path result, not proof that Chrome, ChatGPT, or the Codex extension is broken.",
@@ -137,7 +137,7 @@
               "userActionRequired": false
             },
             {
-              "instruction": "For a live run, initialize the Chrome plugin runtime in node_repl with setupBrowserRuntime({ globals: globalThis }), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
+              "instruction": "For a live run, initialize the Chrome plugin runtime in node_repl with globalThis.agent = await setupBrowserRuntime(), then set globalThis.browser = await agent.browsers.get(\"extension\") before calling createChatGPT({ agent: globalThis.agent }).",
               "label": "Codex Chrome bootstrap",
               "userActionRequired": false
             },

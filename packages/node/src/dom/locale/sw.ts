@@ -6,19 +6,23 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const sw = {
   configurationAxes: {
-    model: ["Modeli"],
-    effort: ["Juhudi"],
+    power: ["Umahiri"],
+    model: ["Modeli", "Mfumo"],
+    effort: ["Juhudi", "Kiwango cha uchambuzi"],
     speed: ["Kasi"],
+    advanced: ["Za kina"],
   },
   configurationOptions: {
+    instant: ["Papo hapo"],
     light: ["Nyepesi"],
     medium: ["Wastani"],
     high: ["Juu"],
     extraHigh: ["Juu Zaidi"],
+    max: ["Juu kabisa"],
     standard: ["Kawaida"],
     fast: ["Haraka"],
   },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assignOrderedChatConfigurationRows,
   assignChatSelectedSurfaceOptions,
   assignOrderedSurfaceOptions,
   assignOrderedWorkConfigurationRows
@@ -54,8 +55,21 @@ describe("locale surface graph", () => {
     ]);
   });
 
+  it("assigns Chat model and effort axes by stable menu order", () => {
+    const rows = ["Modell", "Aufwand"].map(axisLabel => ({
+      label: axisLabel,
+      axisLabel,
+      options: []
+    }));
+    expect(assignOrderedChatConfigurationRows(rows).map(row => row.axis)).toEqual([
+      "model",
+      "effort"
+    ]);
+  });
+
   it("fails closed on ambiguous radios or configuration rows", () => {
     expect(() => assignOrderedSurfaceOptions([{ label: "Chat", checked: true }])).toThrow("Expected ordered Chat and Work radios");
+    expect(() => assignOrderedChatConfigurationRows([])).toThrow("Expected two ordered Chat configuration rows");
     expect(() => assignOrderedWorkConfigurationRows([])).toThrow("Expected three ordered Work configuration rows");
   });
 });

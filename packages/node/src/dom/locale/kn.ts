@@ -6,19 +6,24 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const kn = {
   configurationAxes: {
+    power: ["ಪವರ್"],
     model: ["ಮಾಡೆಲ್"],
-    effort: ["ಎಫರ್ಟ್"],
+    effort: ["ಎಫರ್ಟ್", "ಪ್ರಯತ್ನ"],
     speed: ["ವೇಗ"],
+    advanced: ["ಸುಧಾರಿತ"],
   },
   configurationOptions: {
+    instant: ["ತಕ್ಷಣ"],
     light: ["ಲೈಟ್"],
     medium: ["ಮೀಡಿಯಂ"],
     high: ["ಹೈ"],
     extraHigh: ["ಎಕ್ಸ್‌ಟ್ರಾ ಹೈ"],
+    max: ["ಗರಿಷ್ಠ"],
+    ultra: ["ಅಲ್ಟ್ರಾ"],
     standard: ["ಸ್ಟ್ಯಾಂಡರ್ಡ್"],
     fast: ["ತ್ವರಿತ"],
   },
@@ -40,6 +45,9 @@ export const kn = {
     pro: ["ಪ್ರೊ"],
   },
   modeOpenerExtra: ["ಕಾನ್ಫಿಗರ್ ಮಾಡಿ..."],
+  experienceOptions: {
+    chat: ["ಚಾಟ್"],
+  },
   tools: {
     web_search: ["ವೆಬ್ ಸರ್ಚ್"],
     deep_research: ["ಡೀಪ್ ರಿಸರ್ಚ್"],

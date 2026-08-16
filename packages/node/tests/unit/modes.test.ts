@@ -3,6 +3,54 @@ import { getMode, selectTool, setMode } from "../../src/commands/modes.js";
 import type { LocatorLike, PageLike } from "../../src/types.js";
 
 describe("mode and tool selection blockers", () => {
+  it("does not treat a hidden stale mode button as the selected postcondition", async () => {
+    const page = buttonVisibilityPage([{ label: "Pro", visible: false }]);
+
+    const result = await setMode({ page }, { model: "Pro", timeoutMs: 0 });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker?.kind).toBe("selector_drift");
+  });
+
+  it("does not activate a menu row that becomes hidden after enumeration", async () => {
+    let hiddenClicks = 0;
+    const hiddenControl: LocatorLike = {
+      count: async () => 1,
+      evaluate: async <T>() => false as T,
+      click: async () => { hiddenClicks += 1; },
+      filter: () => hiddenControl
+    };
+    const missing: LocatorLike = {
+      count: async () => 0,
+      click: async () => {},
+      filter: () => missing
+    };
+    const page: PageLike = {
+      getByRole: role => role === "menuitem" ? hiddenControl : missing,
+      locator: selector => selector.includes("menuitem") ? hiddenControl : missing,
+      evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>): Promise<T> => {
+        const source = String(fn);
+        if (source.includes("allRoleNodes") && source.includes("scopedRoleNodes")) {
+          return {
+            items: [{ label: "Pro", role: "menuitem" }],
+            labels: [],
+            split: false
+          } as T;
+        }
+        return undefined as T;
+      },
+      waitForTimeout: async () => {},
+      title: async () => "ChatGPT",
+      url: () => "https://chatgpt.com/"
+    };
+
+    const result = await setMode({ page }, { model: "Pro", timeoutMs: 0 });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker?.kind).toBe("selector_drift");
+    expect(hiddenClicks).toBe(0);
+  });
+
   it("treats a requested visible mode button as already selected when no opener is available", async () => {
     const page = buttonOnlyPage(["Ask anything", "Pro", "Temporary chat"]);
 
@@ -109,6 +157,40 @@ describe("mode and tool selection blockers", () => {
       selected: ["Pro"],
       candidates: ["Instant", "Medium", "High", "Extra High", "Pro", "GPT-5.5"]
     });
+  });
+
+  it("opens the current Chat Advanced effort submenu and selects Pro", async () => {
+    const page = advancedEffortPickerPage("Extra High");
+
+    const result = await setMode({ page }, { effort: "Pro" });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toEqual({
+      selected: ["Pro"],
+      candidates: [
+        "Advanced",
+        "Model GPT-5.6 Sol",
+        "Effort Extra High",
+        "Instant",
+        "Medium",
+        "High",
+        "Extra High",
+        "Pro"
+      ]
+    });
+  });
+
+  it("uses the verified five-position power slider before opening Advanced", async () => {
+    const page = advancedEffortPickerPage("Extra High", { powerSlider: true });
+
+    const result = await setMode({ page }, { effort: "Pro" });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toEqual({
+      selected: ["Pro"],
+      candidates: ["Advanced"]
+    });
+    expect(page.advancedOpenCount()).toBe(0);
   });
 
   it("selects a nested model version from the new intelligence picker", async () => {
@@ -487,14 +569,19 @@ function menuPage(
   const clickableMenuItem: LocatorLike = {
     count: async () => 1,
     click: async () => {},
-    filter: () => clickableMenuItem
+    filter: () => clickableMenuItem,
+    evaluate: async <T>() => true as T
   };
   const testIdLocator = (selector: string): LocatorLike => {
     const matchingTestId = Object.values(menuTestIds).find(testId => selector.includes(`"${testId}"`));
     return matchingTestId !== undefined ? clickableMenuItem : missingMenuItem;
   };
   return {
-    getByRole: () => opener,
+    getByRole: (role, options = {}) => {
+      if (role === "button") return opener;
+      const name = String(options.name ?? "");
+      return clickableLabels.includes(name) ? clickableMenuItem : missingMenuItem;
+    },
     getByText: label => clickableLabels.includes(String(label)) ? clickableMenuItem : missingMenuItem,
     locator: selector => {
       const byTestId = testIdLocator(selector);
@@ -504,8 +591,11 @@ function menuPage(
       return {
         ...missingMenuItem,
         filter: options => {
-          const wanted = String((options as { hasText?: unknown } | undefined)?.hasText ?? "");
-          return clickableLabels.includes(wanted) ? clickableMenuItem : missingMenuItem;
+          const wanted = (options as { hasText?: unknown } | undefined)?.hasText;
+          const matches = clickableLabels.some(label => wanted instanceof RegExp
+            ? wanted.test(label)
+            : label === String(wanted ?? ""));
+          return matches ? clickableMenuItem : missingMenuItem;
         }
       };
     },
@@ -515,7 +605,9 @@ function menuPage(
         globalThis.document = {
           querySelectorAll: (selector: string) => selector.includes("menuitem") || selector.includes("option")
             ? menuLabels.map(label => ({
-              getAttribute: (name: string) => name === "data-testid" ? menuTestIds[label] : undefined,
+              getAttribute: (name: string) => name === "data-testid"
+                ? menuTestIds[label]
+                : name === "role" ? "menuitem" : undefined,
               innerText: label,
               textContent: label
             }))
@@ -601,7 +693,8 @@ function modeButtonMenuPage(
   const clickable: LocatorLike = {
     count: async () => 1,
     click: async () => {},
-    filter: () => clickable
+    filter: () => clickable,
+    evaluate: async <T>() => true as T
   };
   return {
     getByRole: (_role, options) => {
@@ -673,6 +766,54 @@ function buttonOnlyPage(buttonLabels: string[]): PageLike {
         return await fn(arg as A);
       } finally {
         globalThis.document = previousDocument;
+      }
+    },
+    waitForTimeout: async () => {},
+    title: async () => "ChatGPT",
+    url: () => "https://chatgpt.com/"
+  };
+}
+
+function buttonVisibilityPage(buttons: Array<{ label: string; visible: boolean }>): PageLike {
+  const missing: LocatorLike = {
+    count: async () => 0,
+    click: async () => {},
+    filter: () => missing
+  };
+  return {
+    getByRole: () => missing,
+    locator: () => missing,
+    evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>, arg?: A): Promise<T> => {
+      const previousDocument = globalThis.document;
+      const previousWindow = globalThis.window;
+      try {
+        globalThis.document = {
+          querySelectorAll: (selector: string) => selector === "button, [role='button']"
+            ? buttons.map(button => ({
+                hidden: false,
+                getAttribute: (name: string) => name === "aria-hidden" && !button.visible ? "true" : undefined,
+                closest: () => null,
+                getBoundingClientRect: () => ({
+                  width: button.visible ? 100 : 0,
+                  height: button.visible ? 32 : 0
+                }),
+                innerText: button.label,
+                textContent: button.label
+              }))
+            : []
+        } as unknown as Document;
+        globalThis.window = {
+          getComputedStyle: () => ({
+            display: "block",
+            visibility: "visible",
+            opacity: "1",
+            pointerEvents: "auto"
+          })
+        } as unknown as Window & typeof globalThis;
+        return await fn(arg as A);
+      } finally {
+        globalThis.document = previousDocument;
+        globalThis.window = previousWindow;
       }
     },
     waitForTimeout: async () => {},
@@ -811,7 +952,8 @@ function intelligencePickerPage({
           }
         }
       },
-      filter: () => locatorForItem(label, role)
+      filter: () => locatorForItem(label, role),
+      evaluate: async <T>() => true as T
     };
   };
 
@@ -840,6 +982,9 @@ function intelligencePickerPage({
             if (selector === "button, [role='button']") {
               return [fakeElement({ label: currentLabel })];
             }
+            if (selector.includes("[role='menu']") || selector.includes("[role='listbox']")) {
+              return mainOpen ? [fakeMenuContainer()] : [];
+            }
             if (selector.includes("menuitem") || selector.includes("option")) {
               if (!mainOpen) return [];
               return [
@@ -854,7 +999,7 @@ function intelligencePickerPage({
           }
         } as unknown as Document;
         globalThis.window = {
-          getComputedStyle: () => ({ display: "block", opacity: "1", visibility: "visible" })
+          getComputedStyle: () => ({ display: "block", opacity: "1", visibility: "visible", pointerEvents: "auto" })
         } as unknown as Window & typeof globalThis;
         return await fn(arg as A);
       } finally {
@@ -877,10 +1022,135 @@ function intelligencePickerPage({
   };
 }
 
+function advancedEffortPickerPage(
+  current: string,
+  { powerSlider = false }: { powerSlider?: boolean } = {}
+): PageLike & { advancedOpenCount: () => number } {
+  let currentLabel = current;
+  let rootOpen = false;
+  let advancedOpen = false;
+  let advancedClicks = 0;
+  let effortOpen = false;
+  const rootItems: FakeMenuItem[] = [
+    { label: "Advanced", role: "menuitem" },
+    { label: "Model GPT-5.6 Sol", role: "menuitem", hasPopup: true },
+    { label: `Effort ${current}`, role: "menuitem", hasPopup: true }
+  ];
+  const effortItems: FakeMenuItem[] = ["Instant", "Medium", "High", "Extra High", "Pro"]
+    .map(label => ({ label, role: "menuitemradio", checked: label === current }));
+  const missing: LocatorLike = {
+    count: async () => 0,
+    click: async () => {},
+    filter: () => missing
+  };
+  const opener: LocatorLike = {
+    count: async () => 1,
+    click: async () => { rootOpen = true; },
+    filter: () => opener
+  };
+  const canonical = ["Instant", "Medium", "High", "Extra High", "Pro"];
+  const slider: LocatorLike = {
+    count: async () => rootOpen && powerSlider ? 1 : 0,
+    isVisible: async () => rootOpen && powerSlider,
+    evaluate: async fn => fn({
+      getAttribute: (name: string) => name === "aria-valuemin"
+        ? "0"
+        : name === "aria-valuemax"
+          ? "4"
+          : name === "aria-valuenow"
+            ? String(canonical.indexOf(currentLabel))
+            : null
+    } as unknown as Element),
+    press: async key => {
+      const currentIndex = canonical.indexOf(currentLabel);
+      const nextIndex = key === "ArrowRight" ? currentIndex + 1 : currentIndex - 1;
+      currentLabel = canonical[Math.max(0, Math.min(canonical.length - 1, nextIndex))]!;
+    }
+  };
+  const locatorForItem = (label: string, role?: string): LocatorLike => {
+    const item = [...rootItems, ...effortItems].find(candidate =>
+      candidate.label === label && (role === undefined || candidate.role === role)
+    );
+    const visibleRoot = item !== undefined && rootItems.includes(item) && rootOpen
+      && (item.label === "Advanced" || advancedOpen);
+    const visible = item !== undefined && (visibleRoot || (effortOpen && effortItems.includes(item)));
+    if (!visible || item === undefined) return missing;
+    return {
+      count: async () => 1,
+      click: async () => {
+        if (item.label === "Advanced") {
+          advancedOpen = true;
+          advancedClicks += 1;
+        } else if (item.label.startsWith("Effort ")) {
+          effortOpen = true;
+        } else if (effortItems.includes(item)) {
+          currentLabel = item.label;
+          rootOpen = false;
+          effortOpen = false;
+        }
+      },
+      filter: () => locatorForItem(label, role),
+      evaluate: async <T>() => true as T
+    };
+  };
+
+  return {
+    getByRole: (role, options) => {
+      const name = String((options as { name?: unknown } | undefined)?.name ?? "");
+      return role === "button" && name === currentLabel ? opener : locatorForItem(name, role);
+    },
+    getByText: label => locatorForItem(String(label)),
+    locator: selector => selector.startsWith("[role='slider']") ? slider : ({
+      ...missing,
+      filter: options => {
+        const wanted = String((options as { hasText?: unknown } | undefined)?.hasText ?? "");
+        if (selector === "button, [role='button']" && wanted === currentLabel) return opener;
+        return locatorForItem(wanted);
+      }
+    }),
+    evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>, arg?: A) => {
+      const previousDocument = globalThis.document;
+      const previousWindow = globalThis.window;
+      try {
+        globalThis.document = {
+          querySelectorAll: (selector: string) => {
+            if (selector === "button, [role='button']") return [fakeElement({ label: currentLabel })];
+            if (selector.includes("menuitem") || selector.includes("option")) {
+              if (!rootOpen) return [];
+              return [
+                ...rootItems
+                  .filter(item => item.label === "Advanced" || advancedOpen)
+                  .map(item => fakeElement(item)),
+                ...(effortOpen ? effortItems.map(item => fakeElement(item)) : [])
+              ];
+            }
+            if (selector.includes("data-testid")) return [];
+            return [];
+          }
+        } as unknown as Document;
+        globalThis.window = {
+          getComputedStyle: () => ({ display: "block", opacity: "1", visibility: "visible" })
+        } as unknown as Window & typeof globalThis;
+        return await fn(arg as A);
+      } finally {
+        globalThis.document = previousDocument;
+        globalThis.window = previousWindow;
+      }
+    },
+    waitForTimeout: async () => {},
+    title: async () => "ChatGPT",
+    url: () => "https://chatgpt.com/",
+    advancedOpenCount: () => advancedClicks
+  };
+}
+
 function fakeElement(item: Partial<FakeMenuItem> & { label: string }): Element {
   const width = item.rect?.width ?? 100;
   const height = item.rect?.height ?? 32;
   return {
+    disabled: false,
+    hidden: false,
+    closest: () => null,
     getAttribute: (name: string) => {
       if (name === "role") return item.role;
       if (name === "aria-checked" && item.checked !== undefined) return item.checked ? "true" : "false";
@@ -901,5 +1171,24 @@ function fakeElement(item: Partial<FakeMenuItem> & { label: string }): Element {
     }),
     innerText: item.label,
     textContent: item.label
+  } as unknown as Element;
+}
+
+function fakeMenuContainer(): Element {
+  return {
+    hidden: false,
+    closest: () => null,
+    contains: () => true,
+    getBoundingClientRect: () => ({
+      left: 0,
+      top: 0,
+      width: 300,
+      height: 500,
+      right: 300,
+      bottom: 500,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    })
   } as unknown as Element;
 }

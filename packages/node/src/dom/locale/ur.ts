@@ -6,19 +6,23 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const ur = {
   configurationAxes: {
     model: ["ماڈل"],
     effort: ["کوشش"],
     speed: ["رفتار"],
+    advanced: ["ایڈوانسڈ"],
   },
   configurationOptions: {
+    instant: ["فوری"],
     light: ["لائٹ"],
     medium: ["اوسط"],
     high: ["ہائی"],
     extraHigh: ["ایکسٹرا ہائی"],
+    max: ["زیادہ سے زیادہ"],
+    ultra: ["الٹرا"],
     standard: ["اسٹینڈرڈ"],
     fast: ["تیز"],
   },
@@ -39,6 +43,10 @@ export const ur = {
     extraHigh: ["انتہائی اعلیٰ", "ایکسٹرا ہائی"],
   },
   modeOpenerExtra: ["کنفیگر کریں..."],
+  experienceOptions: {
+    chat: ["چَیٹ"],
+    work: ["کام"],
+  },
   tools: {
     web_search: ["ویب پر تلاش"],
     deep_research: ["ڈیپ ریسرچ"],
