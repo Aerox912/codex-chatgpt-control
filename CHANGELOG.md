@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.1-alpha.3
+
+- Adds durable transactional Chat and Work operations with caller-owned IDs,
+  append-only mutation intent/receipts, collect-only recovery, exact turn and
+  artifact ownership, and fail-closed handling after ambiguous browser calls.
+- Multiplexes correlated Node and Python transports while preserving ordered
+  same-tab mutations, bounded observation, explicit compatibility diagnostics,
+  and conservative provider capability fallbacks.
+- Hardens attachment handoff, generated-file capture, dynamic Power discovery,
+  browser/tab identity, lifecycle control, and output installation against
+  stale, hidden, cross-tab, oversized, late-settling, and acts-then-throws state.
+- Adds deterministic cleanup and Chat/Work restoration to the live release
+  canary, structured visible rate-limit diagnosis, expanded privacy/performance
+  boundaries, 82 shared fixtures, and rebuilt plugin runtimes.
+
 ## 0.5.1-alpha.2
 
 - Adds an explicit `messages.stop` primitive with exact confirmation, unique
