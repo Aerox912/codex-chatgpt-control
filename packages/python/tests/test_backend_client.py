@@ -66,6 +66,25 @@ class BackendClientTests(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "completed")
         self.assertEqual(transport.requests[0]["command"], "runner.stream")
 
+    def test_fallback_client_ids_use_random_instance_prefixes(self) -> None:
+        transport = RecordingBackendTransport()
+        first = BackendClient(transport=transport)
+        second = BackendClient(transport=transport)
+
+        first.health()
+        first.health()
+        second.health()
+        second.health()
+
+        request_ids = [request["requestId"] for request in transport.requests]
+        self.assertEqual(len(request_ids), len(set(request_ids)))
+        self.assertTrue(all(request_id.startswith("py_client_") for request_id in request_ids))
+        first_prefixes = {request_id.rsplit("_", 1)[0] for request_id in request_ids[:2]}
+        second_prefixes = {request_id.rsplit("_", 1)[0] for request_id in request_ids[2:]}
+        self.assertEqual(len(first_prefixes), 1)
+        self.assertEqual(len(second_prefixes), 1)
+        self.assertNotEqual(first_prefixes, second_prefixes)
+
 
 if __name__ == "__main__":
     unittest.main()

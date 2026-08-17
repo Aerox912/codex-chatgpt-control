@@ -1,16 +1,88 @@
 from __future__ import annotations
 
+import inspect
+import re
+from datetime import datetime, timezone
 from typing import Any
 
 from .commands import request_backend, wire_kwargs
 from .models import CommandResult
 
 
+_TRANSACTIONAL_OPERATION_ID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+_SAFE_BACKEND_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _transactional_command_error_result(
+    payload: dict[str, Any],
+    error: Exception,
+) -> CommandResult | None:
+    """Map an indeterminate high-level transport failure without losing intent.
+
+    Only a canonical operation ID opts into this mapping. Legacy calls retain
+    their existing exception behavior, and arbitrary caller strings are never
+    reflected into an error envelope. The same operation ID can be retried
+    safely against the durable Node journal; generating a replacement ID cannot.
+    """
+
+    operation_id = payload.get("operationId")
+    if (
+        type(operation_id) is not str
+        or _TRANSACTIONAL_OPERATION_ID_PATTERN.fullmatch(operation_id) is None
+    ):
+        return None
+    try:
+        static_code = inspect.getattr_static(error, "code", None)
+    except Exception:
+        static_code = None
+    cause_code = (
+        static_code
+        if type(static_code) is str and _SAFE_BACKEND_CODE_PATTERN.fullmatch(static_code)
+        else "operation_transport_error"
+    )
+    message = "Transactional operation transport outcome is uncertain; reuse the same operation ID."
+    return CommandResult.from_wire({
+        "ok": False,
+        "status": "partial",
+        "data": {
+            "operationId": operation_id,
+            "submissionState": "submitted_unconfirmed",
+            "completionState": "unknown",
+            "complete": False,
+        },
+        "warnings": [],
+        "context": {
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        },
+        "blocker": {
+            "kind": "unknown",
+            "code": "operation_transport_uncertain",
+            "causeCode": cause_code,
+            "message": message,
+            "resumable": True,
+        },
+        "error": {
+            "name": "OperationTransportError",
+            "message": message,
+            "recoverable": True,
+        },
+    })
+
+
 def command_result(backend: Any, command: str, payload: dict[str, Any] | None = None) -> CommandResult:
-    result = request_backend(backend, command, payload)
-    if not isinstance(result, dict):
-        raise RuntimeError(f"{command} backend result must be a CommandResult object.")
-    return CommandResult.from_wire(result)
+    request_payload = payload or {}
+    try:
+        result = request_backend(backend, command, request_payload)
+        if not isinstance(result, dict):
+            raise RuntimeError(f"{command} backend result must be a CommandResult object.")
+        return CommandResult.from_wire(result)
+    except Exception as error:
+        transactional = _transactional_command_error_result(request_payload, error)
+        if transactional is not None:
+            return transactional
+        raise
 
 
 class SessionClient:

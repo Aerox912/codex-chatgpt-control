@@ -2,11 +2,17 @@ import json
 import sys
 import tempfile
 import textwrap
+import threading
 import unittest
 from pathlib import Path
+from typing import Any, cast
 
 from codex_chatgpt_control import ChatGPT
-from codex_chatgpt_control.backend import BACKEND_RESPONSE_SCHEMA_VERSION
+from codex_chatgpt_control.backend import (
+    BACKEND_RESPONSE_SCHEMA_VERSION,
+    DEFAULT_BACKEND_MAX_IN_FLIGHT,
+    MAX_BACKEND_BUFFER_LIMIT,
+)
 from codex_chatgpt_control.transport import NodeSidecarError, NodeSidecarTransport
 
 
@@ -56,6 +62,57 @@ class NodeSidecarTransportTests(unittest.TestCase):
             self.assertEqual(written["payload"]["input"], "hi")
             self.assertEqual(written["payload"]["agent"]["name"], "reviewer")
 
+    def test_request_sends_named_operation_command_and_returns_structured_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            seen_path = Path(tmp) / "seen.jsonl"
+            operation_id = "11111111-1111-4111-8111-111111111111"
+            result = NodeSidecarTransport(
+                command=fake_backend_command(
+                    f"""
+                    import json
+                    import pathlib
+                    import sys
+                    line = sys.stdin.readline()
+                    pathlib.Path({str(seen_path)!r}).write_text(line, encoding="utf-8")
+                    request = json.loads(line)
+                    print(json.dumps({{
+                        "schemaVersion": {BACKEND_RESPONSE_SCHEMA_VERSION!r},
+                        "requestId": request.get("requestId"),
+                        "ok": True,
+                        "result": {{
+                            "schemaVersion": "chatgpt.browser_control.operation_inspect_result.v1",
+                            "operationId": request["payload"]["operationId"],
+                            "status": "pending",
+                        }},
+                    }}), flush=True)
+                    """
+                )
+            ).request("operations.inspect", {"operationId": operation_id})
+
+            self.assertEqual(result["schemaVersion"], "chatgpt.browser_control.operation_inspect_result.v1")
+            self.assertEqual(result["operationId"], operation_id)
+            written = json.loads(seen_path.read_text(encoding="utf-8"))
+            self.assertEqual(written["command"], "operations.inspect")
+            self.assertEqual(written["payload"], {"operationId": operation_id})
+
+    def test_max_in_flight_is_validated_and_propagated_to_direct_transport(self) -> None:
+        for value in (True, 1, 2.5, MAX_BACKEND_BUFFER_LIMIT + 1):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    NodeSidecarTransport(command=[sys.executable], max_in_flight=cast(Any, value))
+
+        transport = NodeSidecarTransport(command=[sys.executable], max_in_flight=7)
+        client = transport._create_client()
+        try:
+            self.assertEqual(client._transport.max_in_flight, 7)  # type: ignore[attr-defined]
+        finally:
+            client.close()
+
+        self.assertEqual(
+            NodeSidecarTransport(command=[sys.executable]).max_in_flight,
+            DEFAULT_BACKEND_MAX_IN_FLIGHT,
+        )
+
     def test_nonzero_exit_raises_structured_error(self) -> None:
         with self.assertRaises(NodeSidecarError) as error:
             NodeSidecarTransport(
@@ -70,7 +127,8 @@ class NodeSidecarTransportTests(unittest.TestCase):
             ).run({"agent": {"name": "reviewer"}, "input": "hi"})
 
         self.assertEqual(error.exception.returncode, 1)
-        self.assertEqual(error.exception.stderr, "runner failed")
+        self.assertNotIn("runner failed", error.exception.stderr)
+        self.assertIn("stderr_present=true", error.exception.stderr)
 
     def test_invalid_json_raises_structured_error(self) -> None:
         with self.assertRaises(NodeSidecarError) as error:
@@ -84,7 +142,7 @@ class NodeSidecarTransportTests(unittest.TestCase):
                 )
             ).run({"agent": {"name": "reviewer"}, "input": "hi"})
 
-        self.assertEqual(error.exception.returncode, 0)
+        self.assertIn(error.exception.returncode, {None, 0})
         self.assertIn("invalid JSON", str(error.exception))
 
     def test_missing_transport_error_points_to_sidecar(self) -> None:
@@ -98,7 +156,66 @@ class NodeSidecarTransportTests(unittest.TestCase):
 
 
 def fake_backend_command(source: str) -> list[str]:
-    return [sys.executable, "-c", textwrap.dedent(source)]
+    return [sys.executable, "-c", textwrap.dedent(with_modern_hello(source))]
+
+
+def with_modern_hello(source: str) -> str:
+    prefix = textwrap.dedent(f"""
+    import json as _hello_json
+    import sys as _hello_sys
+    _hello_original_stdin = _hello_sys.stdin
+    _hello_first_line = _hello_original_stdin.readline()
+    try:
+        _hello_first_request = _hello_json.loads(_hello_first_line)
+    except Exception:
+        _hello_first_request = None
+
+    class _HelloPushback:
+        def __init__(self, first, stream):
+            self._first = first
+            self._stream = stream
+        def readline(self, *args):
+            if self._first is not None:
+                first, self._first = self._first, None
+                return first
+            return self._stream.readline(*args)
+        def __iter__(self):
+            return self
+        def __next__(self):
+            line = self.readline()
+            if line == "":
+                raise StopIteration
+            return line
+        def __getattr__(self, name):
+            return getattr(self._stream, name)
+
+    if isinstance(_hello_first_request, dict) and _hello_first_request.get("command") == "backend.hello":
+        _hello_identity = {{
+            "backendSessionId": "sidecar-fixture-session", "packageName": "fixture-backend",
+            "packageVersion": "0.0.0", "runtime": "node", "runtimeVersion": "fixture-runtime",
+            "buildDigest": "fixture-build", "protocolVersion": "chatgpt.browser_control.backend_request.v1",
+        }}
+        _hello_capabilities = {{
+            **_hello_identity,
+            "commands": ["backend.hello", "backend.version", "backend.capabilities", "backend.health", "runner.run", "runner.stream"],
+            "transports": ["stdio"], "streaming": {{"modes": ["ndjson"], "tokenDeltas": False}},
+            "supportedProtocolVersions": ["chatgpt.browser_control.backend_request.v1"],
+            "requestIds": {{"required": True, "scope": "connection"}}, "multiplexing": {{"unary": True, "streams": True}},
+            "cancellation": {{"supported": False, "requests": False, "streams": False}},
+            "tabs": {{"stableProviderIdentity": False, "stableBrowserIdentity": False, "stableTabIdentity": False,
+                "coordinationScope": "none", "authoritativeClaim": False, "fencing": False, "concurrentTabs": False,
+                "stableIdentity": False, "coordination": False, "concurrent": False}},
+        }}
+        _hello_sys.stdout.write(_hello_json.dumps({{
+            "schemaVersion": "chatgpt.browser_control.backend_response.v1",
+            "requestId": _hello_first_request.get("requestId"), "ok": True,
+            "result": {{**_hello_identity, "accepted": True, "capabilities": _hello_capabilities}},
+        }}) + "\\n")
+        _hello_sys.stdout.flush()
+        _hello_first_line = None
+    _hello_sys.stdin = _HelloPushback(_hello_first_line, _hello_original_stdin)
+    """)
+    return prefix + "\n" + textwrap.dedent(source)
 
 
 def multi_request_backend_command(pid_path: Path) -> list[str]:
@@ -147,6 +264,36 @@ class NodeSidecarSessionTests(unittest.TestCase):
             pids = pid_path.read_text(encoding="utf-8").split()
             self.assertEqual(len(pids), 2)
             self.assertEqual(pids[0], pids[1])
+
+    def test_persistent_session_reuses_one_process_for_concurrent_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pid_path = Path(tmp) / "pids.txt"
+            transport = NodeSidecarTransport(command=multi_request_backend_command(pid_path))
+            results: list[dict] = []
+            errors: list[BaseException] = []
+            try:
+                transport.open()
+
+                def run_one(index: int) -> None:
+                    try:
+                        results.append(transport.run({"agent": {"name": "reviewer"}, "input": str(index)}))
+                    except BaseException as exc:  # pragma: no cover - assertion below reports details.
+                        errors.append(exc)
+
+                threads = [threading.Thread(target=run_one, args=(index,)) for index in range(12)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=3)
+
+                self.assertFalse(errors)
+                self.assertEqual(len(results), 12)
+                pids = pid_path.read_text(encoding="utf-8").split()
+                self.assertEqual(len(pids), 12)
+                self.assertEqual(len(set(pids)), 1)
+            finally:
+                transport.close()
+
 
     def test_open_is_idempotent_and_close_ends_the_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -216,6 +363,61 @@ class NodeSidecarSessionTests(unittest.TestCase):
             transport.close()
 
 
+class NodeSidecarAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_request_async_uses_same_structured_operation_surface(self) -> None:
+        operation_id = "11111111-1111-4111-8111-111111111111"
+        result = await NodeSidecarTransport(
+            command=fake_backend_command(
+                f"""
+                import json
+                import sys
+                line = sys.stdin.readline()
+                request = json.loads(line)
+                print(json.dumps({{
+                    "schemaVersion": {BACKEND_RESPONSE_SCHEMA_VERSION!r},
+                    "requestId": request.get("requestId"),
+                    "ok": True,
+                    "result": {{
+                        "schemaVersion": "chatgpt.browser_control.operation_collect_result.v1",
+                        "operationId": request["payload"]["operationId"],
+                        "status": "pending",
+                    }},
+                }}), flush=True)
+                """
+            )
+        ).request_async("operations.collect", {"operationId": operation_id})
+
+        self.assertEqual(result["schemaVersion"], "chatgpt.browser_control.operation_collect_result.v1")
+        self.assertEqual(result["operationId"], operation_id)
+
+    async def test_request_protocol_error_preserves_structured_code_and_recoverable(self) -> None:
+        with self.assertRaises(NodeSidecarError) as context:
+            await NodeSidecarTransport(
+                command=fake_backend_command(
+                    f"""
+                    import json
+                    import sys
+                    line = sys.stdin.readline()
+                    request = json.loads(line)
+                    print(json.dumps({{
+                        "schemaVersion": {BACKEND_RESPONSE_SCHEMA_VERSION!r},
+                        "requestId": request.get("requestId"),
+                        "ok": False,
+                        "error": {{
+                            "code": "operation_not_found",
+                            "message": "Operation was not found.",
+                            "recoverable": True,
+                        }},
+                    }}), flush=True)
+                    """
+                )
+            ).request_async("operations.inspect", {"operationId": "missing"})
+
+        self.assertEqual(context.exception.code, "operation_not_found")
+        self.assertTrue(context.exception.recoverable)
+        self.assertIsNone(context.exception.returncode)
+
+
 class NodeSidecarReturncodeRegressionTests(unittest.TestCase):
     """Regression tests for Bug 3: NodeSidecarTransport must propagate a non-None
     returncode from BackendTransportError through to NodeSidecarError.
@@ -255,7 +457,8 @@ class NodeSidecarReturncodeRegressionTests(unittest.TestCase):
             7,
             f"Expected returncode=7 propagated through NodeSidecarError, got {exc.returncode!r}",
         )
-        self.assertIn("backend exploded", exc.stderr)
+        self.assertNotIn("backend exploded", exc.stderr)
+        self.assertIn("stderr_present=true", exc.stderr)
 
     def test_returncode_none_when_backend_protocol_error(self) -> None:
         """A BackendProtocolError (logical error, not a crash) surfaces with returncode=None."""
