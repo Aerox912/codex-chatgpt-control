@@ -58,6 +58,7 @@ DEFAULT_ASYNC_CLIENT_CLOSE_TIMEOUT_SECONDS = 5.0
 # grace strictly bounded, but long enough for a responsive task to retire
 # before a caller is told it can safely retry the close.
 ASYNC_CLEANUP_CANCEL_GRACE_SECONDS = 0.25
+ASYNC_CLEANUP_CANCEL_YIELD_TURNS = 8
 
 
 def _validate_timeout_seconds(value: float, *, name: str) -> None:
@@ -461,6 +462,15 @@ async def _settle_task_bounded(task: asyncio.Future[Any]) -> None:
     if task.done():
         _observe_task_result(task)
         return
+    # A cancelled waiter schedules its owning Task's wakeup with call_soon.
+    # Give that callback a bounded number of explicit loop turns before using
+    # the timer-backed grace period. This is required by the Windows Proactor
+    # loop under load and is effectively free for cancellation-hostile tasks.
+    for _turn in range(ASYNC_CLEANUP_CANCEL_YIELD_TURNS):
+        await asyncio.sleep(0)
+        if task.done():
+            _observe_task_result(task)
+            return
     try:
         await asyncio.wait_for(
             asyncio.shield(task),
