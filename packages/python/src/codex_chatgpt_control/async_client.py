@@ -53,12 +53,9 @@ DEFAULT_ASYNC_STREAM_WORKERS = 16
 DEFAULT_ASYNC_CLEANUP_WORKERS = 4
 DEFAULT_ASYNC_STREAM_CLOSE_TIMEOUT_SECONDS = 5.0
 DEFAULT_ASYNC_CLIENT_CLOSE_TIMEOUT_SECONDS = 5.0
-# Cancellation of an awaitable returned through ``run_in_executor`` can need
-# more than one Proactor event-loop turn on Windows under CI load. Keep the
-# grace strictly bounded, but long enough for a responsive task to retire
-# before a caller is told it can safely retry the close.
+# Keep cancellation observation strictly bounded, but long enough for a
+# responsive provider task to retire before a caller is told it can retry.
 ASYNC_CLEANUP_CANCEL_GRACE_SECONDS = 0.25
-ASYNC_CLEANUP_CANCEL_YIELD_TURNS = 8
 
 
 def _validate_timeout_seconds(value: float, *, name: str) -> None:
@@ -453,39 +450,11 @@ async def _cancel_task_bounded(task: asyncio.Future[Any]) -> None:
         _observe_task_result(task)
         return
     task.cancel()
-    await _settle_task_bounded(task)
-
-
-async def _settle_task_bounded(task: asyncio.Future[Any]) -> None:
-    """Directly observe one task's settlement without cancelling it again."""
-
-    if task.done():
-        _observe_task_result(task)
-        return
-    # A cancelled waiter schedules its owning Task's wakeup with call_soon.
-    # Give that callback a bounded number of explicit loop turns before using
-    # the timer-backed grace period. This is required by the Windows Proactor
-    # loop under load and is effectively free for cancellation-hostile tasks.
-    for _turn in range(ASYNC_CLEANUP_CANCEL_YIELD_TURNS):
-        await asyncio.sleep(0)
-        if task.done():
-            _observe_task_result(task)
-            return
-    try:
-        await asyncio.wait_for(
-            asyncio.shield(task),
-            timeout=ASYNC_CLEANUP_CANCEL_GRACE_SECONDS,
-        )
-    except asyncio.CancelledError:
-        # ``shield`` reports the owned task's cancellation to this waiter. A
-        # separate cancellation of this cleanup waiter must still propagate.
-        if not task.cancelled():
-            raise
-    except BaseException:
-        # Timeout and provider cleanup failures are observed below when the
-        # task is terminal. A still-running hostile task remains tracked.
-        pass
-    if task.done():
+    done, _pending = await asyncio.wait(
+        {task},
+        timeout=ASYNC_CLEANUP_CANCEL_GRACE_SECONDS,
+    )
+    if done:
         _observe_task_result(task)
 
 
@@ -656,7 +625,6 @@ class AsyncRunResultStreaming:
     _execution: _AsyncExecution | None = None
     close_timeout_seconds: float = DEFAULT_ASYNC_STREAM_CLOSE_TIMEOUT_SECONDS
     _close_source_tasks: dict[int, asyncio.Task[Any]] = field(default_factory=dict)
-    _close_source_awaitables: dict[int, asyncio.Future[Any]] = field(default_factory=dict)
     _close_source_modes: dict[int, str] = field(default_factory=dict)
     _closed_source_ids: set[int] = field(default_factory=set)
     _stream_acquired: bool = field(init=False, default=False)
@@ -821,12 +789,7 @@ class AsyncRunResultStreaming:
             # worker is still executing. We never await either beyond the
             # close bound or start a second close concurrently.
             if self._source_close_is_async(source):
-                inner = self._close_source_awaitables.get(source_id)
-                if inner is not None:
-                    await _cancel_task_bounded(inner)
-                    await _settle_task_bounded(task)
-                else:
-                    await _cancel_task_bounded(task)
+                await _cancel_task_bounded(task)
             raise TimeoutError("Async stream provider cleanup exceeded its bounded close timeout.")
         try:
             task.result()
@@ -881,39 +844,27 @@ class AsyncRunResultStreaming:
 
     async def _perform_close(self, events: Any) -> None:
         assert self._execution is not None
-        source_id = id(events)
         close_async = getattr(events, "aclose", None)
         if callable(close_async):
             if inspect.iscoroutinefunction(close_async):
-                self._close_source_modes[source_id] = "async"
-                await self._await_source_close(source_id, close_async())
+                self._close_source_modes[id(events)] = "async"
+                await close_async()
             else:
                 result = await self._execution.run_cleanup(close_async)
                 if inspect.isawaitable(result):
-                    self._close_source_modes[source_id] = "async"
-                    await self._await_source_close(source_id, result)
+                    self._close_source_modes[id(events)] = "async"
+                    await result
                 else:
-                    self._close_source_modes[source_id] = "sync"
+                    self._close_source_modes[id(events)] = "sync"
             return
         close = getattr(events, "close", None)
         if callable(close):
             result = await self._execution.run_cleanup(close)
             if inspect.isawaitable(result):
-                self._close_source_modes[source_id] = "async"
-                await self._await_source_close(source_id, result)
+                self._close_source_modes[id(events)] = "async"
+                await result
             else:
-                self._close_source_modes[source_id] = "sync"
-
-    async def _await_source_close(self, source_id: int, awaitable: Awaitable[Any]) -> Any:
-        """Track and directly cancel a provider awaitable, not only its wrapper."""
-
-        task = asyncio.ensure_future(awaitable)
-        self._close_source_awaitables[source_id] = task
-        try:
-            return await task
-        finally:
-            if self._close_source_awaitables.get(source_id) is task:
-                self._close_source_awaitables.pop(source_id, None)
+                self._close_source_modes[id(events)] = "sync"
 
     def _maybe_release_execution(self) -> None:
         if not self._stream_acquired:
@@ -922,7 +873,7 @@ class AsyncRunResultStreaming:
             return
         if self._events_factory_task is not None:
             return
-        if self._pending_events or self._close_source_tasks or self._close_source_awaitables:
+        if self._pending_events or self._close_source_tasks:
             return
         if self._pending_close_task is not None and not self._pending_close_task.done():
             return
@@ -1227,25 +1178,6 @@ class _BackendCloseInvocation:
 
     sync_started: bool = False
     awaitable_returned: bool = False
-    awaitable_task: asyncio.Future[Any] | None = None
-
-
-async def _await_backend_close(
-    awaitable: Awaitable[Any],
-    execution: _AsyncExecution,
-    state: _BackendCloseInvocation,
-) -> Any:
-    """Keep the provider awaitable visible for direct bounded cancellation."""
-
-    token = _ACTIVE_ASYNC_EXECUTION.set(execution)
-    task = asyncio.ensure_future(awaitable)
-    state.awaitable_task = task
-    try:
-        return await task
-    finally:
-        if state.awaitable_task is task:
-            state.awaitable_task = None
-        _ACTIVE_ASYNC_EXECUTION.reset(token)
 
 
 async def _invoke_backend_close(
@@ -1257,7 +1189,11 @@ async def _invoke_backend_close(
 
     if inspect.iscoroutinefunction(close_backend):
         state.awaitable_returned = True
-        return await _await_backend_close(close_backend(), execution, state)
+        token = _ACTIVE_ASYNC_EXECUTION.set(execution)
+        try:
+            return await close_backend()
+        finally:
+            _ACTIVE_ASYNC_EXECUTION.reset(token)
 
     # A synchronous callable is isolated in the owned cleanup pool.  It may
     # return an awaitable even though the callable itself is not declared
@@ -1267,7 +1203,11 @@ async def _invoke_backend_close(
     result = await execution.run_cleanup(close_backend)
     if inspect.isawaitable(result):
         state.awaitable_returned = True
-        return await _await_backend_close(result, execution, state)
+        token = _ACTIVE_ASYNC_EXECUTION.set(execution)
+        try:
+            return await result
+        finally:
+            _ACTIVE_ASYNC_EXECUTION.reset(token)
     return result
 
 
@@ -1424,12 +1364,7 @@ class AsyncChatGPT:
             if invocation is not None and (
                 not invocation.sync_started or invocation.awaitable_returned
             ):
-                inner = invocation.awaitable_task
-                if inner is not None:
-                    await _cancel_task_bounded(inner)
-                    await _settle_task_bounded(task)
-                else:
-                    await _cancel_task_bounded(task)
+                await _cancel_task_bounded(task)
                 if task.done() and self._backend_close_task is task and task.cancelled():
                     self._backend_close_task = None
                     self._backend_close_invocation = None

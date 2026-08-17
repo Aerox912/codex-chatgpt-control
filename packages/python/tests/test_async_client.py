@@ -16,6 +16,10 @@ from codex_chatgpt_control.async_client import (
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "node" / "contracts" / "v1" / "fixtures"
+# Windows' default event-loop clock commonly advances in roughly 15.6 ms
+# increments. Keep timeout-path tests short, but comfortably above one tick so
+# a successful retry is not mistaken for a hung close on that platform.
+TEST_CLOSE_TIMEOUT_SECONDS = 0.1
 
 
 def fixture(name: str) -> dict:
@@ -485,7 +489,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_awaitable_returning_close_is_loop_affine_and_retryable(self) -> None:
         backend = AwaitableReturningCloseBackend()
-        chatgpt = AsyncChatGPT(backend, close_timeout_seconds=0.01)
+        chatgpt = AsyncChatGPT(backend, close_timeout_seconds=TEST_CLOSE_TIMEOUT_SECONDS)
 
         close_task = asyncio.create_task(chatgpt.aclose())
         await asyncio.wait_for(backend.first_close_started.wait(), timeout=1)
@@ -557,7 +561,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
         source = HangingAsyncCloseSource()
         release_close = asyncio.Event()
         source.release = release_close
-        stream = AsyncRunResultStreaming(_events=source, close_timeout_seconds=0.01)
+        stream = AsyncRunResultStreaming(_events=source, close_timeout_seconds=TEST_CLOSE_TIMEOUT_SECONDS)
 
         close_task = asyncio.create_task(stream.aclose())
         await asyncio.wait_for(source.started.wait(), timeout=1)
@@ -579,7 +583,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancellation_responsive_close_is_retired_before_retry(self) -> None:
         source = ResponsiveAsyncCloseSource()
-        stream = AsyncRunResultStreaming(_events=source, close_timeout_seconds=0.01)
+        stream = AsyncRunResultStreaming(_events=source, close_timeout_seconds=TEST_CLOSE_TIMEOUT_SECONDS)
 
         close_task = asyncio.create_task(stream.aclose())
         await asyncio.wait_for(source.started.wait(), timeout=1)
@@ -594,14 +598,13 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_awaitable_returning_stream_close_is_cancelable_and_single_flight(self) -> None:
         source = AwaitableReturningAsyncCloseSource()
-        stream = AsyncRunResultStreaming(_events=source, close_timeout_seconds=0.01)
+        stream = AsyncRunResultStreaming(_events=source, close_timeout_seconds=TEST_CLOSE_TIMEOUT_SECONDS)
 
         close_task = asyncio.create_task(stream.aclose())
         await asyncio.wait_for(source.first_started.wait(), timeout=1)
         with self.assertRaises(TimeoutError):
             await close_task
         self.assertFalse(stream._close_source_tasks)
-        self.assertFalse(stream._close_source_awaitables)
         self.assertEqual(source.close_attempts, 1)
 
         await stream.aclose()
@@ -610,7 +613,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hung_sync_close_stays_single_flight_and_releases_late(self) -> None:
         source = HangingSyncCloseSource()
-        stream = AsyncRunResultStreaming(_events=source, close_timeout_seconds=0.01)
+        stream = AsyncRunResultStreaming(_events=source, close_timeout_seconds=TEST_CLOSE_TIMEOUT_SECONDS)
 
         close_task = asyncio.create_task(stream.aclose())
         await asyncio.wait_for(asyncio.to_thread(source.started.wait), timeout=1)
@@ -627,7 +630,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_client_close_is_hard_bounded_for_hostile_async_backend(self) -> None:
         backend = HangingAsyncBackendClose()
-        chatgpt = AsyncChatGPT(backend, close_timeout_seconds=0.01)
+        chatgpt = AsyncChatGPT(backend, close_timeout_seconds=TEST_CLOSE_TIMEOUT_SECONDS)
         close_task = asyncio.create_task(chatgpt.aclose())
         await asyncio.wait_for(backend.started.wait(), timeout=1)
 
@@ -657,7 +660,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancellation_responsive_client_close_can_retry_after_timeout(self) -> None:
         backend = ResponsiveAsyncBackendClose()
-        chatgpt = AsyncChatGPT(backend, close_timeout_seconds=0.01)
+        chatgpt = AsyncChatGPT(backend, close_timeout_seconds=TEST_CLOSE_TIMEOUT_SECONDS)
 
         close_task = asyncio.create_task(chatgpt.aclose())
         await asyncio.wait_for(backend.started.wait(), timeout=1)
