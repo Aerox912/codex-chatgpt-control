@@ -1,13 +1,15 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { filterScenarios, requiredFailures, writeReport } from "../../src/scripts/live-smoke/harness.js";
+import { describe, expect, it, vi } from "vitest";
+import { filterScenarios, requiredFailures, runScenario, writeReport } from "../../src/scripts/live-smoke/harness.js";
 import {
   chatActiveSelection,
   generatedFileAskCanProceed,
   optionalScenarios,
-  requiredScenarios
+  requiredScenarios,
+  restoreChatExperience,
+  restoreWorkEffort
 } from "../../src/scripts/live-smoke/scenarios.js";
 import type { ConfigurationInspectionData } from "../../src/types.js";
 import type { LiveSmokeScenario } from "../../src/scripts/live-smoke/types.js";
@@ -45,6 +47,69 @@ describe("live smoke harness", () => {
       "copy-latest",
       "attach-one-file"
     ]);
+  });
+
+  it("uses a separate tool-scoped browser for cleanup without exposing it to scenario behavior", async () => {
+    const behaviorFinalize = vi.fn(async () => undefined);
+    const cleanupFinalize = vi.fn(async () => undefined);
+    const seenBrowsers: unknown[] = [];
+    const liveScenario: LiveSmokeScenario = {
+      name: "separate-cleanup-browser",
+      required: true,
+      enabled: () => true,
+      run: async context => {
+        seenBrowsers.push(context.browser);
+        return result("separate-cleanup-browser", "pass", true);
+      }
+    };
+    const behaviorBrowser = { tabs: { finalize: behaviorFinalize } };
+    const cleanupBrowser = { tabs: { finalize: cleanupFinalize } };
+
+    const observed = await runScenario(liveScenario, {
+      agent: {},
+      browser: behaviorBrowser,
+      cleanupBrowser,
+      reportDir: "/tmp/reports"
+    });
+
+    expect(seenBrowsers).toEqual([behaviorBrowser]);
+    expect(cleanupFinalize).toHaveBeenCalledWith({ keep: [] });
+    expect(behaviorFinalize).not.toHaveBeenCalled();
+    expect(observed.cleanup).toEqual({ attempted: true, ok: true });
+  });
+
+  it("falls back to closing only exact controlled tabs created by the scenario", async () => {
+    const existingClose = vi.fn(async () => undefined);
+    const createdClose = vi.fn(async () => undefined);
+    const pages = new Map([
+      ["existing-tab", { id: "existing-tab", close: existingClose }]
+    ]);
+    const behaviorBrowser = {
+      tabs: {
+        list: async () => [...pages.values()],
+        get: async (id: string) => pages.get(id)!,
+        new: async () => ({ id: "unused" })
+      }
+    };
+    const liveScenario: LiveSmokeScenario = {
+      name: "exact-tab-diff-cleanup",
+      required: true,
+      enabled: () => true,
+      run: async () => {
+        pages.set("created-tab", { id: "created-tab", close: createdClose });
+        return result("exact-tab-diff-cleanup", "pass", true);
+      }
+    };
+
+    const observed = await runScenario(liveScenario, {
+      agent: {},
+      browser: behaviorBrowser,
+      reportDir: "/tmp/reports"
+    });
+
+    expect(existingClose).not.toHaveBeenCalled();
+    expect(createdClose).toHaveBeenCalledTimes(1);
+    expect(observed.cleanup).toEqual({ attempted: true, ok: true, closedTabCount: 1 });
   });
 
   it("registers long-response scenarios as explicit opt-in checks", () => {
@@ -90,6 +155,104 @@ describe("live smoke harness", () => {
       reportDir: "/tmp/reports",
       env: { CHATGPT_E2E_CONFIGURATION_MUTATION: "1" }
     })).toBe(true);
+  });
+
+  it("retries restoration until an independent Work inspection verifies the original effort", async () => {
+    const applied: string[] = [];
+    const sleeps: number[] = [];
+    let inspections = 0;
+    const restored = await restoreWorkEffort({
+      apply: async args => {
+        applied.push(args.desired.effort!);
+        return {
+          ok: true,
+          status: "ok",
+          data: {
+            requested: args.desired,
+            selected: [],
+            before: workInspection("Light"),
+            after: workInspection("Extra High"),
+            verified: true
+          },
+          warnings: [],
+          context: { timestamp: "2026-08-17T00:00:00.000Z" }
+        };
+      },
+      inspect: async () => {
+        inspections += 1;
+        const active = inspections === 1 ? "Light" : "Extra High";
+        return {
+          ok: true,
+          status: "ok",
+          data: workInspection(active),
+          warnings: [],
+          context: { timestamp: "2026-08-17T00:00:00.000Z" }
+        };
+      }
+    }, "Extra High", {
+      attempts: 3,
+      delayMs: 750,
+      sleep: async milliseconds => { sleeps.push(milliseconds); }
+    });
+
+    expect(restored).toMatchObject({
+      verified: true,
+      attempts: 2,
+      observedEffort: "Extra High"
+    });
+    expect(applied).toEqual(["Extra High", "Extra High"]);
+    expect(sleeps).toEqual([750]);
+  });
+
+  it("recognizes an idempotent Chat restore after the first click has an uncertain postcondition", async () => {
+    const opened: string[] = [];
+    const sleeps: number[] = [];
+    let detections = 0;
+    const restored = await restoreChatExperience({
+      detect: async () => {
+        detections += 1;
+        const visibleExperience = detections === 1 ? "work" : "chat";
+        return {
+          ok: true,
+          status: "ok",
+          data: {
+            experience: visibleExperience,
+            selectorProfile: visibleExperience === "chat" ? "chat_simplified_v1" : "work_advanced_v1",
+            confidence: "high",
+            evidence: []
+          },
+          warnings: [],
+          context: { timestamp: "2026-08-17T00:00:00.000Z" }
+        };
+      },
+      open: async args => {
+        opened.push(args.experience);
+        return {
+          ok: false,
+          status: "blocked",
+          warnings: [],
+          blocker: {
+            kind: "selector_drift",
+            code: "experience_postcondition_unverified",
+            message: "The click completed but the immediate read was inconclusive.",
+            resumable: true
+          },
+          context: { timestamp: "2026-08-17T00:00:00.000Z" }
+        };
+      }
+    }, {
+      attempts: 3,
+      delayMs: 750,
+      sleep: async milliseconds => { sleeps.push(milliseconds); }
+    });
+
+    expect(restored).toMatchObject({
+      verified: true,
+      attempts: 2,
+      observedExperience: "chat"
+    });
+    expect(opened).toEqual(["chat"]);
+    expect(sleeps).toEqual([750]);
   });
 
   it("lets artifact verification decide a settled partial generated-file response", () => {
@@ -142,5 +305,17 @@ function scenario(name: string): LiveSmokeScenario {
     required: true,
     enabled: () => true,
     run: async () => result(name, "pass", true)
+  };
+}
+
+function workInspection(effort: string): ConfigurationInspectionData {
+  return {
+    experience: "work",
+    selectorProfile: "work_advanced_v1",
+    availableAxes: ["model", "effort", "speed"],
+    active: { model: "GPT-5.6 Sol", effort, speed: "Standard" },
+    options: {},
+    verified: true,
+    evidence: []
   };
 }

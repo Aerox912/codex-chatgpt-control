@@ -27,6 +27,8 @@ import { ensurePage } from "./session.js";
 const WORK_AXES: ConfigurationAxis[] = ["model", "effort", "speed"];
 const CONFIGURATION_CONTROL_DISCOVERY_TIMEOUT_MS = 5_000;
 const CONFIGURATION_CONTROL_POLL_MS = 250;
+const CONFIGURATION_SELECTION_MAX_ATTEMPTS = 6;
+const CONFIGURATION_SELECTION_RETRY_MS = 400;
 const CONFIGURATION_AXIS_ORDER: ConfigurationAxis[] = [
   "model",
   "intelligence",
@@ -219,7 +221,7 @@ export async function applyConfiguration(
       }
 
       const selection = before.experience === "work"
-        ? await selectWorkAxis(env, axis, requested)
+        ? await selectWorkAxis(env, axis, requested, args.timeoutMs)
         : await selectChatAxis(env, axis, requested, args.timeoutMs);
       if (selection === undefined) {
         return configurationFailure(
@@ -342,25 +344,36 @@ async function inspectWorkAxisOptions(env: RuntimeEnv, axis: ConfigurationAxis):
 async function selectWorkAxis(
   env: RuntimeEnv,
   axis: ConfigurationAxis,
-  requested: string
+  requested: string,
+  timeoutMs: number | undefined
 ): Promise<string | undefined> {
   const page = env.page!;
   if (!WORK_AXES.includes(axis)) {
     return undefined;
   }
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const retryWindowMs = Math.min(
+    timeoutMs ?? CONFIGURATION_CONTROL_DISCOVERY_TIMEOUT_MS,
+    CONFIGURATION_CONTROL_DISCOVERY_TIMEOUT_MS
+  );
+  const attempts = Math.max(2, Math.min(
+    CONFIGURATION_SELECTION_MAX_ATTEMPTS,
+    Math.ceil(Math.max(0, retryWindowMs) / CONFIGURATION_SELECTION_RETRY_MS) + 1
+  ));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const candidates = await openWorkAxisOptions(env, axis);
     const match = findConfigurationOption(candidates, requested);
     if (match !== undefined && await clickVisibleMenuItem(page, match)) {
       await page.waitForTimeout?.(150);
       return match.label;
     }
-    if (attempt === 0) {
+    if (attempt + 1 < attempts) {
       // The submenu can disappear between enumeration and the visible click
-      // when ChatGPT's pointer-grace timer fires. Reopen once and click from a
-      // fresh DOM instance instead of treating that transient race as drift.
+      // when ChatGPT's pointer-grace timer fires, and Work may briefly retain
+      // the previous submenu immediately after a selection. Reopen from a
+      // fresh DOM instance for a small bounded window instead of treating the
+      // transient state as permanent selector drift.
       await closeConfigurationMenus(page);
-      await page.waitForTimeout?.(200);
+      await page.waitForTimeout?.(CONFIGURATION_SELECTION_RETRY_MS);
     }
   }
   return undefined;

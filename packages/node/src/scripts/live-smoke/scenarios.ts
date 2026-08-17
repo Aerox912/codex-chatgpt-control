@@ -4,11 +4,13 @@ import { join } from "node:path";
 import {
   attachAskRead,
   attachFiles,
+  configurationMatchesSelection,
   askMessage,
   bootstrap,
   composeMessage,
   createChatGPT,
   copyResponse,
+  detectExperience,
   downloadLatestAttachment,
   messageStatus,
   newThread,
@@ -48,6 +50,134 @@ type ScenarioMeta = {
   startedAt: string;
   startedMs: number;
 };
+
+type WorkConfigurationCommands = Pick<ReturnType<typeof createChatGPT>["configuration"], "apply" | "inspect">;
+type ExperienceCommands = Pick<ReturnType<typeof createChatGPT>["experience"], "detect" | "open">;
+
+export type WorkEffortRestoreResult = {
+  command: CommandResult<unknown>;
+  verified: boolean;
+  attempts: number;
+  observedEffort?: string;
+};
+
+export type ChatExperienceRestoreResult = {
+  command: CommandResult<unknown>;
+  verified: boolean;
+  attempts: number;
+  observedExperience?: string;
+};
+
+export async function restoreChatExperience(
+  experience: ExperienceCommands,
+  options: {
+    attempts?: number;
+    delayMs?: number;
+    timeoutMs?: number;
+    sleep?: (milliseconds: number) => Promise<void>;
+  } = {}
+): Promise<ChatExperienceRestoreResult> {
+  const attempts = Math.max(1, Math.min(5, options.attempts ?? 3));
+  const delayMs = Math.max(0, Math.min(5000, options.delayMs ?? 750));
+  const timeoutMs = Math.max(1000, Math.min(120000, options.timeoutMs ?? 60000));
+  const sleep = options.sleep ?? (async (milliseconds: number): Promise<void> => {
+    await new Promise<void>(resolve => setTimeout(resolve, milliseconds));
+  });
+  let terminal: CommandResult<unknown> | undefined;
+  let observedExperience: string | undefined;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const detectedBefore = await experience.detect({ timeoutMs });
+    terminal = asCommand(detectedBefore);
+    observedExperience = detectedBefore.data?.experience;
+    if (detectedBefore.ok && observedExperience === "chat") {
+      return { command: terminal, verified: true, attempts: attempt, observedExperience };
+    }
+
+    const opened = await experience.open({ experience: "chat", timeoutMs });
+    terminal = asCommand(opened);
+    if (opened.ok && opened.data?.experience === "chat") {
+      const detectedAfter = await experience.detect({ timeoutMs });
+      terminal = asCommand(detectedAfter);
+      observedExperience = detectedAfter.data?.experience;
+      if (detectedAfter.ok && observedExperience === "chat") {
+        return { command: terminal, verified: true, attempts: attempt, observedExperience };
+      }
+    }
+
+    if (attempt < attempts) {
+      await sleep(delayMs);
+    }
+  }
+
+  return {
+    command: terminal!,
+    verified: false,
+    attempts,
+    ...(observedExperience === undefined ? {} : { observedExperience })
+  };
+}
+
+export async function restoreWorkEffort(
+  configuration: WorkConfigurationCommands,
+  effort: string,
+  options: {
+    attempts?: number;
+    delayMs?: number;
+    timeoutMs?: number;
+    sleep?: (milliseconds: number) => Promise<void>;
+  } = {}
+): Promise<WorkEffortRestoreResult> {
+  const attempts = Math.max(1, Math.min(5, options.attempts ?? 3));
+  const delayMs = Math.max(0, Math.min(5000, options.delayMs ?? 750));
+  const timeoutMs = Math.max(1000, Math.min(120000, options.timeoutMs ?? 60000));
+  const sleep = options.sleep ?? (async (milliseconds: number): Promise<void> => {
+    await new Promise<void>(resolve => setTimeout(resolve, milliseconds));
+  });
+  let terminal: CommandResult<unknown> | undefined;
+  let observedEffort: string | undefined;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const applied = await configuration.apply({
+      experience: "work",
+      desired: { effort },
+      strict: true,
+      timeoutMs
+    });
+    terminal = asCommand(applied);
+
+    if (applied.ok && applied.data?.verified === true) {
+      const inspected = await configuration.inspect({
+        experience: "work",
+        includeOptions: false,
+        timeoutMs
+      });
+      terminal = asCommand(inspected);
+      observedEffort = inspected.data?.active.effort;
+      if (inspected.ok
+        && inspected.data !== undefined
+        && configurationMatchesSelection(inspected.data, { effort })) {
+        return {
+          command: terminal,
+          verified: true,
+          attempts: attempt,
+          ...(observedEffort === undefined ? {} : { observedEffort })
+        };
+      }
+    }
+
+    if (attempt < attempts) {
+      await sleep(delayMs);
+    }
+  }
+
+  return {
+    command: terminal!,
+    verified: false,
+    attempts,
+    ...(observedEffort === undefined ? {} : { observedEffort })
+  };
+}
 
 export const requiredScenarios: LiveSmokeScenario[] = [
   scenario("bootstrap-new-tab", true, () => true, async (context, meta) => {
@@ -327,10 +457,11 @@ export const requiredScenarios: LiveSmokeScenario[] = [
       }
     } finally {
       if (booted) {
-        const restored = await chatgpt.experience.open({ experience: "chat", timeoutMs: 60000 });
-        terminal = asCommand(restored);
-        if (!restored.ok || restored.data?.experience !== "chat") {
-          failure = new LiveSmokeCommandFailure("experience.restore.chat", asCommand(restored));
+        const restored = await restoreChatExperience(chatgpt.experience);
+        terminal = restored.command;
+        details.experienceRestoreAttempts = restored.attempts;
+        if (!restored.verified) {
+          failure = new LiveSmokeCommandFailure("experience.restore.chat", restored.command);
         } else {
           details.restoredExperience = "chat";
         }
@@ -706,24 +837,24 @@ export const optionalScenarios: LiveSmokeScenario[] = [
       }
     } finally {
       if (booted && restoreNeeded && originalEffort !== undefined) {
-        const restoredConfiguration = await chatgpt.configuration.apply({
-          experience: "work",
-          desired: { effort: originalEffort },
-          strict: true,
-          timeoutMs: 60000
-        });
-        terminal = asCommand(restoredConfiguration);
-        if (!restoredConfiguration.ok || restoredConfiguration.data?.verified !== true) {
-          failure = new LiveSmokeCommandFailure("configuration.restore.work", asCommand(restoredConfiguration));
+        const restoredConfiguration = await restoreWorkEffort(chatgpt.configuration, originalEffort);
+        terminal = restoredConfiguration.command;
+        details.configurationRestoreAttempts = restoredConfiguration.attempts;
+        if (restoredConfiguration.observedEffort !== undefined) {
+          details.restoredEffort = restoredConfiguration.observedEffort;
+        }
+        if (!restoredConfiguration.verified) {
+          failure = new LiveSmokeCommandFailure("configuration.restore.work", restoredConfiguration.command);
         } else {
           details.configurationRestored = true;
         }
       }
       if (booted) {
-        const restoredExperience = await chatgpt.experience.open({ experience: "chat", timeoutMs: 60000 });
-        terminal = asCommand(restoredExperience);
-        if (!restoredExperience.ok || restoredExperience.data?.experience !== "chat") {
-          failure = new LiveSmokeCommandFailure("experience.restore.chat", asCommand(restoredExperience));
+        const restoredExperience = await restoreChatExperience(chatgpt.experience);
+        terminal = restoredExperience.command;
+        details.experienceRestoreAttempts = restoredExperience.attempts;
+        if (!restoredExperience.verified) {
+          failure = new LiveSmokeCommandFailure("experience.restore.chat", restoredExperience.command);
         } else {
           details.restoredExperience = "chat";
         }
@@ -941,6 +1072,13 @@ async function boot(context: LiveSmokeContext, meta: ScenarioMeta): Promise<Runt
 async function bootNewThread(context: LiveSmokeContext, meta: ScenarioMeta): Promise<RuntimeEnv | LiveSmokeScenarioResult> {
   const env = await boot(context, meta);
   if ("status" in env) return env;
+  const chat = await restoreChatExperience({
+    detect: args => detectExperience(env, args),
+    open: args => openExperience(env, args)
+  });
+  if (!chat.verified) {
+    return fail(meta, chat.command, { failedStage: "experience.open.chat" });
+  }
   const created = await newThread(env);
   return created.ok ? env : fail(meta, created);
 }

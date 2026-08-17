@@ -314,6 +314,43 @@ describe("sanitized Chat and Work surface profiles", () => {
     });
   });
 
+  it("surfaces a visible usage-limit dialog instead of misreporting selector drift", async () => {
+    const page: PageLike = {
+      url: () => "https://chatgpt.com/",
+      title: async () => "ChatGPT",
+      evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>): Promise<T> => {
+        const source = String(fn);
+        if (source.includes("messageSelector") && source.includes("systemSelector")) {
+          return {
+            visibleText: "You have reached your usage limit. Got it",
+            blockerText: "You have reached your usage limit. Got it",
+            hasConversationMessages: false
+          } as T;
+        }
+        if (source.includes("composerRoots") && source.includes("mainControls")) {
+          return {
+            composerLabels: [],
+            mainControls: [],
+            mainText: "",
+            selectedSurfaceLabels: []
+          } as T;
+        }
+        throw new Error(`Unexpected evaluate call: ${source}`);
+      }
+    };
+
+    const result = await openExperience({ page }, { experience: "chat", timeoutMs: 100 });
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("blocked");
+    expect(result.blocker).toMatchObject({
+      kind: "rate_limit",
+      code: "experience_blocked_rate_limit",
+      fieldPath: "experience",
+      resumable: true
+    });
+  });
+
   it("applies and strictly verifies all Work configuration axes sequentially", async () => {
     const page = configurableWorkPage();
 
@@ -506,6 +543,19 @@ describe("sanitized Chat and Work surface profiles", () => {
 
     expect(result.ok).toBe(true);
     expect(result.data?.after.active.effort).toBe("Medium");
+  });
+
+  it("keeps retrying boundedly while a Work submenu settles after a prior selection", async () => {
+    const page = configurableWorkPage({ transientAxisOpenMisses: 6 });
+
+    const result = await applyConfiguration({ page }, {
+      experience: "work",
+      desired: { effort: "Extra High" },
+      timeoutMs: 5000
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.after.active.effort).toBe("Extra High");
   });
 });
 
@@ -753,6 +803,7 @@ function configurableWorkPage(
   optionsForPage: {
     duplicateHiddenOptions?: boolean;
     transientAxisOpenMiss?: boolean;
+    transientAxisOpenMisses?: number;
     transientOptionClickMiss?: boolean;
   } = {}
 ): ConfigurableWorkPage {
@@ -789,7 +840,9 @@ function configurableWorkPage(
       clicks.push(axis);
       const attempts = axisOpenAttempts.get(axis) ?? 0;
       axisOpenAttempts.set(axis, attempts + 1);
-      if (optionsForPage.transientAxisOpenMiss === true && attempts === 0) {
+      const transientMisses = optionsForPage.transientAxisOpenMisses
+        ?? (optionsForPage.transientAxisOpenMiss === true ? 1 : 0);
+      if (attempts < transientMisses) {
         openAxis = undefined;
         return;
       }
