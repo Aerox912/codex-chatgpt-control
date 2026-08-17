@@ -452,11 +452,30 @@ async def _cancel_task_bounded(task: asyncio.Future[Any]) -> None:
         _observe_task_result(task)
         return
     task.cancel()
-    done, _pending = await asyncio.wait(
-        {task},
-        timeout=ASYNC_CLEANUP_CANCEL_GRACE_SECONDS,
-    )
-    if done:
+    await _settle_task_bounded(task)
+
+
+async def _settle_task_bounded(task: asyncio.Future[Any]) -> None:
+    """Directly observe one task's settlement without cancelling it again."""
+
+    if task.done():
+        _observe_task_result(task)
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=ASYNC_CLEANUP_CANCEL_GRACE_SECONDS,
+        )
+    except asyncio.CancelledError:
+        # ``shield`` reports the owned task's cancellation to this waiter. A
+        # separate cancellation of this cleanup waiter must still propagate.
+        if not task.cancelled():
+            raise
+    except BaseException:
+        # Timeout and provider cleanup failures are observed below when the
+        # task is terminal. A still-running hostile task remains tracked.
+        pass
+    if task.done():
         _observe_task_result(task)
 
 
@@ -795,7 +814,9 @@ class AsyncRunResultStreaming:
                 inner = self._close_source_awaitables.get(source_id)
                 if inner is not None:
                     await _cancel_task_bounded(inner)
-                await _cancel_task_bounded(task)
+                    await _settle_task_bounded(task)
+                else:
+                    await _cancel_task_bounded(task)
             raise TimeoutError("Async stream provider cleanup exceeded its bounded close timeout.")
         try:
             task.result()
@@ -1396,7 +1417,9 @@ class AsyncChatGPT:
                 inner = invocation.awaitable_task
                 if inner is not None:
                     await _cancel_task_bounded(inner)
-                await _cancel_task_bounded(task)
+                    await _settle_task_bounded(task)
+                else:
+                    await _cancel_task_bounded(task)
                 if task.done() and self._backend_close_task is task and task.cancelled():
                     self._backend_close_task = None
                     self._backend_close_invocation = None
