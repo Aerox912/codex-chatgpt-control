@@ -71,6 +71,10 @@ Browser-control blockers are not protocol errors. They are normal command or run
 
 Use `messages.status({ maxPreviewChars })` for a compact latest-assistant progress snapshot when a host tool-call ceiling is shorter than the expected ChatGPT generation. It returns counts, latest-assistant preview length, `completionState`, `generationActive`, and generation signals without treating partial text as final, and without the cost of a full `readLatest`/`wait` probe.
 
+Use `messages.stop({ confirmStop: true })` only after the caller explicitly decides that the current visible response should stop. It clicks one uniquely scoped, visible stop control and succeeds only after generation is observed inactive. Without the exact boolean `confirmStop: true`, it returns `needs_confirmation`; if generation is observably inactive, it is a no-op. An unavailable or ambiguous control, an uninspectable generation state, or an unverified postcondition fails closed.
+
+If the Stop activation starts but its completion races the command deadline, the result is `status: "timeout"` with blocker code `stop_generation_unverified` and `resumable: false`. The browser-native deadline terminates the request before the command returns, so it cannot click later; the click may already have taken effect before termination. Inspect the current visible generation state and never retry Stop automatically.
+
 ## Streaming
 
 Streaming commands emit backend event lines until `completed` or `error`.
@@ -185,6 +189,10 @@ The Codex plugin loader can consume the user-scoped
 preapproval applied only by the plugin wrapper. The public Node and Python
 surfaces remain confirmation-gated unless callers explicitly pass
 `confirmCreation: true`.
+
+Once the native file handoff starts, any timeout, bridge error, or missing post-handoff composer evidence is indeterminate: `files.attach` returns `status: "partial"`, blocker code `attachment_outcome_indeterminate`, and `resumable: false`. Browser-native deadlines terminate the handoff request before the command returns, so it cannot mutate later; the file may already be present. Inspect the current composer, do not submit, and never retry the attachment automatically.
+
+The Codex Chrome chooser intentionally exposes `isMultiple()` and `setFiles()` but no backing-element accessor. Before accepting that opaque chooser, the Node runtime proves the initiating input or control belongs to the unique active composer; the CDP fallback independently resolves and clicks that exact unique input. Browser providers that expose a chooser backing element receive an additional identity cross-check before handoff.
 
 ## Project Sources
 

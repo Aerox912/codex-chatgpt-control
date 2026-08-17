@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { askMessage, isResponseComplete, messageStatus, readLatest, submittedUserTurnMatches, submitMessage, waitForMessage } from "../../src/commands/messages.js";
+import { describe, expect, it, vi } from "vitest";
+import { askMessage, isResponseComplete, messageStatus, readLatest, stopGeneration, submittedUserTurnMatches, submitMessage, waitForMessage } from "../../src/commands/messages.js";
 import { waitTextMetadata } from "../../src/dom/wait-snapshot.js";
 import { copyResponse } from "../../src/commands/response-actions.js";
 import { EMPTY_GENERATION_STATE, readAssistantGenerationState } from "../../src/dom/generation-state.js";
@@ -13,9 +13,435 @@ import {
   readLatestMessageText,
   readLatestMessageTextSnapshot
 } from "../../src/dom/messages.js";
-import type { LocatorLike, PageLike } from "../../src/types.js";
+import type { BrowserOperationOptions, LocatorLike, PageLike } from "../../src/types.js";
 
 describe("extractMessagesFromHtml", () => {
+  it("keeps every shipped Stop label disjoint from every Send label", () => {
+    const send = new Set(localeLabels.sendButton.map(label => label.trim().toLocaleLowerCase()));
+    expect(localeLabels.stopControl.filter(label => send.has(label.trim().toLocaleLowerCase()))).toEqual([]);
+  });
+
+  it("requires explicit confirmation before stopping a visible response", async () => {
+    let clicked = false;
+    const locator: LocatorLike = {
+      count: async () => 1,
+      last: () => locator,
+      isVisible: async () => true,
+      click: async () => { clicked = true; }
+    };
+    const result = await stopGeneration({
+      page: {
+        url: () => "https://chatgpt.com/c/test",
+        content: async () => '<button aria-label="Stop answering">Stop answering</button>',
+        getByRole: () => locator
+      }
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "needs_confirmation",
+      blocker: { code: "stop_generation_confirmation_required" }
+    });
+    expect(clicked).toBe(false);
+  });
+
+  it("clicks the visible Stop control once and verifies generation became inactive", async () => {
+    let generating = true;
+    let clicks = 0;
+    let titleCalls = 0;
+    const locator: LocatorLike = {
+      count: async () => 1,
+      last: () => locator,
+      isVisible: async () => true,
+      evaluate: async <T>(): Promise<T> => true as T,
+      click: async () => { clicks += 1; generating = false; }
+    };
+    const page: PageLike = {
+      url: () => "https://chatgpt.com/c/test",
+      content: async () => generating
+        ? '<form><textarea></textarea><button aria-label="Stop answering">Stop answering</button></form>'
+        : '<main>Partial answer preserved.</main>',
+      getByRole: () => locator,
+      title: async () => {
+        titleCalls += 1;
+        return "ChatGPT";
+      },
+      waitForTimeout: async () => undefined
+    };
+    const result = await stopGeneration({ page }, { confirmStop: true, timeoutMs: 250 });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { wasGenerating: true, stopped: true }
+    });
+    expect(clicks).toBe(1);
+    expect(titleCalls).toBe(0);
+  });
+
+  it("treats an observed inactive page as a successful no-op", async () => {
+    let clicks = 0;
+    const locator: LocatorLike = {
+      count: async () => 0,
+      click: async () => { clicks += 1; }
+    };
+    const result = await stopGeneration({
+      page: {
+        url: () => "https://chatgpt.com/c/test",
+        content: async () => "<main>Completed answer.</main>",
+        getByRole: () => locator
+      }
+    }, { confirmStop: true, timeoutMs: 250 });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { wasGenerating: false, stopped: false }
+    });
+    expect(clicks).toBe(0);
+  });
+
+  it("refuses ambiguous visible Stop controls", async () => {
+    let clicks = 0;
+    const controls = [0, 1].map((): LocatorLike => ({
+      isVisible: async () => true,
+      evaluate: async <T>(): Promise<T> => true as T,
+      click: async () => { clicks += 1; }
+    }));
+    const candidates: LocatorLike = {
+      count: async () => controls.length,
+      nth: index => controls[index]!,
+    };
+    const result = await stopGeneration({
+      page: {
+        url: () => "https://chatgpt.com/c/test",
+        content: async () => '<form><textarea></textarea><button aria-label="Stop answering"></button></form>',
+        getByRole: () => candidates
+      }
+    }, { confirmStop: true, timeoutMs: 250 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "blocked",
+      blocker: { code: "stop_generation_control_ambiguous" }
+    });
+    expect(clicks).toBe(0);
+  });
+
+  it("refuses a visible Stop label outside the active composer scope", async () => {
+    let clicked = false;
+    const candidate: LocatorLike = {
+      count: async () => 1,
+      isVisible: async () => true,
+      evaluate: async <T>(): Promise<T> => false as T,
+      click: async () => { clicked = true; }
+    };
+    const result = await stopGeneration({
+      page: {
+        url: () => "https://chatgpt.com/c/test",
+        content: async () => '<form><textarea></textarea><button aria-label="Stop answering"></button></form>',
+        getByRole: () => candidate
+      }
+    }, { confirmStop: true, timeoutMs: 250 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "blocked",
+      blocker: { code: "stop_generation_control_unavailable" }
+    });
+    expect(clicked).toBe(false);
+  });
+
+  it("rechecks disabled state before activating a resolved Stop control", async () => {
+    let clicked = false;
+    let scopeSource = "";
+    const candidate: LocatorLike = {
+      count: async () => 1,
+      isVisible: async () => true,
+      evaluate: async <T>(fn: (element: Element) => T): Promise<T> => {
+        scopeSource = String(fn);
+        return false as T;
+      },
+      click: async () => { clicked = true; }
+    };
+    const result = await stopGeneration({
+      page: {
+        url: () => "https://chatgpt.com/c/test",
+        content: async () => '<form><textarea></textarea><button aria-label="Stop answering"></button></form>',
+        getByRole: () => candidate
+      }
+    }, { confirmStop: true, timeoutMs: 250 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "blocked",
+      blocker: { code: "stop_generation_control_unavailable" }
+    });
+    expect(scopeSource).toContain("button.disabled");
+    expect(scopeSource).toContain("aria-disabled");
+    expect(scopeSource).toContain('textbox.closest("form")');
+    expect(scopeSource.indexOf('textbox.closest("form")'))
+      .toBeLessThan(scopeSource.indexOf("[class*='composer' i]"));
+    expect(clicked).toBe(false);
+  });
+
+  it("does not click a Send control even if a future locale aliases it as Stop", async () => {
+    let clicked = false;
+    const collision = "Prompt versturen";
+    localeLabels.stopControl.push(collision);
+    try {
+      const candidate: LocatorLike = {
+        count: async () => 1,
+        isVisible: async () => true,
+        evaluate: async <T>(): Promise<T> => true as T,
+        click: async () => { clicked = true; }
+      };
+      const result = await stopGeneration({
+        page: {
+          url: () => "https://chatgpt.com/c/test",
+          content: async () => `<form><button aria-label="${collision}"></button></form>`,
+          getByRole: () => candidate
+        }
+      }, { confirmStop: true, timeoutMs: 250 });
+
+      expect(result).toMatchObject({
+        ok: true,
+        data: { wasGenerating: false, stopped: false }
+      });
+      expect(clicked).toBe(false);
+    } finally {
+      localeLabels.stopControl.splice(localeLabels.stopControl.lastIndexOf(collision), 1);
+    }
+  });
+
+  it("fails closed when generation state cannot be inspected", async () => {
+    let clicked = false;
+    const candidate: LocatorLike = {
+      count: async () => 1,
+      isVisible: async () => true,
+      evaluate: async <T>(): Promise<T> => true as T,
+      click: async () => { clicked = true; }
+    };
+    const result = await stopGeneration({
+      page: {
+        url: () => "https://chatgpt.com/c/test",
+        evaluate: async () => { throw new Error("probe rejected"); },
+        getByRole: () => candidate
+      }
+    }, { confirmStop: true, timeoutMs: 250 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "blocked",
+      blocker: { code: "stop_generation_state_unavailable" }
+    });
+    expect(clicked).toBe(false);
+  });
+
+  it("does not infer lifecycle state from quoted assistant prose", async () => {
+    const state = await readAssistantGenerationState(contentPage([
+      '<div data-testid="conversation-turn-1">',
+      '<div data-message-author-role="assistant">',
+      '<p>The phrases “Stop answering” and “Stopped thinking” are quoted examples.</p>',
+      "</div>",
+      "</div>"
+    ].join("")));
+
+    expect(state).toEqual({ observed: true, active: false, stopped: false, signals: [] });
+  });
+
+  it.each([
+    '<form><textarea></textarea><button disabled aria-label="Stop answering"></button></form>',
+    '<form><textarea></textarea></form><button data-testid="stop-button" aria-label="Stop answering"></button>',
+    '<form><button aria-label="Stop answering"></button></form>'
+  ])("does not infer active generation from an unactivatable serialized Stop control", async html => {
+    const state = await readAssistantGenerationState(contentPage(html));
+
+    expect(state).toEqual({ observed: true, active: false, stopped: false, signals: [] });
+  });
+
+  it("prefers the enclosing form over a nested composer-marked wrapper in serialized fallback", async () => {
+    const html = [
+      '<form data-testid="composer">',
+      '<div class="composer-input"><textarea></textarea></div>',
+      '<button aria-label="Stop answering"></button>',
+      '</form>'
+    ].join("");
+    const state = await readAssistantGenerationState({
+      evaluate: async () => { throw new Error("probe rejected"); },
+      content: async () => html
+    });
+
+    expect(state).toMatchObject({ observed: true, active: true, stopped: false });
+    expect(state.signals).toContain("stop answering");
+  });
+
+  it("shares one native timeout budget across generation-state fallbacks", async () => {
+    vi.useFakeTimers();
+    try {
+      let evaluateTimeoutMs: number | undefined;
+      let contentTimeoutMs: number | undefined;
+      const resultPromise = readAssistantGenerationState({
+        evaluate: async <T, A = unknown>(
+          _fn: (arg: A) => T | Promise<T>,
+          _arg?: A,
+          options?: BrowserOperationOptions
+        ): Promise<T> => {
+          evaluateTimeoutMs = options?.timeoutMs;
+          await new Promise<void>((_resolve, reject) => setTimeout(
+            () => reject(new Error("evaluate timed out")),
+            12
+          ));
+          throw new Error("unreachable");
+        },
+        content: async options => {
+          contentTimeoutMs = options?.timeoutMs;
+          throw new Error("content unavailable");
+        }
+      }, { timeoutMs: 20 });
+
+      await vi.advanceTimersByTimeAsync(12);
+      const result = await resultPromise;
+
+      expect(result).toEqual(EMPTY_GENERATION_STATE);
+      expect(evaluateTimeoutMs).toBe(20);
+      expect(contentTimeoutMs).toBeGreaterThan(0);
+      expect(contentTimeoutMs).toBeLessThan(evaluateTimeoutMs!);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a stalled generation-state probe with the single stop deadline", async () => {
+    const startedAt = Date.now();
+    let nativeTimeoutMs: number | undefined;
+    const result = await stopGeneration({
+      page: {
+        url: () => "https://chatgpt.com/c/test",
+        content: async (options?: BrowserOperationOptions) => {
+          nativeTimeoutMs = options?.timeoutMs;
+          return new Promise<string>((_resolve, reject) => setTimeout(
+            () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms reading page content.`)),
+            options?.timeoutMs ?? 0
+          ));
+        }
+      }
+    }, { confirmStop: true, timeoutMs: 250 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "timeout",
+      blocker: { code: "stop_generation_deadline_exhausted" }
+    });
+    expect(nativeTimeoutMs).toBeGreaterThan(0);
+    expect(nativeTimeoutMs).toBeLessThanOrEqual(250);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  it("never clicks after an explicit sub-250ms stop deadline expires", async () => {
+    let clicks = 0;
+    const candidate: LocatorLike = {
+      count: async () => 1,
+      isVisible: async () => true,
+      evaluate: async <T>(): Promise<T> => true as T,
+      click: async () => { clicks += 1; }
+    };
+    const startedAt = Date.now();
+    const result = await stopGeneration({
+      page: {
+        url: () => "https://chatgpt.com/c/test",
+        content: async options => new Promise<string>((_resolve, reject) => setTimeout(
+          () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms reading page content.`)),
+          options?.timeoutMs ?? 0
+        )),
+        getByRole: () => candidate
+      }
+    }, { confirmStop: true, timeoutMs: 10 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "timeout",
+      blocker: { code: "stop_generation_deadline_exhausted" }
+    });
+    expect(clicks).toBe(0);
+    expect(Date.now() - startedAt).toBeLessThan(50);
+  });
+
+  it("times out when generation remains active after one confirmed click", async () => {
+    let clicks = 0;
+    let browserWaitCalls = 0;
+    const candidate: LocatorLike = {
+      count: async () => 1,
+      isVisible: async () => true,
+      evaluate: async <T>(): Promise<T> => true as T,
+      click: async () => { clicks += 1; }
+    };
+    const result = await stopGeneration({
+      page: {
+        url: () => "https://chatgpt.com/c/test",
+        content: async () => '<form><textarea></textarea><button aria-label="Stop answering"></button></form>',
+        getByRole: () => candidate,
+        waitForTimeout: async () => { browserWaitCalls += 1; }
+      }
+    }, { confirmStop: true, timeoutMs: 250 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "timeout",
+      data: { wasGenerating: true, stopped: false },
+      blocker: { code: "stop_generation_unverified" }
+    });
+    expect(clicks).toBe(1);
+    expect(browserWaitCalls).toBe(0);
+  });
+
+  it("cancels a timed-out in-flight Stop click before it can mutate later", async () => {
+    vi.useFakeTimers();
+    try {
+      let clicks = 0;
+      let nativeTimeoutMs: number | undefined;
+      let markClickStarted: (() => void) | undefined;
+      const clickStarted = new Promise<void>(resolve => { markClickStarted = resolve; });
+      const candidate: LocatorLike = {
+        count: async () => 1,
+        isVisible: async () => true,
+        evaluate: async <T>(): Promise<T> => true as T,
+        click: async options => {
+          markClickStarted?.();
+          nativeTimeoutMs = options?.timeoutMs;
+          await new Promise<void>((_resolve, reject) => setTimeout(
+            () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms clicking Stop.`)),
+            options?.timeoutMs ?? 0
+          ));
+        }
+      };
+      const resultPromise = stopGeneration({
+        page: {
+          url: () => "https://chatgpt.com/c/test",
+          content: async () => '<form><textarea></textarea><button aria-label="Stop answering"></button></form>',
+          getByRole: () => candidate
+        }
+      }, { confirmStop: true, timeoutMs: 10 });
+
+      await clickStarted;
+      await vi.advanceTimersByTimeAsync(10);
+      const result = await resultPromise;
+
+      expect(result).toMatchObject({
+        ok: false,
+        status: "timeout",
+        data: { wasGenerating: true, stopped: false },
+        blocker: { code: "stop_generation_unverified", resumable: false }
+      });
+      expect(clicks).toBe(0);
+      expect(nativeTimeoutMs).toBeGreaterThan(0);
+      expect(nativeTimeoutMs).toBeLessThanOrEqual(10);
+
+      await vi.advanceTimersByTimeAsync(40);
+      expect(clicks).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not treat the empty generation-state fallback as completion evidence", () => {
     expect(isResponseComplete({
       latestText: "",
@@ -41,7 +467,9 @@ describe("extractMessagesFromHtml", () => {
     const label = "Controle QA localise";
     localeLabels.stopControl.push(label);
     try {
-      const state = await readAssistantGenerationState(contentPage(`<button aria-label="${label}"></button>`));
+      const state = await readAssistantGenerationState(contentPage(
+        `<form><textarea></textarea><button aria-label="${label}"></button></form>`
+      ));
 
       expect(state).toMatchObject({
         active: true,
@@ -56,7 +484,9 @@ describe("extractMessagesFromHtml", () => {
   it("detects localized stopped generation labels from the locale registry", async () => {
     localeLabels.stoppedAssistant.push("Réflexion arrêtée");
     try {
-      const state = await readAssistantGenerationState(contentPage("<main>Réflexion arrêtée</main>"));
+      const state = await readAssistantGenerationState(contentPage(
+        '<main><div data-message-author-role="assistant"><span role="status">Réflexion arrêtée</span></div></main>'
+      ));
 
       expect(state).toMatchObject({
         active: false,
@@ -970,9 +1400,10 @@ describe("extractMessagesFromHtml", () => {
       "<main>",
       "<div data-testid=\"conversation-turn-1\">",
       "<div data-message-author-role=\"assistant\"><p>Partial preamble.</p></div>",
-      "<button aria-label=\"Stop answering\"></button>",
       "<button aria-label=\"Copy response\"></button>",
       "</div>",
+      "<form data-testid=\"composer\"><textarea></textarea>",
+      "<button aria-label=\"Stop answering\"></button></form>",
       "</main>"
     ].join("");
 
@@ -1163,7 +1594,7 @@ function scriptedWaitPage(snapshots: WaitSnapshot[]): PageLike {
           assistantTurnCount: snapshot.assistantCount,
           latestAssistantTurnIndex: snapshot.latestAssistantTurnIndex ?? snapshot.totalCount,
           text: waitTextMetadata(snapshot.latestAssistantText),
-          generation: { active, stopped, signals },
+          generation: { observed: true, active, stopped, signals },
           hasResponseActions: snapshot.latestTurnHasResponseActions ?? snapshot.hasResponseActions
         } as T;
       }
@@ -1197,7 +1628,7 @@ function scriptedWaitPage(snapshots: WaitSnapshot[]): PageLike {
           snapshot.stopButtonAria,
           snapshot.stoppedText
         ].filter((value): value is string => value !== undefined);
-        return { active, stopped, signals } as T;
+        return { observed: true, active, stopped, signals } as T;
       }
       if (source.includes("node?.innerText")) {
         if (snapshot.failTextFetch === true) {

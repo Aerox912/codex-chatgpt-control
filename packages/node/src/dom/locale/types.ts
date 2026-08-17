@@ -25,7 +25,7 @@ export type ExperienceOptionId = "chat" | "work";
 export type ExperienceOptionLabels = Record<ExperienceOptionId, string | readonly string[]>;
 export type ExperienceOptionContribution = Partial<ExperienceOptionLabels>;
 
-export type ConfigurationAxisLabelId = "model" | "intelligence" | "effort" | "speed" | "advanced";
+export type ConfigurationAxisLabelId = "power" | "model" | "intelligence" | "effort" | "speed" | "advanced";
 export type ConfigurationAxisLabels = Record<ConfigurationAxisLabelId, string | readonly string[]>;
 export type ConfigurationAxisContribution = Partial<ConfigurationAxisLabels>;
 

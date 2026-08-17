@@ -6,19 +6,23 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const is = {
   configurationAxes: {
+    power: ["Afl"],
     model: ["Líkan"],
-    effort: ["Áreynsla"],
+    effort: ["Áreynsla", "Vinnsla"],
     speed: ["Hraði"],
+    advanced: ["Ítarlegt"],
   },
   configurationOptions: {
+    instant: ["Strax"],
     light: ["Létt"],
     medium: ["Miðlungs"],
     high: ["Hátt"],
     extraHigh: ["Mjög hátt"],
+    max: ["Hámark"],
     fast: ["Hratt"],
   },
   composerTextbox: ["Spjallaðu við ChatGPT"],
@@ -38,6 +42,10 @@ export const is = {
     extraHigh: ["Mjög hátt"],
   },
   modeOpenerExtra: ["Stillir…"],
+  experienceOptions: {
+    chat: ["Spjall"],
+    work: ["Vinna"],
+  },
   tools: {
     web_search: ["Vefleit"],
     deep_research: ["Ítarleg rannsókn"],

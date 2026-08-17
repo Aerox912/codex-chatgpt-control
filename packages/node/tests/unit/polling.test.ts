@@ -6,7 +6,7 @@ describe("isResponseComplete", () => {
     expect(isResponseComplete({
       textStableForMs: 2200,
       stableMs: 2000,
-      generation: { active: false, stopped: false, signals: [] },
+      generation: { observed: true, active: false, stopped: false, signals: [] },
       hasResponseActions: true,
       latestText: "hi"
     })).toBe(true);
@@ -16,7 +16,7 @@ describe("isResponseComplete", () => {
     expect(isResponseComplete({
       textStableForMs: 5000,
       stableMs: 2000,
-      generation: { active: true, stopped: false, signals: ["stop answering"] },
+      generation: { observed: true, active: true, stopped: false, signals: ["stop answering"] },
       hasResponseActions: false,
       latestText: "hi"
     })).toBe(false);
@@ -26,7 +26,7 @@ describe("isResponseComplete", () => {
     expect(isResponseComplete({
       textStableForMs: 5000,
       stableMs: 2000,
-      generation: { active: false, stopped: true, signals: ["stopped thinking"] },
+      generation: { observed: true, active: false, stopped: true, signals: ["stopped thinking"] },
       hasResponseActions: true,
       latestText: "hi"
     })).toBe(false);
@@ -36,7 +36,7 @@ describe("isResponseComplete", () => {
     expect(isResponseComplete({
       textStableForMs: 500,
       stableMs: 2000,
-      generation: { active: false, stopped: false, signals: [] },
+      generation: { observed: true, active: false, stopped: false, signals: [] },
       hasResponseActions: true,
       latestText: "hi"
     })).toBe(false);
@@ -46,7 +46,7 @@ describe("isResponseComplete", () => {
     expect(isResponseComplete({
       textStableForMs: 5000,
       stableMs: 2000,
-      generation: { active: false, stopped: false, signals: [] },
+      generation: { observed: true, active: false, stopped: false, signals: [] },
       hasResponseActions: true,
       latestText: "Thinking"
     })).toBe(false);

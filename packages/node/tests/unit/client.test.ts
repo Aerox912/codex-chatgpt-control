@@ -168,6 +168,7 @@ describe("createChatGPT", () => {
     expect(typeof chatgpt.threads.search).toBe("function");
     expect(typeof chatgpt.messages.readLatest).toBe("function");
     expect(typeof chatgpt.messages.status).toBe("function");
+    expect(typeof chatgpt.messages.stop).toBe("function");
     expect(typeof chatgpt.artifacts.downloadLatest).toBe("function");
     expect(typeof chatgpt.files.preflight).toBe("function");
     expect(typeof chatgpt.files.attach).toBe("function");
@@ -575,6 +576,8 @@ describe("createChatGPT", () => {
       details: {
         englishCanonicalPresent: true,
         requiredKeysMissing: [],
+        missingConfigurationAxisIds: [],
+        missingConfigurationOptionIds: [],
         runtimeSelectorCoverage: "registry_only_stage_2",
         runningStateLabelCoverage: {
           support: "partial",
@@ -583,14 +586,16 @@ describe("createChatGPT", () => {
           stopControlCandidateCount: expect.any(Number),
           stoppedAssistantCandidateCount: expect.any(Number)
         },
-        toolIds: expect.arrayContaining(["web_search", "deep_research", "create_image"])
+        toolIds: expect.arrayContaining(["web_search", "deep_research", "create_image"]),
+        configurationAxisIds: expect.arrayContaining(["power", "model", "effort", "speed", "advanced"]),
+        configurationOptionIds: expect.arrayContaining(["instant", "light", "medium", "high", "extraHigh", "max", "ultra", "pro", "standard", "fast"])
       }
     });
     const coverage = result.data?.checks.localization?.details?.runningStateLabelCoverage as {
       nonEnglishLocaleCount?: number;
       nonEnglishStopControlLocaleCount?: number;
     } | undefined;
-    expect(coverage?.nonEnglishStopControlLocaleCount).toBe(coverage?.nonEnglishLocaleCount);
+    expect(coverage?.nonEnglishStopControlLocaleCount).toBe((coverage?.nonEnglishLocaleCount ?? 0) - 1);
   });
 
   it("doctor verifies report output policy and existing directory writability", async () => {

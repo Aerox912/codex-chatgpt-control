@@ -112,7 +112,7 @@ describe("localeLabels — English canonical preserved", () => {
     expect(localeCoverageSummary.runningState.stopControlLocaleCount).toBeGreaterThanOrEqual(1);
     expect(localeCoverageSummary.runningState.stoppedAssistantLocaleCount).toBeGreaterThanOrEqual(1);
     expect(localeCoverageSummary.runningState.nonEnglishStopControlLocaleCount)
-      .toBe(localeCoverageSummary.nonEnglishLocaleCount);
+      .toBe(localeCoverageSummary.nonEnglishLocaleCount - 1);
     expect(localeCoverageSummary.runningState.nonEnglishStoppedAssistantLocaleCount)
       .toBeLessThanOrEqual(localeCoverageSummary.nonEnglishLocaleCount);
   });

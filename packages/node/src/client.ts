@@ -23,6 +23,8 @@ import type {
   InspectConfigurationArgs,
   ListArtifactsArgs,
   MessageStatusArgs,
+  StopGenerationArgs,
+  StopGenerationData,
   NewThreadArgs,
   OpenThreadArgs,
   OpenExperienceData,
@@ -58,7 +60,7 @@ import { attachFiles, downloadLatestFile, preflightFiles } from "./commands/file
 import { addProjectSources, buildProjectSourceAddPlan, listProjectSources } from "./commands/project-sources.js";
 import { workspaceProjectTarget } from "./commands/projects.js";
 import { doctor, type DoctorArgs, type DoctorReport } from "./commands/doctor.js";
-import { askMessage, composeMessage, messageStatus, readLatest, submitMessage, waitAndRead, waitForMessage } from "./commands/messages.js";
+import { askMessage, composeMessage, messageStatus, readLatest, stopGeneration, submitMessage, waitAndRead, waitForMessage } from "./commands/messages.js";
 import { getMode, selectTool, setMode } from "./commands/modes.js";
 import { applyConfiguration, inspectConfiguration } from "./commands/configuration.js";
 import { detectExperience, openExperience } from "./commands/experience.js";
@@ -250,6 +252,7 @@ export type ChatGPTClient = {
     wait(args?: WaitArgs): Promise<CommandResult<unknown>>;
     readLatest(args?: ReadLatestArgs): Promise<CommandResult<unknown>>;
     status(args?: MessageStatusArgs): Promise<CommandResult<unknown>>;
+    stop(args: StopGenerationArgs): Promise<CommandResult<StopGenerationData>>;
     waitAndRead(args?: WaitArgs & ReadLatestArgs): Promise<CommandResult<unknown>>;
   };
   files: {
@@ -353,6 +356,7 @@ export function createChatGPT(options: ChatGPTClientOptions = {}): ChatGPTClient
       wait: args => waitForMessage(env, args),
       readLatest: args => readLatest(env, args),
       status: args => messageStatus(env, args),
+      stop: args => stopGeneration(env, args),
       waitAndRead: args => waitAndRead(env, args)
     },
     files: {

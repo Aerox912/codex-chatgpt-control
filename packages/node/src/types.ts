@@ -607,6 +607,19 @@ export type DownloadLatestArgs = {
   timeoutMs?: number;
 };
 
+export type StopGenerationArgs = {
+  /** Required acknowledgement because stopping changes the visible Chat turn. */
+  confirmStop?: boolean;
+  timeoutMs?: number;
+};
+
+export type StopGenerationData = {
+  wasGenerating: boolean;
+  stopped: boolean;
+  signalsBefore: string[];
+  signalsAfter: string[];
+};
+
 export type DownloadedFile = {
   path: string;
   suggestedFilename?: string;
@@ -943,6 +956,7 @@ export type SequenceStep =
   | { id: string; command: "messages.wait"; args: WaitArgs }
   | { id: string; command: "messages.readLatest"; args?: ReadLatestArgs }
   | { id: string; command: "messages.status"; args?: MessageStatusArgs }
+  | { id: string; command: "messages.stop"; args: StopGenerationArgs }
   | { id: string; command: "messages.waitAndRead"; args: WaitAndReadArgs }
   | { id: string; command: "artifacts.listLatest"; args?: ListArtifactsArgs }
   | { id: string; command: "artifacts.wait"; args?: ArtifactWaitArgs }
@@ -1013,30 +1027,40 @@ export type BrowserUserTabInfo = {
   url?: string;
 };
 
+export type BrowserOperationOptions = {
+  timeoutMs?: number;
+};
+
 export type LocatorLike = {
-  click?: (options?: unknown) => Promise<void>;
+  click?: (options?: BrowserOperationOptions & Record<string, unknown>) => Promise<void>;
+  press?: (key: string, options?: unknown) => Promise<void>;
   fill?: (value: string, options?: unknown) => Promise<void>;
   textContent?: (options?: unknown) => Promise<string | null>;
   innerText?: (options?: unknown) => Promise<string>;
   innerHTML?: (options?: unknown) => Promise<string>;
   getAttribute?: (name: string, options?: unknown) => Promise<string | null>;
   count?: () => Promise<number>;
+  allTextContents?: (options?: BrowserOperationOptions) => Promise<string[]>;
   nth?: (index: number) => LocatorLike;
   first?: () => LocatorLike;
   last?: () => LocatorLike;
   isVisible?: (options?: unknown) => Promise<boolean>;
-  evaluate?: <T>(fn: (element: Element) => T) => Promise<T>;
+  evaluate?: <T>(
+    fn: (element: Element) => T,
+    arg?: unknown,
+    options?: BrowserOperationOptions
+  ) => Promise<T>;
   locator?: (selector: string) => LocatorLike;
   filter?: (options: Record<string, unknown>) => LocatorLike;
   getByRole?: (role: string, options?: Record<string, unknown>) => LocatorLike;
   getByText?: (text: string | RegExp, options?: Record<string, unknown>) => LocatorLike;
-  press?: (key: string, options?: unknown) => Promise<void>;
-  setInputFiles?: (paths: string[]) => Promise<void>;
+  setInputFiles?: (paths: string[], options?: BrowserOperationOptions) => Promise<void>;
 };
 
 export type FileChooserLike = {
+  element?: () => LocatorLike | Promise<LocatorLike>;
   isMultiple?: () => boolean | Promise<boolean>;
-  setFiles: (paths: string[]) => Promise<void>;
+  setFiles: (paths: string[], options?: BrowserOperationOptions) => Promise<void>;
 };
 
 export type WaitForEventOptions = {
@@ -1068,8 +1092,12 @@ export type PageLike = {
   };
   waitForTimeout?: (ms: number) => Promise<void>;
   waitForEvent?: (event: string, optionsOrCallback?: WaitForEventOptions | unknown) => Promise<unknown>;
-  evaluate?: <T, A = unknown>(fn: (arg: A) => T | Promise<T>, arg?: A) => Promise<T>;
-  content?: () => Promise<string>;
+  evaluate?: <T, A = unknown>(
+    fn: (arg: A) => T | Promise<T>,
+    arg?: A,
+    options?: BrowserOperationOptions
+  ) => Promise<T>;
+  content?: (options?: BrowserOperationOptions) => Promise<string>;
   close?: () => Promise<void>;
   capabilities?: {
     get?: (id: string) => Promise<unknown> | unknown;

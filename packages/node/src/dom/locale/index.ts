@@ -157,6 +157,7 @@ const MODE_OPTION_IDS: ModeOptionId[] = [
 ];
 const EXPERIENCE_OPTION_IDS: ExperienceOptionId[] = ["chat", "work"];
 const CONFIGURATION_AXIS_IDS: ConfigurationAxisLabelId[] = [
+  "power",
   "model",
   "intelligence",
   "effort",

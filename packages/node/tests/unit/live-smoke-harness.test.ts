@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { filterScenarios, requiredFailures, writeReport } from "../../src/scripts/live-smoke/harness.js";
-import { generatedFileAskCanProceed, optionalScenarios, requiredScenarios } from "../../src/scripts/live-smoke/scenarios.js";
+import {
+  chatActiveSelection,
+  generatedFileAskCanProceed,
+  optionalScenarios,
+  requiredScenarios
+} from "../../src/scripts/live-smoke/scenarios.js";
+import type { ConfigurationInspectionData } from "../../src/types.js";
 import type { LiveSmokeScenario } from "../../src/scripts/live-smoke/types.js";
 import type { LiveSmokeScenarioResult } from "../../src/scripts/live-smoke/types.js";
 
@@ -58,6 +64,20 @@ describe("live smoke harness", () => {
 
     expect(expansion?.required).toBe(true);
     expect(expansion?.enabled({ agent: {}, reportDir: "/tmp/reports", env: {} })).toBe(true);
+  });
+
+  it("accepts the current simplified Chat effort axis for release verification", () => {
+    const inspection = {
+      experience: "chat",
+      selectorProfile: "chat_simplified_v1",
+      availableAxes: ["effort"],
+      active: { effort: "High" },
+      options: {},
+      verified: true,
+      evidence: []
+    } as ConfigurationInspectionData;
+
+    expect(chatActiveSelection(inspection)).toEqual({ effort: "High" });
   });
 
   it("keeps configuration mutation opt-in and restoration-oriented", () => {

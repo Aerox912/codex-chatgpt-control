@@ -7,14 +7,17 @@ import type { LocaleContribution } from "./types.js";
  * Uses distinctly Québécois vocabulary: "clavardage" for chat, "requête" for prompt.
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const frCA = {
   configurationAxes: {
+    power: ["Puissance"],
     model: ["Modèle"],
     speed: ["Vitesse"],
+    advanced: ["Avancé"],
   },
   configurationOptions: {
+    instant: ["Instantané"],
     light: ["Léger"],
     medium: ["Moyen"],
     high: ["Élevé"],

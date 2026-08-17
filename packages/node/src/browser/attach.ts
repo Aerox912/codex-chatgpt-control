@@ -1,9 +1,8 @@
 import { BrowserBridgeUnavailableError, ChatGPTControlError, LoginRequiredError } from "../errors.js";
 import type { BootstrapArgs, BrowserLike, BrowserUserTabInfo, ExistingTabDiagnostics, ExistingTabPolicy, ExistingTabTarget, PageLike, RuntimeEnv } from "../types.js";
+import { CHATGPT_HOME, isChatGPTUrl } from "./chatgpt-url.js";
 import { parseConversationId, readPageState } from "./page-state.js";
 
-const CHATGPT_HOME = "https://chatgpt.com/";
-const CHATGPT_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com"]);
 const MAX_EXISTING_TAB_DIAGNOSTIC_CANDIDATES = 10;
 const MAX_EXISTING_TAB_DIAGNOSTIC_FIELD_LENGTH = 240;
 
@@ -31,7 +30,9 @@ export async function attachChatGPTBrowser(
   const selection = await getBrowser(env);
   const browser = selection.browser;
   const page = await getOrCreateChatGPTPage(browser, env, args);
+  await assertPageOnChatGPTOrigin(page);
   const state = await readPageState(page);
+  if (!isChatGPTUrl(state.url)) throw unsafeChatGPTOriginError();
 
   if (state.blocker?.kind === "login_required") {
     throw new LoginRequiredError(state.blocker.visibleText);
@@ -165,6 +166,7 @@ async function getOrCreateChatGPTPage(
   args: BootstrapArgs
 ): Promise<PageLike> {
   const targetUrl = args.url ?? CHATGPT_HOME;
+  assertSafeChatGPTNavigation(targetUrl);
   const explicitExistingPolicy = normalizeExplicitExistingTabPolicy(args);
 
   if (env.page !== undefined) {
@@ -238,7 +240,7 @@ function normalizeExplicitExistingTabPolicy(args: BootstrapArgs): ExistingTabPol
   if (args.existingTab === true) {
     return {
       target: { type: "selected", host: "chatgpt" },
-      ifMissing: "create",
+      ifMissing: "block",
       ifMultiple: "first",
       requireChatGPT: true
     };
@@ -277,6 +279,24 @@ async function selectExistingTab(browser: BrowserLike, policy: ExistingTabPolicy
       if (await pageMatchesExistingTarget(normalized, policy)) {
         return { page: normalized };
       }
+    }
+  }
+
+  if (typeof browser.tabs?.list === "function") {
+    const controlled = await Promise.resolve(browser.tabs.list.call(browser.tabs)).catch(() => []);
+    const matches: PageLike[] = [];
+    for (const candidate of controlled) {
+      const page = await hydrateTab(browser, candidate);
+      if (await pageMatchesExistingTarget(page, policy)) matches.push(page);
+    }
+    if (matches.length === 1 || (matches.length > 1 && (policy.ifMultiple ?? "block") === "first")) {
+      return { page: matches[0]! };
+    }
+    if (matches.length > 1) {
+      throw new ExistingTabSelectionError(
+        "Multiple already-controlled ChatGPT tabs matched the requested existing-tab target.",
+        "existing_tab_ambiguous"
+      );
     }
   }
 
@@ -320,6 +340,7 @@ async function selectExistingUserTab(
 
   const selected = matches[0]!;
   const page = normalizePage(await claimTab.call(browser.user, selected));
+  await assertPageOnChatGPTOrigin(page);
   return diagnostics === undefined ? { page } : { page, diagnostics };
 }
 
@@ -459,15 +480,10 @@ async function pageMatchesExistingTarget(page: PageLike, policy: ExistingTabPoli
 }
 
 async function findExistingChatGPTTab(browser: BrowserLike): Promise<PageLike | undefined> {
-  const userTab = await selectExistingUserTab(browser, {
-    target: { type: "selected", host: "chatgpt" },
-    ifMultiple: "first",
-    requireChatGPT: true
-  }, false).catch(() => ({ page: undefined }));
-  if (userTab.page !== undefined) {
-    return userTab.page;
-  }
-
+  // Reuse a tab already controlled by this browser session before attempting
+  // to claim an external user tab. Claiming a tab that is still associated
+  // with an interrupted host call can otherwise wait on a stale control lock
+  // until the next bounded browser call is killed.
   const selected = browser.tabs?.selected;
   if (typeof selected === "function") {
     try {
@@ -475,7 +491,7 @@ async function findExistingChatGPTTab(browser: BrowserLike): Promise<PageLike | 
       if (current !== undefined) {
         const normalized = normalizePage(current);
         try {
-          if ((await normalized.url?.())?.includes("chatgpt.com") === true) {
+          if (isChatGPTUrl(await normalized.url?.())) {
             return normalized;
           }
         } catch {
@@ -488,20 +504,33 @@ async function findExistingChatGPTTab(browser: BrowserLike): Promise<PageLike | 
   }
 
   const list = browser.tabs?.list;
-  if (typeof list !== "function") {
-    return undefined;
+  if (typeof list === "function") {
+    const tabs = await list.call(browser.tabs);
+    const normalized = await Promise.all(tabs.map(tab => hydrateTab(browser, tab)));
+    for (const tab of normalized) {
+      try {
+        if (isChatGPTUrl(await tab.url?.())) {
+          return tab;
+        }
+      } catch {
+        // Keep looking.
+      }
+    }
   }
 
-  const tabs = await list.call(browser.tabs);
-  const normalized = await Promise.all(tabs.map(tab => hydrateTab(browser, tab)));
-  for (const tab of normalized) {
-    try {
-      if ((await tab.url?.())?.includes("chatgpt.com") === true) {
-        return tab;
-      }
-    } catch {
-      // Keep looking.
+  const userTab = await selectExistingUserTab(browser, {
+    target: { type: "selected", host: "chatgpt" },
+    ifMultiple: "first",
+    requireChatGPT: true
+  }, false).catch(error => {
+    if (error instanceof ChatGPTControlError
+      && error.blockerDetails.code === "unsafe_chatgpt_origin") {
+      throw error;
     }
+    return { page: undefined };
+  });
+  if (userTab.page !== undefined) {
+    return userTab.page;
   }
   return undefined;
 }
@@ -548,16 +577,7 @@ function targetRequiresChatGPT(target: ExistingTabTarget): boolean {
   }
 }
 
-function isChatGPTUrl(url: string | undefined): boolean {
-  if (url === undefined) {
-    return false;
-  }
-  try {
-    return CHATGPT_HOSTS.has(new URL(url).hostname);
-  } catch {
-    return false;
-  }
-}
+export { isChatGPTUrl } from "./chatgpt-url.js";
 
 function urlMatches(actual: string | undefined, expected: string): boolean {
   if (actual === undefined) {
@@ -616,6 +636,7 @@ function userTabCandidateLabel(tab: BrowserUserTabInfo): string {
 }
 
 async function createTab(browser: BrowserLike, url: string): Promise<PageLike | undefined> {
+  assertSafeChatGPTNavigation(url);
   if (typeof browser.tabs?.create === "function") {
     const tab = await browser.tabs.create(url);
     const page = await hydrateTab(browser, tab);
@@ -635,20 +656,46 @@ async function createTab(browser: BrowserLike, url: string): Promise<PageLike | 
     if (typeof page.goto === "function") {
       await page.goto(url);
     }
+    await assertPageOnChatGPTOrigin(page);
     return page;
   }
 
   return undefined;
 }
 
+function assertSafeChatGPTNavigation(url: string): void {
+  if (isChatGPTUrl(url)) return;
+  throw unsafeChatGPTOriginError(
+    "ChatGPT navigation requires HTTPS on an allowlisted ChatGPT origin with the default port.",
+  );
+}
+
 async function ensurePageAt(page: PageLike, url: string): Promise<void> {
   const currentUrl = await Promise.resolve(page.url?.()).catch(() => "");
-  if (currentUrl?.includes("chatgpt.com") === true) {
+  if (isChatGPTUrl(currentUrl)) {
     return;
   }
   if (typeof page.goto === "function") {
     await page.goto(url);
   }
+  await assertPageOnChatGPTOrigin(page);
+}
+
+async function assertPageOnChatGPTOrigin(page: PageLike): Promise<void> {
+  const actualUrl = await Promise.resolve(page.url?.()).catch(() => undefined);
+  if (!isChatGPTUrl(actualUrl)) throw unsafeChatGPTOriginError();
+}
+
+function unsafeChatGPTOriginError(
+  message = "The browser did not remain on a supported ChatGPT origin after navigation or attachment."
+): ChatGPTControlError {
+  return new ChatGPTControlError(
+    message,
+    "selector_drift",
+    false,
+    undefined,
+    { code: "unsafe_chatgpt_origin" }
+  );
 }
 
 function normalizeBrowser(browser: unknown): BrowserLike | undefined {

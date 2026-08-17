@@ -6,18 +6,22 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const tr = {
   configurationAxes: {
-    effort: ["Düzey"],
+    power: ["Güç"],
+    effort: ["Düzey", "Çaba"],
     speed: ["Hız"],
+    advanced: ["Gelişmiş"],
   },
   configurationOptions: {
+    instant: ["Hızlı"],
     light: ["Sınırlı"],
     medium: ["Orta"],
     high: ["Yüksek"],
     extraHigh: ["Çok Yüksek"],
+    max: ["Maks"],
     standard: ["Standart"],
     fast: ["Hızlı"],
   },
@@ -38,6 +42,10 @@ export const tr = {
     extraHigh: ["Çok Yüksek"],
   },
   modeOpenerExtra: ["Yapılandır..."],
+  experienceOptions: {
+    chat: ["Sohbet"],
+    work: ["Çalışma"],
+  },
   tools: {
     web_search: ["Web araması"],
     deep_research: ["Derin araştırma"],

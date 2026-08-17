@@ -6,6 +6,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { npmInvocation } from "./lib/npm-command.mjs";
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PRIVATE_PACKAGE_REL = path.join("work", "chatgpt-" + "browser-control");
 const PRIVATE_BUNDLE_PREFIX = "chatgpt-" + "browser-control";
@@ -93,17 +95,6 @@ async function copySanitizedRuntime(src, dest) {
   await writeFile(dest, sanitizeRuntime(text), "utf8");
 }
 
-function runNpmScript(packageDir, script) {
-  if (process.platform === "win32") {
-    execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "npm.cmd", "run", script], {
-      cwd: packageDir,
-      stdio: "inherit"
-    });
-    return;
-  }
-  execFileSync("npm", ["run", script], { cwd: packageDir, stdio: "inherit" });
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const root = detectRoot(args.root);
@@ -112,7 +103,8 @@ async function main() {
 
   if (!args.skipBuild) {
     for (const script of ["build", "bundle", "bundle:backend", "bundle:live-smoke", "bundle:release-canary"]) {
-      runNpmScript(packageDir, script);
+      const npm = npmInvocation(["run", script]);
+      execFileSync(npm.program, npm.args, { cwd: packageDir, stdio: "inherit" });
     }
   }
 

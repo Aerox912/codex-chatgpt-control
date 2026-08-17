@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.1-alpha.2
+
+- Adds confirmation-gated, fail-closed `messages.stop` lifecycle control with
+  scoped DOM evidence and a single bounded deadline.
+- Hardens uploads, explicit tab reuse, origin checks, localized selectors,
+  blocker/mode visibility, and fixture generation against the validated PR
+  review findings.
+- Qualifies effort-only simplified Chat profiles and waits for delayed scoped
+  artifact previews before selecting their exact Download control.
+- Adds behavioral stop contracts, expanded regression coverage, rebuilt plugin
+  runtimes, portable release helpers, and patched transitive dependency locks.
+
 ## 0.5.1-alpha.1
 
 - Fixes current Chat/Work switching through the visible surface-radio group and

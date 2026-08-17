@@ -891,7 +891,7 @@ function mainScopedWorkConfigurationPage(
     title: async () => "ChatGPT",
     getByRole: (role, options = {}) => {
       if (role === "button" && options.name === "5.5 Light") return opener;
-      if (role === "menuitem" && options.name === "Advanced") return advanced;
+      if (role === "menuitem" && options.name === "Show compact options") return advanced;
       return missing;
     },
     evaluate: async <T, A = unknown>(
@@ -941,7 +941,11 @@ function mainScopedWorkConfigurationPage(
               { label: "Effort Light", role: "menuitem" },
               { label: "Speed Standard", role: "menuitem" }
             ]
-            : [{ label: "Advanced", role: "menuitem" }]
+            : [{
+                label: "Advanced",
+                role: "menuitem",
+                ariaLabel: "Show compact options"
+              }]
           : [];
         return { items, labels: [], split: false } as T;
       }

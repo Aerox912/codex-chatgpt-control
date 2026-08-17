@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveVariableReference, runSequenceWithExecutor } from "../../src/commands/sequence.js";
+import { executeStep, resolveVariableReference, runSequenceWithExecutor } from "../../src/commands/sequence.js";
 import type { CommandResult } from "../../src/types.js";
 
 describe("runSequence", () => {
@@ -80,5 +80,19 @@ describe("runSequence", () => {
 
   it("rejects unsafe variable paths", () => {
     expect(() => resolveVariableReference("${input.__proto__.polluted}", new Map(), {})).toThrow("Unsafe");
+  });
+
+  it("routes messages.stop through the confirmation-gated sequence primitive", async () => {
+    const result = await executeStep(
+      { id: "stop", command: "messages.stop", args: {} },
+      {},
+      new Map()
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "needs_confirmation",
+      blocker: { code: "stop_generation_confirmation_required" }
+    });
   });
 });

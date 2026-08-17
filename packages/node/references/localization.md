@@ -71,7 +71,7 @@ Localized — lives in `src/dom/locale/en.ts` (English) and per-locale files, sa
 | `workComposerTextbox` | Work composer textbox | `aria-label` / placeholder |
 | `newWork` | start-another-Work-task control | visible button or link text |
 | `experienceOptions.chat` / `.work` | Chat/Work switch controls | visible button, tab, link, or menu text |
-| `configurationAxes.*` | model/intelligence/effort/speed/advanced rows | visible row text |
+| `configurationAxes.*` | power/model/intelligence/effort/speed/advanced controls | visible or accessible text |
 | `configurationOptions.*` | Chat and Work configuration values | visible menu text |
 | `sendButton` | send button | `aria-label` |
 | `searchChatsButton` | search-chats button | `aria-label` |
@@ -106,11 +106,11 @@ Localized — lives in `src/dom/locale/en.ts` (English) and per-locale files, sa
 The type definitions for `LocaleStrings` (complete) and `LocaleContribution` (partial, for
 non-English files) live in [`src/dom/locale/types.ts`](../src/dom/locale/types.ts).
 
-The first Chat/Work profile fixtures are English evidence. The nested locale
-combiner lets existing locale files omit the new groups without breaking
-compilation, but that is not proof that Work configuration is localized in
-those languages. Add observed labels and a sanitized surface-profile fixture
-before claiming support for a new locale/profile combination.
+English plus all 64 advertised non-English Settings languages were recaptured
+against the current Chat and Work Power/Advanced selector graph on 2026-08-08.
+That proves the reviewed labels for the observed account and rollout, not every
+plan, region, workspace, or staged experiment. Keep capability discovery and
+fail-closed shape checks even when a locale is present in the registry.
 
 Create a read-only draft from an already-open authorized ChatGPT tab:
 
@@ -204,11 +204,13 @@ Leave the canonical English first (it comes from `en.ts`), and leave the API key
 (`web_search`, `modeOptions.pro`, `modeOptions.high`, and the other semantic ids)
 unchanged.
 
-Newer ChatGPT rollouts may expose `Medium`, `High`, `Extra High`, and `Pro`
-under an `Intelligence` picker. Add localized equivalents only after observing
-those exact labels in the target locale. Put broad picker/opening labels in
-`modeLabels`, but put selectable labels under `modeOptions.<semantic-id>` so
-short labels such as `Pro` cannot match unrelated rows like `Move to project`.
+Current ChatGPT rollouts may expose a basic Power control and nested Advanced
+Model/Effort/Speed rows. Add localized equivalents only after observing those
+exact labels in the target locale. Put legacy broad picker/opening labels in
+`modeLabels`, selectable Chat effort labels under
+`modeOptions.<semantic-id>`, and current selector labels under
+`configurationAxes` / `configurationOptions` so short labels such as `Pro`
+cannot match unrelated rows like `Move to project`.
 
 Then open [`src/dom/locale/index.ts`](../src/dom/locale/index.ts) and register the new
 locale:
@@ -292,8 +294,10 @@ Notes:
   fixture, or protocol change, because API keys and wire shapes are unchanged.
 - All consumer import paths (`from "../dom/locale-labels.js"`) are unchanged — the barrel
   `locale-labels.ts` re-exports everything from `locale/index.ts`.
-- `doctor({ check: ["localization"] })` verifies that the registry is populated and
-  canonical English values are present. It also reports running-state localization coverage
+- `doctor({ check: ["localization"] })` verifies that the legacy selector,
+  tool, mode-option, configuration-axis (including Power/Advanced), and
+  configuration-option registries are populated and canonical English values
+  are present. It also reports running-state localization coverage
   separately from the flattened selector list, because `stopControl` and
   `stoppedAssistant` require a live mid-generation capture. It does not yet prove full
   localized selector coverage; treat localized workflow failures as selector-wiring work

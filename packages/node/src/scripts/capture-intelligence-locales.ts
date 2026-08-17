@@ -4,16 +4,17 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { attachChatGPTBrowser } from "../browser/attach.js";
 import { BROWSER_BRIDGE_REMEDIATION, BROWSER_BRIDGE_UNAVAILABLE_MESSAGE } from "../errors.js";
-import { localeLabels } from "../dom/locale-labels.js";
-import type { BrowserLike, ExistingTabPolicy, PageLike, RuntimeEnv } from "../types.js";
+import type { BrowserLike, ExistingTabPolicy, LocatorLike, PageLike, RuntimeEnv } from "../types.js";
 import { nonEnglishLanguages, readLanguageCoverage, type CoverageLanguage } from "./locale-capture/language-coverage.js";
 import {
+  assignOrderedChatConfigurationRows,
   assignChatSelectedSurfaceOptions,
   assignOrderedSurfaceOptions,
   assignOrderedWorkConfigurationRows,
+  type CapturedChatConfigurationRow,
   type CapturedWorkConfigurationRow,
+  type RawConfigurationRow,
   type RawSurfaceOption,
-  type RawWorkConfigurationRow
 } from "./locale-capture/surface-graph.js";
 
 const SCHEMA_VERSION = "chatgpt.browser_control.intelligence_locale_capture.v1";
@@ -28,16 +29,6 @@ const DEFAULT_GENERATION_PROMPT = [
 ].join(" ");
 
 type CaptureStatus = "ok" | "blocked";
-
-type CapturedMenuItem = {
-  label: string;
-  role?: string | undefined;
-  checked?: boolean | undefined;
-  expanded?: boolean | undefined;
-  hasPopup?: string | undefined;
-  testId?: string | undefined;
-  ariaLabel?: string | undefined;
-};
 
 type CaptureRecord = {
   schemaVersion: typeof SCHEMA_VERSION;
@@ -70,10 +61,15 @@ type LocaleSurfaceCapture = {
   chat?: {
     optionLabel: string;
     composerLabels: string[];
+    power: CapturedPowerControl;
+    advanced: CapturedAdvancedControl;
+    configurationRows: CapturedChatConfigurationRow[];
   };
   work?: {
     optionLabel: string;
     composerLabels: string[];
+    power: CapturedPowerControl;
+    advanced: CapturedAdvancedControl;
     configurationRows: CapturedWorkConfigurationRow[];
   };
   restoredChat: boolean;
@@ -83,6 +79,30 @@ type LocaleSurfaceCapture = {
     code: string;
     message: string;
   };
+};
+
+type CapturedPowerControl = {
+  axisLabel: string;
+  valueLabel: string;
+  minimum: number;
+  maximum: number;
+  value: number;
+  position: number;
+  count: number;
+};
+
+type CapturedAdvancedControl = {
+  label: string;
+  accessibleLabel?: string | undefined;
+  expanded: boolean;
+  initiallyExpanded?: boolean | undefined;
+};
+
+type CapturedConfigurationMenu<TRow extends CapturedChatConfigurationRow | CapturedWorkConfigurationRow> = {
+  openerLabel: string;
+  power: CapturedPowerControl;
+  advanced: CapturedAdvancedControl;
+  rows: TRow[];
 };
 
 type CaptureOptions = {
@@ -137,6 +157,11 @@ type GenerationStateCapture = {
   stopped: boolean;
 };
 
+type CaptureDependencies = {
+  captureIntelligencePicker: typeof captureIntelligencePicker;
+  captureGenerationStateLabels: typeof captureGenerationStateLabels;
+};
+
 class CaptureUsageError extends Error {
   constructor(message: string, readonly exitCode = 2) {
     super(message);
@@ -165,7 +190,7 @@ const USAGE = [
   "  --no-open-version-submenu      Do not open the model-version submenu.",
   "  --capture-generation-state     Submit one bounded probe per locale to capture localized running/stopped generation labels. Default: false.",
   "  --no-capture-generation-state  Disable generation-state capture.",
-  "  --capture-surfaces              Capture current Chat/Work radios, composers, and Work configuration rows.",
+  "  --capture-surfaces              Capture Chat/Work radios, composers, Power/Advanced controls, and ordered configuration rows.",
   "  --no-capture-surfaces           Disable Chat/Work surface capture. Default.",
   "  --generation-prompt            Override the redacted probe prompt used only for generation-state capture.",
   "  --generation-timeout-ms        Wait for generation controls after submit. Default: 8000.",
@@ -191,6 +216,7 @@ export async function main(argv = process.argv.slice(2), runtime: CaptureRuntime
   }
 
   const languages = await readLanguageCoverage(options.coveragePath);
+  const knownLanguageNames = languages.map(language => language.nativeName);
   if (options.printQueue) {
     printQueue(nonEnglishLanguages(languages));
     return 0;
@@ -210,16 +236,17 @@ export async function main(argv = process.argv.slice(2), runtime: CaptureRuntime
     return 2;
   }
 
-  const initialLanguage = options.autoSwitch
-    ? await attachCapturePage(runtime, options).then(page => readSelectedLanguage(page)).catch(() => undefined)
+  const initialLanguage = options.autoSwitch && options.restore
+    ? await readInitialLanguage(runtime, options, knownLanguageNames)
     : undefined;
   const sweepLanguages = resolveSweepLanguages(options, languages);
   const records: CaptureRecord[] = [];
+  let restoreFailed = false;
 
   try {
     for (const language of sweepLanguages) {
       const page = await attachCapturePage(runtime, options);
-      const record = await captureOne(page, language, options);
+      const record = await captureOne(page, language, options, knownLanguageNames);
       records.push(record);
       await appendRecord(options.out, record);
       printCaptureRecord(record, options.out);
@@ -231,16 +258,46 @@ export async function main(argv = process.argv.slice(2), runtime: CaptureRuntime
     }
   } finally {
     if (options.autoSwitch && options.restore && initialLanguage !== undefined) {
-      await attachCapturePage(runtime, options).then(page => restoreLanguage(page, initialLanguage, options)).catch(error => {
-        console.error(`Unable to restore initial language ${initialLanguage}: ${error instanceof Error ? error.message : String(error)}`);
+      await attachCapturePage(runtime, options).then(page => restoreLanguage(
+        page,
+        initialLanguage.selectedLabel,
+        initialLanguage.htmlLang,
+        knownLanguageNames,
+        options
+      )).catch(error => {
+        restoreFailed = true;
+        console.error(`Unable to restore initial language ${initialLanguage.selectedLabel}: ${error instanceof Error ? error.message : String(error)}`);
       });
     }
   }
 
-  return records.some(record =>
+  return restoreFailed || records.some(record =>
     record.status === "blocked"
     || !surfaceCaptureSucceeded(options.captureSurfaces, record.surfaceCapture)
   ) ? 1 : 0;
+}
+
+async function readInitialLanguage(
+  runtime: CaptureRuntime,
+  options: CaptureOptions,
+  knownLanguageNames: readonly string[]
+): Promise<{ selectedLabel: string; htmlLang: string }> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const page = await attachCapturePage(runtime, options);
+      const proof = await renderedProof(page);
+      const selected = await readSelectedLanguage(page, knownLanguageNames);
+      if (selected !== undefined && proof.htmlLang !== undefined && proof.htmlLang.length > 0) {
+        return { selectedLabel: selected, htmlLang: proof.htmlLang };
+      }
+      lastError = new Error("Settings language value was empty.");
+    } catch (error) {
+      lastError = error;
+    }
+    await wait(500);
+  }
+  throw new Error(`Unable to establish the initial ChatGPT language before a restorable sweep: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
 export function surfaceCaptureSucceeded(
@@ -425,11 +482,17 @@ function resolveSweepLanguages(options: CaptureOptions, languages: readonly Cove
   }];
 }
 
-async function captureOne(page: PageLike, language: CoverageLanguage, options: CaptureOptions): Promise<CaptureRecord> {
+export async function captureOne(
+  page: PageLike,
+  language: CoverageLanguage,
+  options: CaptureOptions,
+  knownLanguageNames: readonly string[],
+  dependencies: Partial<CaptureDependencies> = {}
+): Promise<CaptureRecord> {
   const warnings: string[] = [];
   try {
     if (options.autoSwitch) {
-      await switchLanguage(page, language, options);
+      await switchLanguage(page, language, knownLanguageNames, options);
       const proof = await renderedProof(page);
       if (!htmlLangMatches(proof.htmlLang, language.bcp47)) {
         return blockedRecord(language, proof, warnings, "rendered_locale_mismatch", `Rendered html lang ${proof.htmlLang || "unknown"} did not match requested ${language.bcp47}.`);
@@ -441,13 +504,13 @@ async function captureOne(page: PageLike, language: CoverageLanguage, options: C
     if (options.captureSurfaces) {
       await ensureChatSurfaceSelected(page, options);
     }
-    const picker = await captureIntelligencePicker(page, options);
+    const picker = await (dependencies.captureIntelligencePicker ?? captureIntelligencePicker)(page, options);
     await closeFloatingMenus(page);
     const surfaceCapture = options.captureSurfaces
-      ? await captureLocaleSurface(page, options)
+      ? await captureLocaleSurface(page, options, picker.configuration)
       : undefined;
     const generation = options.captureGenerationState
-      ? await captureGenerationStateLabels(page, options)
+      ? await (dependencies.captureGenerationStateLabels ?? captureGenerationStateLabels)(page, options)
       : undefined;
     if (generation !== undefined) {
       warnings.push(...generation.warnings);
@@ -483,24 +546,53 @@ async function captureOne(page: PageLike, language: CoverageLanguage, options: C
   }
 }
 
-async function switchLanguage(page: PageLike, language: CoverageLanguage, options: TimingOptions): Promise<void> {
+async function switchLanguage(
+  page: PageLike,
+  language: CoverageLanguage,
+  knownLanguageNames: readonly string[],
+  options: TimingOptions
+): Promise<void> {
   await openSettings(page, options);
-  await openLanguageCombobox(page);
+  await openLanguageCombobox(page, knownLanguageNames);
   await clickOptionExact(page, language.nativeName);
-  await waitForRenderedLanguage(page, language.bcp47, options.switchTimeoutMs).catch(async () => {
-    await wait(options.settleMs);
-  });
-}
-
-async function restoreLanguage(page: PageLike, selectedLanguageText: string, options: TimingOptions): Promise<void> {
-  await openSettings(page, options);
-  await openLanguageCombobox(page);
-  await clickOptionExact(page, selectedLanguageText);
   await wait(options.settleMs);
   if (page.goto !== undefined) {
-    await page.goto(CHATGPT_HOME).catch(() => undefined);
+    await page.goto(CHATGPT_HOME).catch(error => {
+      if (!/ERR_ABORTED/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    });
     await wait(options.settleMs);
   }
+  await waitForRenderedLanguage(page, language.bcp47, options.switchTimeoutMs);
+}
+
+async function restoreLanguage(
+  page: PageLike,
+  selectedLanguageText: string,
+  expectedHtmlLang: string,
+  knownLanguageNames: readonly string[],
+  options: TimingOptions
+): Promise<void> {
+  await openSettings(page, options);
+  await openLanguageCombobox(page, knownLanguageNames);
+  await clickOptionExact(page, selectedLanguageText);
+  await wait(options.settleMs);
+  let restored = false;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (page.goto !== undefined) {
+      await page.goto(CHATGPT_HOME).catch(error => {
+        if (!/ERR_ABORTED/i.test(error instanceof Error ? error.message : String(error))) throw error;
+      });
+    }
+    await wait(options.settleMs);
+    try {
+      await waitForRenderedLanguage(page, expectedHtmlLang, options.switchTimeoutMs);
+      restored = true;
+      break;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
+  }
+  if (!restored) throw new Error(`Rendered language did not restore to ${expectedHtmlLang}.`);
   for (let attempt = 0; attempt < 6; attempt += 1) {
     await closeSettingsIfOpen(page);
     await wait(500);
@@ -512,20 +604,29 @@ async function restoreLanguage(page: PageLike, selectedLanguageText: string, opt
 async function openSettings(page: PageLike, options: Pick<CaptureOptions, "settleMs">): Promise<void> {
   if (await isSettingsOpen(page)) return;
   await closeFloatingMenus(page);
-  const profile = page.locator?.("[data-testid=\"accounts-profile-button\"]")?.last?.();
-  if (profile?.click === undefined) {
-    throw new Error("Profile menu button was not available.");
+  const profiles = page.locator?.("[data-testid=\"accounts-profile-button\"]");
+  const profileCount = await profiles?.count?.().catch(() => 0) ?? 0;
+  let settings: LocatorLike | undefined;
+  for (let index = profileCount - 1; index >= 0; index -= 1) {
+    const profile = profiles?.nth?.(index);
+    if (profile?.click === undefined) continue;
+    if (profile.isVisible !== undefined && !await profile.isVisible().catch(() => false)) continue;
+    await profile.click().catch(() => undefined);
+    await wait(Math.min(options.settleMs, 500));
+    const candidate = page.locator?.("[data-testid=\"settings-menu-item\"]")?.last?.();
+    const candidateCount = await candidate?.count?.().catch(() => 0) ?? 0;
+    if (candidateCount === 1 && candidate?.click !== undefined) {
+      settings = candidate;
+      break;
+    }
   }
-  await profile.click();
-  await wait(options.settleMs);
-  const settings = page.locator?.("[data-testid=\"settings-menu-item\"]")?.last?.();
-  if (settings?.click === undefined) {
-    throw new Error("Settings menu item was not available.");
-  }
+  if (settings?.click === undefined) throw new Error("Settings menu item was not available from any visible profile control.");
   await settings.click();
-  await wait(options.settleMs);
-  if (!await isSettingsOpen(page)) {
-    throw new Error("Settings modal did not open.");
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    if (await isSettingsOpen(page)) return;
+    if (Date.now() >= deadline) throw new Error("Settings modal did not open.");
+    await wait(Math.min(options.settleMs, 500));
   }
 }
 
@@ -540,11 +641,10 @@ async function isSettingsOpen(page: PageLike): Promise<boolean> {
   ) ?? false;
 }
 
-async function openLanguageCombobox(page: PageLike): Promise<void> {
-  const combo = page.locator?.("button[role=\"combobox\"]")?.nth?.(3);
-  if (combo?.click === undefined) {
-    throw new Error("Language combobox was not available.");
-  }
+async function openLanguageCombobox(page: PageLike, knownLanguageNames: readonly string[]): Promise<void> {
+  const match = await findLanguageCombobox(page, knownLanguageNames);
+  const combo = page.locator?.("[role='dialog'] button[role='combobox']")?.nth?.(match.index);
+  if (combo?.click === undefined) throw new Error("Language combobox was not actionable.");
   await combo.click();
   await wait(500);
 }
@@ -557,12 +657,28 @@ async function clickOptionExact(page: PageLike, label: string): Promise<void> {
   await option.click();
 }
 
-async function readSelectedLanguage(page: PageLike): Promise<string | undefined> {
+async function readSelectedLanguage(page: PageLike, knownLanguageNames: readonly string[]): Promise<string | undefined> {
   await openSettings(page, { settleMs: DEFAULT_SETTLE_MS });
-  const labels = await page.evaluate?.(() =>
-    Array.from(document.querySelectorAll("button[role='combobox']")).map(button => (button.textContent ?? "").replace(/\s+/g, " ").trim())
-  );
-  return labels?.[3];
+  return (await findLanguageCombobox(page, knownLanguageNames)).selectedLabel;
+}
+
+async function findLanguageCombobox(
+  page: PageLike,
+  knownLanguageNames: readonly string[]
+): Promise<{ index: number; selectedLabel: string }> {
+  const values = await page.evaluate?.(() =>
+    Array.from(document.querySelectorAll("[role='dialog'] button[role='combobox']"))
+      .map((button, index) => ({
+        index,
+        label: (button.textContent ?? "").replace(/\s+/g, " ").trim()
+      }))
+  ) ?? [];
+  const known = new Set(knownLanguageNames.map(normalized));
+  const matches = values.filter(value => known.has(normalized(value.label)));
+  if (matches.length !== 1) {
+    throw new Error(`Expected one Settings language combobox by selected native-language value; observed ${matches.length}.`);
+  }
+  return { index: matches[0]!.index, selectedLabel: matches[0]!.label };
 }
 
 async function closeSettingsIfOpen(page: PageLike): Promise<void> {
@@ -626,25 +742,33 @@ async function captureIntelligencePicker(page: PageLike, options: CaptureOptions
   selectedIntelligenceLabel?: string;
   versionFamilyLabels: string[];
   modelVersionLabels: string[];
+  configuration: CapturedConfigurationMenu<CapturedChatConfigurationRow>;
 }> {
   await closeFloatingMenus(page);
-  await openPicker(page);
-  await wait(options.settleMs);
-
-  const first = await readPickerState(page);
-  let modelVersionLabels: string[] = [];
-  if (options.openVersionSubmenu && first.versionFamilyLabels.length > 0) {
-    await openVersionSubmenu(page);
-    await wait(options.settleMs);
-    modelVersionLabels = (await readPickerState(page)).modelVersionLabels;
+  const configuration = await captureConfigurationMenu(page, "chat", options.settleMs, options.openVersionSubmenu);
+  const proof = await renderedProof(page);
+  const model = configuration.rows.find(row => row.axis === "model");
+  const effort = configuration.rows.find(row => row.axis === "effort");
+  if (model === undefined || effort === undefined || effort.options.length === 0) {
+    throw new Error("Chat configuration did not expose ordered Model and Effort options.");
   }
-
-  return { ...first, modelVersionLabels };
+  const selectedIntelligenceLabel = effort.options.find(option => option.checked)?.label;
+  return {
+    htmlLang: proof.htmlLang ?? "",
+    url: proof.url ?? "",
+    menuHeading: configuration.power.axisLabel,
+    intelligenceLabels: effort.options.map(option => option.label),
+    ...(selectedIntelligenceLabel === undefined ? {} : { selectedIntelligenceLabel }),
+    versionFamilyLabels: [],
+    modelVersionLabels: model.options.map(option => option.label),
+    configuration
+  };
 }
 
 async function captureLocaleSurface(
   page: PageLike,
-  options: Pick<CaptureOptions, "settleMs" | "switchTimeoutMs">
+  options: Pick<CaptureOptions, "settleMs" | "switchTimeoutMs">,
+  chatConfiguration: CapturedConfigurationMenu<CapturedChatConfigurationRow>
 ): Promise<LocaleSurfaceCapture> {
   const warnings: string[] = [];
   let chatLabel: string | undefined;
@@ -663,13 +787,25 @@ async function captureLocaleSurface(
     await waitForSurfaceSelection(page, workLabel, options.switchTimeoutMs);
     await wait(options.settleMs);
     const workComposerLabels = await readVisibleComposerLabels(page);
-    const configurationRows = await captureWorkConfigurationRows(page, options.settleMs);
+    const workConfiguration = await captureConfigurationMenu(page, "work", options.settleMs, true);
 
     result = {
       schemaVersion: "chatgpt.browser_control.locale_surface_capture.v1",
       status: "ok",
-      chat: { optionLabel: chatLabel, composerLabels: chatComposerLabels },
-      work: { optionLabel: workLabel, composerLabels: workComposerLabels, configurationRows },
+      chat: {
+        optionLabel: chatLabel,
+        composerLabels: chatComposerLabels,
+        power: chatConfiguration.power,
+        advanced: chatConfiguration.advanced,
+        configurationRows: chatConfiguration.rows
+      },
+      work: {
+        optionLabel: workLabel,
+        composerLabels: workComposerLabels,
+        power: workConfiguration.power,
+        advanced: workConfiguration.advanced,
+        configurationRows: workConfiguration.rows
+      },
       warnings
     };
   } catch (error) {
@@ -811,62 +947,123 @@ async function waitForSurfaceSelection(page: PageLike, label: string, timeoutMs:
   }
 }
 
-async function captureWorkConfigurationRows(page: PageLike, settleMs: number): Promise<CapturedWorkConfigurationRow[]> {
-  const openerLabel = await findWorkConfigurationOpener(page);
-  const opener = page.getByRole?.("button", { name: openerLabel, exact: true });
-  const count = await opener?.count?.().catch(() => 0) ?? 0;
-  if (count !== 1 || opener?.click === undefined) {
-    throw new Error(`Work configuration opener ${JSON.stringify(openerLabel)} was missing or ambiguous.`);
+async function captureConfigurationMenu(
+  page: PageLike,
+  experience: "chat",
+  settleMs: number,
+  captureModelOptions: boolean
+): Promise<CapturedConfigurationMenu<CapturedChatConfigurationRow>>;
+async function captureConfigurationMenu(
+  page: PageLike,
+  experience: "work",
+  settleMs: number,
+  captureModelOptions: boolean
+): Promise<CapturedConfigurationMenu<CapturedWorkConfigurationRow>>;
+async function captureConfigurationMenu(
+  page: PageLike,
+  experience: "chat" | "work",
+  settleMs: number,
+  captureModelOptions: boolean
+): Promise<CapturedConfigurationMenu<CapturedChatConfigurationRow> | CapturedConfigurationMenu<CapturedWorkConfigurationRow>> {
+  const expectedRowCount = experience === "chat" ? 2 : 3;
+  const opener = await findConfigurationOpener(page, experience);
+  const openerLabel = normalized(await opener.innerText?.().catch(() => undefined)
+    ?? await opener.textContent?.().catch(() => undefined)
+    ?? "");
+  if (openerLabel.length === 0 || opener.click === undefined) {
+    throw new Error(`${experienceLabel(experience)} configuration opener did not expose a label and click action.`);
   }
+
   await opener.click();
   await wait(Math.min(settleMs, 750));
-  const rawRows = await readRawWorkConfigurationRows(page);
-  const rowsWithOptions: RawWorkConfigurationRow[] = [];
-  for (const row of rawRows) {
-    const locator = page.getByRole?.("menuitem", { name: row.label, exact: true });
-    const rowCount = await locator?.count?.().catch(() => 0) ?? 0;
-    if (rowCount !== 1 || locator?.click === undefined) {
-      throw new Error(`Work configuration row ${JSON.stringify(row.label)} was missing or ambiguous.`);
+  let root = await waitForRawConfigurationRoot(page, expectedRowCount, 5_000);
+  const initialAdvancedExpanded = root.advanced.expanded;
+
+  try {
+    if (!root.advanced.expanded) {
+      await setAdvancedExpansion(page, true, expectedRowCount);
+      root = await readRawConfigurationRoot(page, expectedRowCount);
     }
-    await locator.click();
-    await wait(250);
-    rowsWithOptions.push({ ...row, options: await readVisibleSubmenuOptions(page) });
+
+    const orderedRows = experience === "chat"
+      ? assignOrderedChatConfigurationRows(root.rows)
+      : assignOrderedWorkConfigurationRows(root.rows);
+    const rowsWithOptions: RawConfigurationRow[] = [];
+    for (const row of orderedRows) {
+      const locator = page.getByRole?.("menuitem", { name: row.label, exact: true });
+      const rowCount = await locator?.count?.().catch(() => 0) ?? 0;
+      if (rowCount !== 1 || locator?.click === undefined) {
+        throw new Error(`${experienceLabel(experience)} configuration row ${JSON.stringify(row.label)} was missing or ambiguous.`);
+      }
+      const shouldCapture = row.axis !== "model" || captureModelOptions;
+      let options: Array<{ label: string; checked: boolean }> = [];
+      if (shouldCapture) {
+        await locator.click();
+        await wait(250);
+        options = await readVisibleSubmenuOptions(page);
+        if (options.length === 0) {
+          throw new Error(`${experienceLabel(experience)} ${row.axis} submenu exposed no options.`);
+        }
+        await page.keyboard?.press?.("Escape").catch(() => undefined);
+        await wait(100);
+      }
+      rowsWithOptions.push({ ...row, options });
+    }
+
+    const rows = experience === "chat"
+      ? assignOrderedChatConfigurationRows(rowsWithOptions)
+      : assignOrderedWorkConfigurationRows(rowsWithOptions);
+    const effort = rows.find(row => row.axis === "effort");
+    const valueLabel = effort?.valueLabel ?? effort?.options.find(option => option.checked)?.label ?? openerLabel;
+    return {
+      openerLabel,
+      power: { ...root.power, valueLabel },
+      advanced: { ...root.advanced, initiallyExpanded: initialAdvancedExpanded },
+      rows
+    } as CapturedConfigurationMenu<CapturedChatConfigurationRow> | CapturedConfigurationMenu<CapturedWorkConfigurationRow>;
+  } finally {
+    await restoreAdvancedExpansion(page, opener, initialAdvancedExpanded, expectedRowCount);
+    await closeFloatingMenus(page).catch(() => undefined);
   }
-  await page.keyboard?.press?.("Escape").catch(() => undefined);
-  await page.keyboard?.press?.("Escape").catch(() => undefined);
-  return assignOrderedWorkConfigurationRows(rowsWithOptions);
 }
 
-async function findWorkConfigurationOpener(page: PageLike): Promise<string> {
-  const labels = await page.evaluate?.(() => {
-    const visible = (element: Element): boolean => {
-      const rect = (element as HTMLElement).getBoundingClientRect?.();
-      const style = window.getComputedStyle?.(element as HTMLElement);
-      return rect !== undefined && rect.width > 0 && rect.height > 0
-        && style?.display !== "none" && style?.visibility !== "hidden";
-    };
-    const roots = Array.from(document.querySelectorAll(
-      "main form, main [data-testid*='composer' i], main [class*='composer' i]"
-    ));
-    return Array.from(new Set(roots.flatMap(root => Array.from(root.querySelectorAll(
-      "button[aria-haspopup='menu'], [role='button'][aria-haspopup='menu']"
-    )))))
-      .filter(visible)
-      .map(element => (
-        element.getAttribute("aria-label")
-        ?? (element as HTMLElement).innerText
-        ?? element.textContent
-        ?? ""
-      ).replace(/\s+/g, " ").trim())
-      .filter(label => /\b(?:gpt[\s-]?\d|\d+(?:\.\d+)+|sol|luna|terra)\b/i.test(label));
-  }) ?? [];
-  const unique = Array.from(new Set(labels));
-  if (unique.length !== 1) throw new Error(`Expected one Work configuration opener; observed ${unique.length}.`);
-  return unique[0]!;
+async function findConfigurationOpener(page: PageLike, experience: "chat" | "work") {
+  const deadline = Date.now() + 5_000;
+  let lastCounts: number[] = [];
+  for (;;) {
+    const candidates = [
+      page.locator?.("main form button.__composer-pill")?.last?.(),
+      page.locator?.("main button.__composer-pill")?.last?.(),
+      page.locator?.("button.__composer-pill")?.last?.()
+    ];
+    lastCounts = [];
+    for (const candidate of candidates) {
+      const count = await candidate?.count?.().catch(() => 0) ?? 0;
+      lastCounts.push(count);
+      if (count === 1 && candidate !== undefined) return candidate;
+    }
+    if (Date.now() >= deadline) break;
+    await wait(250);
+  }
+  const diagnostic = await page.evaluate?.(() => ({
+    htmlLang: document.documentElement.lang,
+    url: location.href.replace(/\/c\/[^/?#]+/i, "/c/sanitized"),
+    dialogCount: document.querySelectorAll("[role='dialog']").length,
+    composerPillCount: document.querySelectorAll("button.__composer-pill").length,
+    mainComposerPillCount: document.querySelectorAll("main button.__composer-pill").length,
+    mainTextboxCount: document.querySelectorAll("main textarea, main [contenteditable='true'], main [role='textbox']").length
+  })).catch(() => undefined);
+  throw new Error(`Expected one ${experienceLabel(experience)} configuration opener; locatorCounts=${lastCounts.join(",")}; state=${JSON.stringify(diagnostic ?? {})}.`);
 }
 
-async function readRawWorkConfigurationRows(page: PageLike): Promise<RawWorkConfigurationRow[]> {
-  return await page.evaluate?.(() => {
+type RawConfigurationRoot = {
+  power: Omit<CapturedPowerControl, "valueLabel">;
+  advanced: CapturedAdvancedControl;
+  rows: RawConfigurationRow[];
+};
+
+async function readRawConfigurationRoot(page: PageLike, expectedRowCount: number): Promise<RawConfigurationRoot> {
+  const capture = await page.evaluate?.((wantedRowCount: number) => {
     const visible = (element: Element): boolean => {
       const rect = (element as HTMLElement).getBoundingClientRect?.();
       const style = window.getComputedStyle?.(element as HTMLElement);
@@ -875,15 +1072,28 @@ async function readRawWorkConfigurationRows(page: PageLike): Promise<RawWorkConf
     };
     const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
     const menus = Array.from(document.querySelectorAll("[role='menu']")).filter(visible);
-    const root = menus.find(menu => menu.querySelectorAll("[role='menuitem'][data-has-submenu]").length >= 2);
-    if (root === undefined) return [];
-    return Array.from(root.querySelectorAll("[role='menuitem'][data-has-submenu]"))
+    const root = menus.find(menu => {
+      const rows = menu.querySelectorAll("[role='menuitem'][data-has-submenu], [role='menuitem'][aria-haspopup='menu']");
+      return rows.length === wantedRowCount && menu.querySelector("[role='slider']") !== null;
+    });
+    if (root === undefined) return undefined;
+    const slider = root.querySelector("[role='slider']");
+    const powerItem = Array.from(root.querySelectorAll("[role='menuitem']"))
+      .find(item => !item.hasAttribute("data-has-submenu") && item.getAttribute("aria-label") !== null);
+    const advancedItem = Array.from(root.querySelectorAll("[role='menuitem'][aria-expanded]"))
+      .find(item => !item.hasAttribute("data-has-submenu") && item.getAttribute("aria-haspopup") !== "menu");
+    const minimum = Number(slider?.getAttribute("aria-valuemin"));
+    const maximum = Number(slider?.getAttribute("aria-valuemax"));
+    const value = Number(slider?.getAttribute("aria-valuenow"));
+    if (slider === null || powerItem === undefined || advancedItem === undefined
+      || !Number.isFinite(minimum) || !Number.isFinite(maximum) || !Number.isFinite(value)) return undefined;
+    const rows = Array.from(root.querySelectorAll("[role='menuitem'][data-has-submenu], [role='menuitem'][aria-haspopup='menu']"))
       .filter(visible)
       .map(row => {
         const html = row as HTMLElement;
         const axisLabel = normalize(row.querySelector(".truncate")?.textContent ?? "");
         const valueLabel = normalize(row.querySelector("[data-trailing-style='default']")?.textContent ?? "");
-        const item: RawWorkConfigurationRow = {
+        const item: RawConfigurationRow = {
           label: normalize(row.getAttribute("aria-label") ?? html.innerText ?? row.textContent ?? ""),
           axisLabel,
           options: []
@@ -891,7 +1101,98 @@ async function readRawWorkConfigurationRows(page: PageLike): Promise<RawWorkConf
         if (valueLabel.length > 0) item.valueLabel = valueLabel;
         return item;
       });
-  }) ?? [];
+    const accessibleLabel = normalize(advancedItem.getAttribute("aria-label") ?? "");
+    return {
+      power: {
+        axisLabel: normalize(powerItem.getAttribute("aria-label") ?? (powerItem as HTMLElement).innerText ?? powerItem.textContent ?? ""),
+        minimum,
+        maximum,
+        value,
+        position: value - minimum + 1,
+        count: maximum - minimum + 1
+      },
+      advanced: {
+        label: normalize((advancedItem as HTMLElement).innerText ?? advancedItem.textContent ?? ""),
+        ...(accessibleLabel.length === 0 ? {} : { accessibleLabel }),
+        expanded: advancedItem.getAttribute("aria-expanded") === "true"
+      },
+      rows
+    };
+  }, expectedRowCount);
+  if (capture === undefined) {
+    throw new Error(`Expected one Power/Advanced menu with ${expectedRowCount} configuration rows.`);
+  }
+  if (capture.rows.length !== expectedRowCount) {
+    throw new Error(`Expected ${expectedRowCount} visible configuration rows; observed ${capture.rows.length}.`);
+  }
+  if (capture.power.axisLabel.length === 0 || capture.advanced.label.length === 0) {
+    throw new Error("Power or Advanced labels were empty.");
+  }
+  return capture;
+}
+
+async function waitForRawConfigurationRoot(
+  page: PageLike,
+  expectedRowCount: number,
+  timeoutMs: number
+): Promise<RawConfigurationRoot> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  for (;;) {
+    try {
+      return await readRawConfigurationRoot(page, expectedRowCount);
+    } catch (error) {
+      lastError = error;
+    }
+    if (Date.now() >= deadline) {
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    }
+    await wait(250);
+  }
+}
+
+async function setAdvancedExpansion(page: PageLike, expanded: boolean, expectedRowCount: number): Promise<void> {
+  const root = await readRawConfigurationRoot(page, expectedRowCount);
+  if (root.advanced.expanded === expanded) return;
+  const toggle = page.locator?.("[role='menu'] [role='menuitem'][aria-expanded]:not([data-has-submenu]):not([aria-haspopup='menu'])")?.last?.();
+  const count = await toggle?.count?.().catch(() => 0) ?? 0;
+  if (count !== 1 || toggle === undefined) {
+    throw new Error("Advanced configuration toggle was missing or ambiguous.");
+  }
+  if (toggle.press !== undefined) {
+    await toggle.press("Enter");
+  } else if (toggle.click !== undefined) {
+    await toggle.click();
+  } else {
+    throw new Error("Advanced configuration toggle was not actionable.");
+  }
+  await wait(250);
+  const after = await readRawConfigurationRoot(page, expectedRowCount);
+  if (after.advanced.expanded !== expanded) {
+    throw new Error(`Advanced configuration toggle did not become ${expanded ? "expanded" : "compact"}.`);
+  }
+}
+
+async function restoreAdvancedExpansion(
+  page: PageLike,
+  opener: LocatorLike,
+  initiallyExpanded: boolean,
+  expectedRowCount: number
+): Promise<void> {
+  await page.keyboard?.press?.("Escape").catch(() => undefined);
+  let root = await readRawConfigurationRoot(page, expectedRowCount).catch(() => undefined);
+  if (root === undefined) {
+    await opener.click?.();
+    await wait(200);
+    root = await readRawConfigurationRoot(page, expectedRowCount);
+  }
+  if (root.advanced.expanded !== initiallyExpanded) {
+    await setAdvancedExpansion(page, initiallyExpanded, expectedRowCount);
+  }
+}
+
+function experienceLabel(experience: "chat" | "work"): string {
+  return experience === "chat" ? "Chat" : "Work";
 }
 
 async function readVisibleSubmenuOptions(page: PageLike): Promise<Array<{ label: string; checked: boolean }>> {
@@ -908,79 +1209,23 @@ async function readVisibleSubmenuOptions(page: PageLike): Promise<Array<{ label:
     if (submenu === undefined) return [];
     return Array.from(submenu.querySelectorAll("[role='menuitemradio']"))
       .filter(visible)
-      .map(option => ({
-        label: normalize(option.querySelector(".truncate")?.textContent
-          ?? option.getAttribute("aria-label")
-          ?? (option as HTMLElement).innerText
-          ?? option.textContent
-          ?? ""),
-        checked: option.getAttribute("aria-checked") === "true"
-          || option.getAttribute("data-state") === "checked"
-      }))
+      .map(option => {
+        const contentRoot = Array.from(option.children)
+          .find(child => !child.hasAttribute("data-trailing-style"));
+        const primary = contentRoot?.children.item(0) ?? contentRoot;
+        return {
+          label: normalize(primary?.textContent
+            ?? option.querySelector(".truncate")?.textContent
+            ?? option.getAttribute("aria-label")
+            ?? (option as HTMLElement).innerText
+            ?? option.textContent
+            ?? ""),
+          checked: option.getAttribute("aria-checked") === "true"
+            || option.getAttribute("data-state") === "checked"
+        };
+      })
       .filter(option => option.label.length > 0);
   }) ?? [];
-}
-
-async function openPicker(page: PageLike): Promise<void> {
-  const proCandidates = [
-    page.locator?.("form button.__composer-pill")?.last?.(),
-    page.locator?.("button.__composer-pill")?.last?.(),
-    page.getByRole?.("button", { name: /^Pro$/ })?.last?.(),
-    page.locator?.("button")?.filter?.({ hasText: /^Pro$/ })?.last?.(),
-    page.locator?.("button")?.filter?.({ hasText: /^\s*Pro\s*$/ })?.last?.(),
-  ];
-  for (const proButton of proCandidates) {
-    if (proButton?.click === undefined) continue;
-    await proButton.click().catch(() => undefined);
-    if (await pickerIsOpen(page)) return;
-  }
-
-  await clickStructuralPickerCandidate(page).catch(() => undefined);
-  if (await pickerIsOpen(page)) return;
-
-  for (const label of localeLabels.modeLabels) {
-    const button = page.getByRole?.("button", { name: new RegExp(`^${escapeRegExp(label)}$`, "i") })?.last?.();
-    if (button?.click === undefined) continue;
-    await button.click().catch(() => undefined);
-    if (await pickerIsOpen(page)) return;
-  }
-  throw new Error("Unable to open Intelligence picker.");
-}
-
-async function clickStructuralPickerCandidate(page: PageLike): Promise<boolean> {
-  const point = await page.evaluate?.(() => {
-    let targetPoint: { x: number; y: number } | undefined;
-    let bestScore = Number.NEGATIVE_INFINITY;
-
-    const considerButton = (button: HTMLButtonElement, formScoped: boolean): void => {
-      const rect = button.getBoundingClientRect();
-      const text = (button.textContent ?? "").replace(/\s+/g, " ").trim();
-      if (text.length === 0 || text.length > 32) return;
-      if (rect.width < 24 || rect.height < 24 || rect.width > 220 || rect.height > 64) return;
-      if (rect.bottom < window.innerHeight * 0.45) return;
-      const aria = button.getAttribute("aria-label") ?? "";
-      const testId = button.getAttribute("data-testid") ?? "";
-      if (/composer-plus|send|microphone|dictat|voice|audio/i.test(`${aria} ${testId}`)) return;
-      const score = (formScoped ? 1000 : 0) + rect.bottom + rect.right / 10;
-      if (score > bestScore) {
-        bestScore = score;
-        targetPoint = {
-          x: rect.left + rect.width / 2,
-          y: rect.top + rect.height / 2,
-        };
-      }
-    };
-
-    document.querySelectorAll("form button").forEach(button => considerButton(button as HTMLButtonElement, true));
-    if (targetPoint === undefined) {
-      document.querySelectorAll("button").forEach(button => considerButton(button as HTMLButtonElement, false));
-    }
-    return targetPoint;
-  });
-  if (point === undefined) return false;
-
-  await clickPagePoint(page, point);
-  return true;
 }
 
 async function clickPagePoint(page: PageLike, point: { x: number; y: number }): Promise<void> {
@@ -997,101 +1242,6 @@ async function clickPagePoint(page: PageLike, point: { x: number; y: number }): 
   await body.click({ position: { x: point.x, y: point.y } });
 }
 
-async function pickerIsOpen(page: PageLike): Promise<boolean> {
-  await wait(300);
-  return page.evaluate?.(() =>
-    document.querySelector("[data-testid='composer-intelligence-picker-content']") !== null
-    || document.querySelector("[role='menuitemradio']") !== null
-  ) ?? false;
-}
-
-async function readPickerState(page: PageLike): Promise<{
-  htmlLang: string;
-  url: string;
-  menuHeading?: string;
-  intelligenceLabels: string[];
-  selectedIntelligenceLabel?: string;
-  versionFamilyLabels: string[];
-  modelVersionLabels: string[];
-}> {
-  return await page.evaluate?.(() => {
-    const menu = document.querySelector("[data-testid='composer-intelligence-picker-content']")
-      ?? Array.from(document.querySelectorAll("[role='menu']")).find(candidate => candidate.querySelector("[role='menuitemradio']"))
-      ?? document;
-    const menuTextLines = (menu.textContent ?? "").split(/\n/).map(line => line.trim()).filter(Boolean);
-    const items = Array.from(document.querySelectorAll("[role='menuitemradio'], [role='menuitem']")).map((element) => {
-      const label = (element.querySelector(".truncate")?.textContent ?? element.textContent ?? "")
-        .replace(/\s+/g, " ").trim();
-      const role = element.getAttribute("role") ?? undefined;
-      return {
-        label,
-        role,
-        checked: element.getAttribute("aria-checked") === "true",
-        expanded: element.getAttribute("aria-expanded") === "true",
-        hasPopup: element.getAttribute("aria-haspopup") ?? undefined,
-        testId: element.getAttribute("data-testid") ?? undefined,
-        ariaLabel: element.getAttribute("aria-label") ?? undefined,
-      };
-    }).filter(item => item.label.length > 0 || item.ariaLabel !== undefined || item.testId !== undefined);
-
-    const radioLabels = items
-      .filter(item => item.role === "menuitemradio" && item.label.length > 0)
-      .map(item => item.label);
-    const versionLabelPattern = /^(?:o\d+|\d+(?:\.\d+)?)$/i;
-    const modelVersionLabels = radioLabels.filter(label => versionLabelPattern.test(label));
-    const intelligenceLabels = radioLabels.filter(label => !versionLabelPattern.test(label));
-    const selectedIntelligenceLabel = items.find(item =>
-      item.role === "menuitemradio"
-      && item.checked
-      && item.label.length > 0
-      && !versionLabelPattern.test(item.label)
-    )?.label;
-    const versionFamilyLabels = items
-      .filter(item => item.role === "menuitem" && /^GPT[\s-]/i.test(item.label))
-      .map(item => item.label);
-
-    const result: {
-      htmlLang: string;
-      url: string;
-      menuHeading?: string;
-      intelligenceLabels: string[];
-      selectedIntelligenceLabel?: string;
-      versionFamilyLabels: string[];
-      modelVersionLabels: string[];
-      items: CapturedMenuItem[];
-    } = {
-      htmlLang: document.documentElement.lang,
-      url: location.href,
-      intelligenceLabels,
-      versionFamilyLabels,
-      modelVersionLabels,
-      items,
-    };
-    const heading = menuTextLines.find(line => !radioLabels.includes(line) && !/^GPT[\s-]/i.test(line));
-    if (heading !== undefined) result.menuHeading = heading;
-    if (selectedIntelligenceLabel !== undefined) result.selectedIntelligenceLabel = selectedIntelligenceLabel;
-    return result;
-  }) ?? {
-    htmlLang: "",
-    url: "",
-    intelligenceLabels: [],
-    versionFamilyLabels: [],
-    modelVersionLabels: []
-  };
-}
-
-async function openVersionSubmenu(page: PageLike): Promise<void> {
-  const gptCandidates = [
-    page.getByRole?.("menuitem", { name: /^GPT[\s-]/i })?.last?.(),
-    page.locator?.("[role='menuitem']")?.filter?.({ hasText: /^GPT[\s-]/i })?.last?.(),
-  ];
-  for (const gptMenu of gptCandidates) {
-    if (gptMenu?.click === undefined) continue;
-    await gptMenu.click().catch(() => undefined);
-    if ((await readPickerState(page)).modelVersionLabels.length > 0) return;
-  }
-}
-
 async function captureGenerationStateLabels(
   page: PageLike,
   options: Pick<CaptureOptions, "generationPrompt" | "generationCaptureTimeoutMs" | "settleMs">
@@ -1100,6 +1250,7 @@ async function captureGenerationStateLabels(
   const before = await readGenerationUiSnapshot(page).catch((): GenerationUiSnapshot => ({ controls: [], shortLatestAssistantTexts: [] }));
   let submitted = false;
   let stopped = false;
+  let stopFailure: unknown;
   let active = before;
   let stopLabels: string[] = [];
 
@@ -1121,11 +1272,13 @@ async function captureGenerationStateLabels(
   } catch (error) {
     warnings.push(`Generation probe failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
-    if (submitted || stopLabels.length > 0 || snapshotLooksActive(active)) {
-      stopped = await stopGenerationIfVisible(page, stopLabels).catch(error => {
+    if (submitted || stopLabels.length > 0) {
+      try {
+        stopped = await stopGenerationIfVisible(page, stopLabels);
+      } catch (error) {
+        stopFailure = error;
         warnings.push(`Unable to stop generation after probe: ${error instanceof Error ? error.message : String(error)}`);
-        return false;
-      });
+      }
       await wait(options.settleMs);
     }
   }
@@ -1134,6 +1287,9 @@ async function captureGenerationStateLabels(
   const stoppedLabels = stopped ? generationStoppedLabels(before, active, afterStop) : [];
   if (submitted && !stopped) {
     warnings.push("Generation probe was submitted but no stop action was confirmed.");
+  }
+  if (stopFailure !== undefined) {
+    throw new Error(`Generation probe cleanup could not be verified: ${stopFailure instanceof Error ? stopFailure.message : String(stopFailure)}`);
   }
 
   return {
@@ -1265,6 +1421,7 @@ async function readGenerationUiSnapshot(page: PageLike): Promise<GenerationUiSna
     const normalize = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
     const visible = (element: Element) => {
       if (typeof (element as HTMLElement).getBoundingClientRect !== "function") return false;
+      if (element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
       const rect = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
       return rect.width > 0
@@ -1272,14 +1429,23 @@ async function readGenerationUiSnapshot(page: PageLike): Promise<GenerationUiSna
         && style.display !== "none"
         && style.visibility !== "hidden"
         && style.opacity !== "0"
-        && element.getAttribute("aria-hidden") !== "true";
+        && style.pointerEvents !== "none";
     };
-    const relevantSurface = (element: Element) =>
-      element.closest("main, form") !== null
-      && element.closest("nav, aside") === null;
-    const controls = Array.from(document.querySelectorAll("main button, main [role='button'], form button, form [role='button']"))
+    const textboxes = Array.from(document.querySelectorAll<HTMLElement>(
+      "textarea, [contenteditable='true'], [role='textbox']"
+    )).filter(visible);
+    const composers = [...new Set(textboxes
+      .map(textbox => textbox.closest<HTMLElement>("form")
+        ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
+        ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
+        ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
+      .filter((value): value is HTMLElement => value !== null))];
+    const controls = composers.length !== 1 ? [] : Array.from(composers[0]!.querySelectorAll(
+      "button, [role='button']"
+    ))
       .filter(visible)
-      .filter(relevantSurface)
+      .filter(element => !(element as HTMLButtonElement).disabled
+        && element.getAttribute("aria-disabled") !== "true")
       .map(element => {
         const html = element as HTMLElement;
         const text = normalize(html.innerText || html.textContent);
@@ -1312,10 +1478,11 @@ async function readGenerationUiSnapshot(page: PageLike): Promise<GenerationUiSna
   }).catch(() => ({ controls: [], shortLatestAssistantTexts: [] }));
 }
 
-function generationStopLabels(before: GenerationUiSnapshot, active: GenerationUiSnapshot): string[] {
+export function generationStopLabels(before: GenerationUiSnapshot, active: GenerationUiSnapshot): string[] {
   const beforeLabels = new Set(before.controls.map(control => normalizedControlKey(control.label)));
   const candidates = active.controls
-    .filter(control => !beforeLabels.has(normalizedControlKey(control.label)) || looksLikeStopControl(control))
+    .filter(control => looksLikeStopControl(control))
+    .filter(control => !beforeLabels.has(normalizedControlKey(control.label)) || hasStableStopTestId(control))
     .map(control => control.label)
     .filter(isUsefulGenerationLabel);
   return dedupeStrings(candidates);
@@ -1333,18 +1500,22 @@ function generationStoppedLabels(
   return dedupeStrings(candidates);
 }
 
-function snapshotLooksActive(snapshot: GenerationUiSnapshot): boolean {
+export function snapshotLooksActive(snapshot: GenerationUiSnapshot): boolean {
   return snapshot.controls.some(looksLikeStopControl);
 }
 
 function looksLikeStopControl(control: CapturedGenerationControl): boolean {
-  return /stop|cancel|abort|interromp|unterbrech|gestoppt|arr[eê]t|detener|parar|interrumpir/i.test([
+  return /stop|abort|interromp|unterbrech|gestoppt|arr[eê]t|detener|parar|interrumpir/i.test([
     control.label,
     control.text,
     control.ariaLabel,
     control.title,
     control.testId
   ].filter(Boolean).join(" "));
+}
+
+function hasStableStopTestId(control: CapturedGenerationControl): boolean {
+  return /(?:^|[-_])stop(?:[-_]|$)/i.test(control.testId ?? "");
 }
 
 function isUsefulGenerationLabel(label: string): boolean {
@@ -1362,55 +1533,73 @@ function isUsefulStoppedText(text: string): boolean {
   return true;
 }
 
-async function stopGenerationIfVisible(page: PageLike, labels: readonly string[]): Promise<boolean> {
+export async function stopGenerationIfVisible(page: PageLike, labels: readonly string[]): Promise<boolean> {
+  if (labels.length === 0) return false;
+  let selected: LocatorLike | undefined;
   for (const label of labels) {
-    const roleButton = page.getByRole?.("button", { name: label, exact: true })?.last?.();
-    if (roleButton?.click !== undefined) {
-      await roleButton.click().catch(() => undefined);
-      await wait(500);
-      return true;
+    const eligible = await scopedStopCandidates(page, label);
+    if (eligible.length === 1 && eligible[0]?.click !== undefined) {
+      selected = eligible[0];
+      break;
     }
   }
-  if (typeof page.evaluate !== "function") return false;
-  return page.evaluate((wantedLabels: string[]) => {
-    const normalize = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
-    const wanted = new Set(wantedLabels.map(label => label.toLowerCase()));
-    const relevantSurface = (element: Element) =>
-      element.closest("main, form") !== null
-      && element.closest("nav, aside") === null;
-    const visible = (element: HTMLElement) => {
-      const rect = element.getBoundingClientRect();
-      const style = window.getComputedStyle(element);
-      return rect.width > 0
-        && rect.height > 0
-        && style.display !== "none"
-        && style.visibility !== "hidden"
-        && style.opacity !== "0";
-    };
-    const buttons = Array.from(document.querySelectorAll("main button, main [role='button'], form button, form [role='button']"))
-      .filter((button): button is HTMLElement =>
-        typeof (button as HTMLElement).getBoundingClientRect === "function" && visible(button as HTMLElement)
-      )
-      .filter(relevantSurface);
-    const match = buttons.find(button => {
-      const label = [
-        button.getAttribute("aria-label"),
-        button.getAttribute("title"),
-        button.innerText,
-        button.textContent,
-        button.getAttribute("data-testid")
-      ].map(normalize).filter(Boolean).join(" ");
-      return wanted.has(label)
-        || /stop|cancel|abort|interromp|unterbrech|gestoppt|arr[eê]t|detener|parar|interrumpir/i.test(label);
+  if (selected?.click === undefined) return false;
+
+  await selected.click();
+  const expiresAt = Date.now() + 2_000;
+  while (Date.now() < expiresAt) {
+    const remaining = (await Promise.all(labels.map(label => scopedStopCandidates(page, label)))).flat();
+    if (remaining.length === 0) return true;
+    await wait(Math.min(100, Math.max(1, expiresAt - Date.now())));
+  }
+  throw new Error("The locale-capture Stop control was clicked, but generation did not become observably inactive.");
+}
+
+async function scopedStopCandidates(page: PageLike, label: string): Promise<LocatorLike[]> {
+  const candidates = page.getByRole?.("button", { name: label, exact: true });
+  if (candidates?.count === undefined) {
+    throw new Error(`The locale-capture Stop candidates for ${JSON.stringify(label)} could not be enumerated.`);
+  }
+  const count = await candidates.count();
+  const eligible: LocatorLike[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const candidate = count === 1 ? candidates : candidates?.nth?.(index);
+    if (candidate?.isVisible === undefined || candidate.evaluate === undefined) {
+      throw new Error(`Locale-capture Stop candidate ${index + 1} for ${JSON.stringify(label)} could not be inspected.`);
+    }
+    if (!await candidate.isVisible()) continue;
+    const scoped = await candidate.evaluate((element: Element) => {
+      const button = element as HTMLButtonElement;
+      if (button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+      const visible = (node: HTMLElement) => {
+        if (node.hidden || node.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
+          && style.pointerEvents !== "none" && (rect.width > 0 || rect.height > 0);
+      };
+      const textboxes = Array.from(document.querySelectorAll<HTMLElement>(
+        "textarea, [contenteditable='true'], [role='textbox']"
+      )).filter(visible);
+      const composers = [...new Set(textboxes
+        .map(textbox => textbox.closest<HTMLElement>("form")
+          ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
+          ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
+          ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
+        .filter((value): value is HTMLElement => value !== null))];
+      return composers.length === 1 && composers[0]!.contains(button);
     });
-    if (match === undefined) return false;
-    match.click();
-    return true;
-  }, [...labels]).catch(() => false);
+    if (scoped) eligible.push(candidate);
+  }
+  return eligible;
 }
 
 function normalizedControlKey(label: string): string {
   return label.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function normalized(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
 function dedupeStrings(values: readonly string[]): string[] {
@@ -1547,10 +1736,6 @@ function packageRoot(): string {
 
 function wait(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 if (typeof process !== "undefined" && process.argv[1] === fileURLToPath(import.meta.url)) {

@@ -3,14 +3,20 @@ export type RawSurfaceOption = {
   checked: boolean;
 };
 
-export type RawWorkConfigurationRow = {
+export type RawConfigurationRow = {
   label: string;
   axisLabel: string;
   valueLabel?: string;
   options: Array<{ label: string; checked: boolean }>;
 };
 
-export type CapturedWorkConfigurationRow = RawWorkConfigurationRow & {
+export type RawWorkConfigurationRow = RawConfigurationRow;
+
+export type CapturedChatConfigurationRow = RawConfigurationRow & {
+  axis: "model" | "effort";
+};
+
+export type CapturedWorkConfigurationRow = RawConfigurationRow & {
   axis: "model" | "effort" | "speed";
 };
 
@@ -54,6 +60,16 @@ export function assignOrderedWorkConfigurationRows(
     throw new Error(`Expected three ordered Work configuration rows; observed ${rows.length}.`);
   }
   const axes = ["model", "effort", "speed"] as const;
+  return rows.map((row, index) => ({ ...row, axis: axes[index]! }));
+}
+
+export function assignOrderedChatConfigurationRows(
+  rows: readonly RawConfigurationRow[]
+): CapturedChatConfigurationRow[] {
+  if (rows.length !== 2) {
+    throw new Error(`Expected two ordered Chat configuration rows; observed ${rows.length}.`);
+  }
+  const axes = ["model", "effort"] as const;
   return rows.map((row, index) => ({ ...row, axis: axes[index]! }));
 }
 

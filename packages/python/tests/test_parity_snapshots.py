@@ -106,6 +106,23 @@ class PythonParitySnapshotTests(unittest.TestCase):
         self.assertNotIn("visibleText", diagnostics)
         self.assertNotIn("content", diagnostics["candidateTabs"][0])
 
+    def test_indeterminate_mutation_fixtures_remain_non_resumable(self) -> None:
+        expectations = {
+            "messages-stop-indeterminate.json": ("timeout", "stop_generation_unverified"),
+            "files-attach-indeterminate.json": ("partial", "attachment_outcome_indeterminate"),
+        }
+
+        for file_name, (status, code) in expectations.items():
+            with self.subTest(fixture=file_name):
+                payload = json.loads((CONTRACT / "fixtures" / file_name).read_text(encoding="utf-8"))
+                model = BackendResponse.from_wire(payload)
+                wire = model.to_wire()
+
+                self.assertEqual(wire["result"]["status"], status)
+                self.assertEqual(wire["result"]["blocker"]["code"], code)
+                self.assertIs(wire["result"]["blocker"]["resumable"], False)
+                self.assertIn("data", wire["result"])
+
 
 if __name__ == "__main__":
     unittest.main()

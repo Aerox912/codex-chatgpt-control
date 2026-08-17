@@ -6,18 +6,22 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const ms = {
   configurationAxes: {
+    power: ["Kuasa"],
     effort: ["Usaha"],
     speed: ["Kelajuan"],
+    advanced: ["Lanjutan"],
   },
   configurationOptions: {
+    instant: ["Segera"],
     light: ["Ringan"],
     medium: ["Sederhana"],
     high: ["Tinggi"],
     extraHigh: ["Sangat Tinggi"],
+    max: ["Sangat Tinggi"],
     fast: ["Pantas"],
   },
   composerTextbox: ["Tanya apa-apa sahaja..."],
@@ -37,6 +41,10 @@ export const ms = {
     extraHigh: ["Sangat Tinggi"],
   },
   modeOpenerExtra: ["Konfigurasikan…"],
+  experienceOptions: {
+    chat: ["Sembang"],
+    work: ["Kerja"],
+  },
   tools: {
     web_search: ["Carian web"],
     deep_research: ["Kajian mendalam"],

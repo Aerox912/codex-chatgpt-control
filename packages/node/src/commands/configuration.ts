@@ -59,6 +59,7 @@ export async function inspectConfiguration(
     if (!detected.ok || detected.data === undefined) {
       return forwardFailure(detected);
     }
+    const initialPanel = await readConfigurationPanel(page);
     const discoveryExperience = detected.data.experience === "unknown"
       ? args.experience ?? "unknown"
       : detected.data.experience;
@@ -72,6 +73,9 @@ export async function inspectConfiguration(
     }
 
     let panel = await readConfigurationPanel(page);
+    if (panel.openerLabel === undefined && initialPanel.openerLabel !== undefined) {
+      panel.openerLabel = initialPanel.openerLabel;
+    }
     let rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
     const inferredExperience = detected.data.experience === "unknown"
       ? inferExperienceFromConfigurationPanel(panel, rootItems)
@@ -107,6 +111,9 @@ export async function inspectConfiguration(
     if (chatAdvancedRequired && chatAdvancedOpened) {
       await page.waitForTimeout?.(150);
       panel = await readConfigurationPanel(page);
+      if (panel.openerLabel === undefined && initialPanel.openerLabel !== undefined) {
+        panel.openerLabel = initialPanel.openerLabel;
+      }
       rootItems = await enumerateVisibleMenuItems(page);
     }
 
@@ -115,6 +122,9 @@ export async function inspectConfiguration(
     if (experience === "work" && workAdvancedOpened) {
       await page.waitForTimeout?.(150);
       panel = await readConfigurationPanel(page);
+      if (panel.openerLabel === undefined && initialPanel.openerLabel !== undefined) {
+        panel.openerLabel = initialPanel.openerLabel;
+      }
       rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
     }
 
@@ -605,14 +615,18 @@ async function openConfigurationRoot(page: PageLike, experience: ChatGPTExperien
         }
         return true;
       };
-      const composerRoots = Array.from(document.querySelectorAll(
-        "main form, main [data-testid*='composer' i], main [class*='composer' i]"
-      ));
+      const formRoots = Array.from(document.querySelectorAll("main form"));
+      const testIdRoots = Array.from(document.querySelectorAll("main [data-testid*='composer' i]"));
+      const classRoots = Array.from(document.querySelectorAll("main [class*='composer' i]"));
+      const composerRoots = formRoots.length > 0
+        ? formRoots
+        : testIdRoots.length > 0
+          ? testIdRoots
+          : classRoots;
       const main = document.querySelector("main");
-      const roots = Array.from(new Set<Element>([
-        ...composerRoots,
-        ...(main === null ? [] : [main])
-      ]));
+      const roots = Array.from(new Set<Element>(composerRoots.length > 0
+        ? composerRoots
+        : (main === null ? [] : [main])));
       const controls = Array.from(new Set(roots.flatMap(root =>
         Array.from(root.querySelectorAll("button, [role='button']"))
       )))
@@ -788,11 +802,19 @@ async function readConfigurationPanel(page: PageLike): Promise<ConfigurationPane
       }
     }
 
-    const composerRoots = Array.from(document.querySelectorAll(
-      "main form, main [data-testid*='composer' i], main [class*='composer' i]"
-    ));
+    const formRoots = Array.from(document.querySelectorAll("main form"));
+    const testIdRoots = Array.from(document.querySelectorAll("main [data-testid*='composer' i]"));
+    const classRoots = Array.from(document.querySelectorAll("main [class*='composer' i]"));
+    const composerRoots = formRoots.length > 0
+      ? formRoots
+      : testIdRoots.length > 0
+        ? testIdRoots
+        : classRoots;
     const main = document.querySelector("main");
-    const openerCandidatesFrom = (roots: Element[]) => Array.from(new Set(roots.flatMap(root =>
+    const openerRoots = Array.from(new Set<Element>(composerRoots.length > 0
+      ? composerRoots
+      : (main === null ? [] : [main])));
+    const openerCandidatesFrom = (candidateRoots: Element[]) => Array.from(new Set(candidateRoots.flatMap(root =>
       Array.from(root.querySelectorAll("button, [role='button']"))
     )))
       .filter(visible)
@@ -806,10 +828,8 @@ async function readConfigurationPanel(page: PageLike): Promise<ConfigurationPane
       .filter(item => !/send|voice|microphone|attach|upload|add files|plus|feedback|copy|share|edit|more actions/i.test(`${item.label} ${item.testId}`))
       .filter(item => /model-switcher|model-selector|mode-selector/i.test(item.testId)
         || /\b(?:gpt|sol|luna|terra|instant|medium|high|extra high|pro|thinking|extended|light|standard|fast)\b/i.test(item.label));
-    const scopedOpenerCandidates = openerCandidatesFrom(composerRoots);
-    const openerCandidates = scopedOpenerCandidates.length > 0
-      ? scopedOpenerCandidates
-      : openerCandidatesFrom(main === null ? [] : [main]);
+    const scopedOpenerCandidates = openerCandidatesFrom(openerRoots);
+    const openerCandidates = scopedOpenerCandidates;
     const result: ConfigurationPanelSnapshot = {
       axisRows,
       advancedVisible: axisRows.length > 0
@@ -893,16 +913,32 @@ async function clickVisibleMenuItem(page: PageLike, item: MenuItem): Promise<boo
   if (item.testId !== undefined && await clickIfUnique(page.locator?.(`[data-testid="${escapeAttributeValue(item.testId)}"]`))) {
     return true;
   }
-  for (const role of ["menuitemradio", "menuitem", "option"]) {
-    if (item.ariaLabel !== undefined
-      && await clickIfUnique(page.getByRole?.(role, { name: item.ariaLabel, exact: true }))) {
-      return true;
+  const roles = [...new Set([
+    item.role,
+    "menuitemradio",
+    "menuitem",
+    "option"
+  ].filter((role): role is string => role !== undefined))];
+  // Current Chat can expose visible text such as "Advanced" while assigning
+  // the actionable menu item a different accessible name (for example,
+  // "Show compact options"). Prefer that enumerated accessible name so the
+  // bridge clicks the menu item itself rather than a nested text span.
+  if (item.ariaLabel !== undefined) {
+    for (const role of roles) {
+      if (await clickIfUnique(page.getByRole?.(role, { name: item.ariaLabel, exact: true }))) {
+        return true;
+      }
     }
+  }
+  for (const role of roles) {
     if (await clickIfUnique(page.getByRole?.(role, { name: item.label, exact: true }))) {
       return true;
     }
   }
-  return clickIfUnique(page.getByText?.(item.label, { exact: true }));
+  const exactText = new RegExp(`^\\s*${escapeRegExp(item.label)}\\s*$`, "i");
+  return clickIfUnique(page.locator?.(
+    "button, [role='button'], [role='menuitem'], [role='menuitemradio'], [role='option']"
+  )?.filter?.({ hasText: exactText }));
 }
 
 function findConfigurationOption(items: MenuItem[], requested: string): MenuItem | undefined {

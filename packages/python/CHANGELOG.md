@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1a2
+
+- Adds sync and async `chatgpt.messages.stop(confirm_stop=True)` parity over the
+  Node-owned visible-browser command.
+- Covers the new command in shared fixtures, backend conformance, primitive
+  tests, and the full ordinary-shell parity gate without adding independent
+  Python browser behavior.
+
 ## 0.5.1a1
 
 - Picks up the corrected Node-backed Chat/Work radio selection and active Work

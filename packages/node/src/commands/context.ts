@@ -3,11 +3,17 @@ import { countPageMessages } from "../dom/messages.js";
 import { parseConversationId } from "../browser/page-state.js";
 import { withTimeout } from "./timeouts.js";
 
+export type ContextReadOptions = {
+  /** Avoid all optional browser probes on mutation/deadline result paths. */
+  minimal?: boolean;
+};
+
 export async function contextFromPage(
   page: PageLike | undefined,
-  partial: Partial<CommandContext> = {}
+  partial: Partial<CommandContext> = {},
+  options: ContextReadOptions = {}
 ): Promise<CommandContext> {
-  if (page === undefined) {
+  if (page === undefined || options.minimal === true) {
     return { timestamp: new Date().toISOString(), ...partial };
   }
 

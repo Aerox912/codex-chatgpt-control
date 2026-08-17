@@ -6,13 +6,18 @@ import type { LocaleContribution } from "./types.js";
  *
  * Some non-Intelligence surfaces may still fall back to English + `selector_drift`.
  *
- * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, and Chat/Work surface labels updated 2026-07-17 from visible ChatGPT sessions.
+ * Intelligence picker labels updated 2026-06-10, stop-control labels updated 2026-06-15, Chat/Work surface labels updated 2026-07-17, and Power/Advanced selector labels updated 2026-08-08 from visible ChatGPT sessions.
  */
 export const th = {
   configurationAxes: {
+    power: ["ระดับความสามารถ"],
     model: ["โมเดล"],
     effort: ["ระดับการคิด"],
     speed: ["ความเร็ว"],
+    advanced: ["ขั้นสูง"],
+  },
+  configurationOptions: {
+    instant: ["ทันที"],
   },
   composerTextbox: ["ถามอะไรก็ได้"],
   sendButton: ["ส่งคำสั่ง"],

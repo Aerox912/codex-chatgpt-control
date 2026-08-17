@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "requestId": "req_messages_stop",
+  "result": {
+    "context": {
+      "timestamp": "2026-06-06T00:00:00.000Z"
+    },
+    "data": {
+      "signalsAfter": [],
+      "signalsBefore": [],
+      "stopped": false,
+      "wasGenerating": false
+    },
+    "ok": true,
+    "status": "ok",
+    "warnings": []
+  },
+  "schemaVersion": "chatgpt.browser_control.backend_response.v1"
+}

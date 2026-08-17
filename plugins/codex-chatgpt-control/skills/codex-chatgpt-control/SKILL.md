@@ -283,6 +283,8 @@ Common blockers:
 - `rate_limit`: wait or ask the user how to proceed.
 - `needs_confirmation`: the workflow requires explicit user confirmation.
 
+Two mutation outcomes are deliberately non-resumable. Browser-native deadlines terminate these requests before return, so neither can mutate later, but the mutation may already have taken effect. For `stop_generation_unverified`, inspect whether generation is still active and never retry Stop automatically. For `attachment_outcome_indeterminate`, inspect the current composer, do not submit, and never repeat the attachment automatically.
+
 See `references/troubleshooting.md` before diagnosing selector, tab-claim, upload, or bridge issues.
 
 ## Validation

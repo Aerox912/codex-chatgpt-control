@@ -1,5 +1,5 @@
 import type { LocatorLike, PageLike } from "../types.js";
-import { anyLabelPattern, localeLabels } from "./locale-labels.js";
+import { anyLabelPattern, escapeRegExp, localeLabels } from "./locale-labels.js";
 
 // Language-sensitive label tokens are sourced from the locale registry; the structural
 // clauses (download attributes, file-backend hrefs, blob/data sources) are language-agnostic
@@ -67,6 +67,15 @@ export function sendButton(page: PageLike): LocatorLike {
     return requiredLocator(page, "button[aria-label*='Send']");
   }
   return page.getByRole("button", { name: anyLabelPattern(localeLabels.sendButton) });
+}
+
+export function stopGenerationButton(page: PageLike): LocatorLike {
+  if (typeof page.getByRole !== "function") {
+    return requiredLocator(page, "button[aria-label*='Stop'], button[title*='Stop']");
+  }
+  return page.getByRole("button", {
+    name: new RegExp(`^(?:${localeLabels.stopControl.map(escapeRegExp).join("|")})$`, "i")
+  });
 }
 
 export function searchChatsButton(page: PageLike): LocatorLike {

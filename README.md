@@ -254,6 +254,19 @@ await chatgpt.askInThread({
 
 If you run browser-required commands from an ordinary shell, the safe expected result is a structured `browser_bridge_unavailable` blocker. That means the protocol path is working, but no visible browser bridge was available to the process.
 
+Stop a running Chat response only after an explicit caller decision:
+
+```ts
+const stopped = await chatgpt.messages.stop({
+  confirmStop: true,
+  timeoutMs: 5000
+});
+```
+
+The exact boolean confirmation is required. The SDK clicks at most one uniquely scoped visible stop control and returns success only after it observes generation inactive. Uninspectable state, ambiguous controls, and an unverified postcondition fail closed; an observably inactive page is a successful no-op.
+
+If Stop activation outlives its deadline, the SDK returns `stop_generation_unverified` with `resumable: false`. Its browser-native deadline terminates the request so it cannot click later, but the click may already have taken effect; inspect the visible state and never retry automatically.
+
 Download an image-only generation through the artifact primitives:
 
 ```ts
@@ -283,6 +296,8 @@ The Python package talks to the Node backend. Build or install a backend command
 python -m pip install --pre codex-chatgpt-control
 npm install codex-chatgpt-control@next
 ```
+
+The Python facade exposes the same confirmation-gated stop primitive as `chatgpt.messages.stop(confirm_stop=True)`; visible control selection and postcondition verification remain owned by the Node runtime.
 
 ```python
 from codex_chatgpt_control import Agent, BackendClient, Runner, StdioBackendTransport
@@ -386,6 +401,8 @@ In-app-browser attachments use its visible file chooser and Codex confirmation f
 2. **Codex app gate:** in Codex settings, allow Google Chrome uploads under **Computer Use > Google Chrome > Permissions > Uploads**. Choose the most restrictive setting that still fits your workflow; for unattended local smoke tests, use the setting that always allows uploads.
 
 If either gate is missing, file upload workflows should stop with a structured permission blocker instead of retrying blindly.
+
+If a native handoff starts but its result cannot be verified, `files.attach` returns `attachment_outcome_indeterminate` with `status: "partial"` and `resumable: false`. The browser request is no longer in flight, though the file may already be present. Inspect the current composer, do not submit, and never retry the attachment automatically.
 
 ## Repository Layout
 

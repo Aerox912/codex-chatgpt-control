@@ -1,6 +1,6 @@
 {
   "name": "codex-chatgpt-control",
-  "version": "0.5.1-alpha.1",
+  "version": "0.5.1-alpha.2",
   "description": "Unofficial SDK for controlling visible ChatGPT Chat and Work sessions.",
   "type": "module",
   "license": "MIT",
@@ -27,6 +27,7 @@
     "bundle:backend": "esbuild src/scripts/backend-server.ts --bundle --platform=node --format=esm --outfile=dist/codex-chatgpt-control-backend.mjs",
     "bundle:live-smoke": "esbuild src/scripts/live-smoke-module.ts --bundle --platform=node --format=esm --outfile=dist/codex-chatgpt-control-live-smoke.bundle.mjs",
     "bundle:release-canary": "esbuild src/scripts/release-canary-module.ts --bundle --platform=node --format=esm --outfile=dist/codex-chatgpt-control-release-canary.bundle.mjs",
+    "contract:generate": "node scripts/generate-contract-fixtures.mjs",
     "contract:validate": "node scripts/validate-contract.mjs",
     "docs:drift": "tsx src/scripts/check-surface-drift.ts",
     "parity:fixtures": "node scripts/check-parity-fixtures.mjs",
