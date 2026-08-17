@@ -70,6 +70,24 @@ async function makeRoot(label: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `chatgpt-operation-output-${label}-`));
 }
 
+async function directoryEntriesIfPresent(path: string): Promise<string[]> {
+  try {
+    return await readdir(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function readUtf8IfPresent(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 async function* bytes(...chunks: string[]): AsyncGenerator<Uint8Array> {
   for (const chunk of chunks) yield Buffer.from(chunk, "utf8");
 }
@@ -536,8 +554,8 @@ describe("operation artifact output", () => {
     }));
     expect(result.status).toBe("blocked");
     expect(result.reason).not.toBe("created");
-    expect((await readdir(root)).some(name => name === result.outputKey)).toBe(false);
-    expect((await readdir(moved)).some(name => name === result.outputKey)).toBe(false);
+    expect((await directoryEntriesIfPresent(root)).some(name => name === result.outputKey)).toBe(false);
+    expect((await directoryEntriesIfPresent(moved)).some(name => name === result.outputKey)).toBe(false);
   });
 
   it("copies from the retained source handle when the temp pathname is replaced before commit", async () => {
@@ -560,10 +578,18 @@ describe("operation artifact output", () => {
         }
       }
     }));
-    expect(result).toMatchObject({ status: "blocked", reason: "temp_cleanup_ambiguous" });
-    expect(await readFile(join(root, result.outputKey), "utf8")).toBe("trusted-source");
+    expect(result.status).toBe("blocked");
     expect(replacedTempName).toBeDefined();
-    expect(await readFile(join(root, replacedTempName!), "utf8")).toBe("attacker-bytes");
+    if (result.reason === "temp_cleanup_ambiguous") {
+      expect(await readFile(join(root, result.outputKey), "utf8")).toBe("trusted-source");
+      expect(await readFile(join(root, replacedTempName!), "utf8")).toBe("attacker-bytes");
+    } else {
+      // Windows refuses replacement of the retained open temp handle. The
+      // mutation must still fail closed, and attacker bytes must never appear
+      // at the final pathname.
+      expect(result.reason).toBe("commit_indeterminate");
+      expect(await readUtf8IfPresent(join(root, result.outputKey))).not.toBe("attacker-bytes");
+    }
   });
 
   it("fails closed when the destination directory is replaced after source validation", async () => {
@@ -580,8 +606,8 @@ describe("operation artifact output", () => {
       }
     }));
     expect(result).toMatchObject({ status: "blocked", reason: "commit_indeterminate" });
-    expect((await readdir(root)).some(name => name === result.outputKey)).toBe(false);
-    expect((await readdir(moved)).some(name => name === result.outputKey)).toBe(false);
+    expect((await directoryEntriesIfPresent(root)).some(name => name === result.outputKey)).toBe(false);
+    expect((await directoryEntriesIfPresent(moved)).some(name => name === result.outputKey)).toBe(false);
   });
 
   it("does not report committed when the final pathname is replaced after copying", async () => {

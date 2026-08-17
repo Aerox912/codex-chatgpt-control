@@ -53,7 +53,11 @@ DEFAULT_ASYNC_STREAM_WORKERS = 16
 DEFAULT_ASYNC_CLEANUP_WORKERS = 4
 DEFAULT_ASYNC_STREAM_CLOSE_TIMEOUT_SECONDS = 5.0
 DEFAULT_ASYNC_CLIENT_CLOSE_TIMEOUT_SECONDS = 5.0
-ASYNC_CLEANUP_CANCEL_GRACE_SECONDS = 0.05
+# Cancellation of an awaitable returned through ``run_in_executor`` can need
+# more than one Proactor event-loop turn on Windows under CI load. Keep the
+# grace strictly bounded, but long enough for a responsive task to retire
+# before a caller is told it can safely retry the close.
+ASYNC_CLEANUP_CANCEL_GRACE_SECONDS = 0.25
 
 
 def _validate_timeout_seconds(value: float, *, name: str) -> None:

@@ -1,5 +1,5 @@
 import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   appendFile,
   chmod,
@@ -13,7 +13,18 @@ import {
   unlink,
   writeFile
 } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { opendirMock } = vi.hoisted(() => ({ opendirMock: vi.fn() }));
+
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  opendirMock.mockImplementation((...args: Parameters<typeof actual.opendir>) => actual.opendir(...args));
+  return {
+    ...actual,
+    opendir: (...args: Parameters<typeof actual.opendir>) => opendirMock(...args)
+  };
+});
 import { hmacDigest, operationRequestDigest } from "../../src/operations/canonical.js";
 import {
   OperationJournal,
@@ -199,7 +210,7 @@ describe("operation journal", () => {
     const journal = await OperationJournal.open({ stateRoot: root, clock, entropy, lockTimeoutMs: 20 });
     await journal.create(created());
     const logPath = await onlyLog(root);
-    const stem = logPath.split("/").at(-1)!.replace(/\.jsonl$/, "");
+    const stem = basename(logPath).replace(/\.jsonl$/, "");
     const lockPath = join(root, "locks", `${stem}.lock`);
     await writeFile(lockPath, `${JSON.stringify({
       schemaVersion: "chatgpt.browser_control.operation_lock.v1",
@@ -243,7 +254,7 @@ describe("operation journal", () => {
     });
     await journal.create(created());
     const logPath = await onlyLog(root);
-    const stem = logPath.split("/").at(-1)!.replace(/\.jsonl$/, "");
+    const stem = basename(logPath).replace(/\.jsonl$/, "");
     await writeFile(join(root, "locks", `${stem}.lock`), `${JSON.stringify({
       schemaVersion: "chatgpt.browser_control.operation_lock.v1",
       token: "ffffffff-ffff-4fff-8fff-ffffffffffff",
@@ -538,24 +549,27 @@ describe("operation journal", () => {
     const root = await testRoot("quota-entry-flood");
     try {
       const journal = await OperationJournal.open({ stateRoot: root });
-      const entryCount = 65_537;
-      const names = Array.from({ length: entryCount }, (_, index) => `${index.toString(16).padStart(64, "0")}.jsonl`);
-      for (let offset = 0; offset < names.length; offset += 512) {
-        const batch = names.slice(offset, offset + 512);
-        await Promise.all(batch.map(name => writeFile(join(root, "logs", name), "", { mode: 0o600 })));
-      }
+      // Change the real directory fingerprint, then stream cap-plus-one
+      // synthetic ignored entries through opendir. This exercises the exact
+      // production scan boundary without allocating or deleting 65,537 files.
+      await writeFile(join(root, "logs", ".DS_Store"), "", { mode: 0o600 });
+      let yielded = 0;
+      let closed = 0;
+      opendirMock.mockImplementationOnce(async () => syntheticDirectoryEntries(
+        65_537,
+        () => { yielded += 1; },
+        () => { closed += 1; }
+      ));
 
       await expect(journal.create(created(SECOND_OPERATION_ID))).rejects.toMatchObject({
         code: "journal_scan_limit"
       });
+      expect(yielded).toBe(65_537);
+      expect(closed).toBe(1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  // This deliberately creates 65,537 real directory entries. It normally
-  // completes in a few seconds, but the full parallel suite runs several
-  // filesystem fault tests at once; allow contention without weakening the
-  // production entry ceiling or turning a slow host into a false failure.
-  }, 90_000);
+  });
 
   it("never persists raw prompt, response, path, or display-name data", async () => {
     const root = await testRoot("privacy");
@@ -602,7 +616,7 @@ describe("operation journal", () => {
     const journal = await OperationJournal.open({ stateRoot: root });
     await journal.create(created());
     const logPath = await onlyLog(root);
-    const stem = logPath.split("/").at(-1)!.replace(/\.jsonl$/, "");
+    const stem = basename(logPath).replace(/\.jsonl$/, "");
     const lockPath = join(root, "locks", `${stem}.lock`);
     await writeFile(lockPath, `${JSON.stringify({
       schemaVersion: "chatgpt.browser_control.operation_lock.v1",
@@ -627,7 +641,7 @@ describe("operation journal", () => {
     const journal = await OperationJournal.open({ stateRoot: root, lockTimeoutMs: 25 });
     await journal.create(created());
     const logPath = await onlyLog(root);
-    const stem = logPath.split("/").at(-1)!.replace(/\.jsonl$/, "");
+    const stem = basename(logPath).replace(/\.jsonl$/, "");
     const lockPath = join(root, "locks", `${stem}.lock`);
     const abandonedToken = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     await writeFile(lockPath, `${JSON.stringify({
@@ -663,7 +677,7 @@ describe("operation journal", () => {
     const journal = await OperationJournal.open({ stateRoot: root });
     await journal.create(created());
     const logPath = await onlyLog(root);
-    const stem = logPath.split("/").at(-1)!.replace(/\.jsonl$/, "");
+    const stem = basename(logPath).replace(/\.jsonl$/, "");
     const lockPath = join(root, "locks", `${stem}.lock`);
     await writeFile(lockPath, `${JSON.stringify({
       schemaVersion: "chatgpt.browser_control.operation_lock.v1",
@@ -1156,6 +1170,31 @@ function statusIntent(actionId: string): Extract<OperationEventV1, { type: "acti
 
 async function testRoot(label: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `chatgpt-operation-journal-${label}-`));
+}
+
+function syntheticDirectoryEntries(
+  count: number,
+  onRead: () => void,
+  onClose: () => void
+): unknown {
+  let cursor = 0;
+  return {
+    async next() {
+      if (cursor >= count) return { done: true, value: undefined };
+      cursor += 1;
+      onRead();
+      return { done: false, value: { name: ".DS_Store" } };
+    },
+    async return() {
+      return { done: true, value: undefined };
+    },
+    async close() {
+      onClose();
+    },
+    [Symbol.asyncIterator]() {
+      return this;
+    }
+  };
 }
 
 async function onlyLog(root: string): Promise<string> {

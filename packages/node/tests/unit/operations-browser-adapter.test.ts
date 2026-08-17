@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DownloadLike } from "../../src/browser/downloads.js";
@@ -683,7 +684,7 @@ describe("composed operation browser adapter", () => {
   });
 
   it("revalidates file identity before handoff and refuses a changed file without invoking the browser", async () => {
-    const root = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "operation-browser-adapter-"));
+    const root = await mkdtemp(join(tmpdir(), "operation-browser-adapter-"));
     temporaryRoots.push(root);
     const sourcePath = join(root, "input.txt");
     await writeFile(sourcePath, "before");
@@ -727,7 +728,7 @@ describe("composed operation browser adapter", () => {
   });
 
   it("forwards the caller deadline and coordinator abort to the one-shot handoff", async () => {
-    const root = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "operation-browser-adapter-abort-"));
+    const root = await mkdtemp(join(tmpdir(), "operation-browser-adapter-abort-"));
     temporaryRoots.push(root);
     const sourcePath = join(root, "input.txt");
     await writeFile(sourcePath, "before");
@@ -1491,7 +1492,7 @@ describe("composed operation browser adapter", () => {
   });
 
   it("releases the tab actor before materializing an artifact stream", async () => {
-    const outputDirectory = await mkdtemp(join("/tmp", "operation-artifact-adapter-"));
+    const outputDirectory = await mkdtemp(join(tmpdir(), "operation-artifact-adapter-"));
     temporaryRoots.push(outputDirectory);
     const coordinator = new ProcessTabCoordinator();
     const events: string[] = [];
@@ -1570,7 +1571,7 @@ describe("composed operation browser adapter", () => {
   });
 
   it("keeps a same-tab mutation held until a late artifact click evaluator settles", async () => {
-    const outputDirectory = await mkdtemp(join("/tmp", "operation-artifact-adapter-settlement-"));
+    const outputDirectory = await mkdtemp(join(tmpdir(), "operation-artifact-adapter-settlement-"));
     temporaryRoots.push(outputDirectory);
     const coordinator = new ProcessTabCoordinator();
     const events: string[] = [];

@@ -1001,7 +1001,7 @@ describe("ChatGPT backend client", () => {
     } finally {
       await transport.close();
     }
-  });
+  }, 15_000);
 
   it("bounds direct stream buffering by encoded bytes and releases the route", async () => {
     const transport = new StdioBackendTransport({

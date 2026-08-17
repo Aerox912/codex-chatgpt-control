@@ -1,5 +1,5 @@
-import { constants as fsConstants } from "node:fs";
-import { open } from "node:fs/promises";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { lstat, open } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,20 +51,10 @@ function modulePath(moduleUrl: string | URL): string {
 }
 
 async function digestArtifact(path: string): Promise<string | undefined> {
-  let handle;
-  try {
-    handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-    const metadata = await handle.stat();
-    if (!metadata.isFile() || !Number.isSafeInteger(metadata.size) || metadata.size > MAX_BACKEND_ARTIFACT_BYTES) {
-      return undefined;
-    }
-    const bytes = await handle.readFile();
-    return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  } catch {
-    return undefined;
-  } finally {
-    await handle?.close();
-  }
+  const bytes = await readStableRegularFile(path, MAX_BACKEND_ARTIFACT_BYTES);
+  return bytes === undefined
+    ? undefined
+    : `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 async function findPackageMetadata(start: string): Promise<PackageMetadata> {
@@ -90,18 +80,58 @@ async function findPackageMetadata(start: string): Promise<PackageMetadata> {
 }
 
 async function readBoundedJson(path: string): Promise<Record<string, unknown> | undefined> {
+  const bytes = await readStableRegularFile(path, MAX_METADATA_BYTES);
+  if (bytes === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(bytes.toString("utf8")) as unknown;
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read one bounded regular file without trusting pathname-only checks.
+ * Windows does not expose O_NOFOLLOW, so lstat must reject links explicitly;
+ * the handle/path identity comparisons also fail closed if the entry is
+ * replaced between the checks and the read.
+ */
+async function readStableRegularFile(path: string, maxBytes: number): Promise<Buffer | undefined> {
   let handle;
   try {
+    const before = await lstat(path);
+    if (!isBoundedRegularFile(before, maxBytes)) return undefined;
     handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-    const metadata = await handle.stat();
-    if (!metadata.isFile() || !Number.isSafeInteger(metadata.size) || metadata.size > MAX_METADATA_BYTES) return undefined;
-    const parsed = JSON.parse(await handle.readFile({ encoding: "utf8" })) as unknown;
-    return isRecord(parsed) ? parsed : undefined;
+    const opened = await handle.stat();
+    if (!isBoundedRegularFile(opened, maxBytes) || !sameFileIdentity(before, opened)) return undefined;
+    const bytes = await handle.readFile();
+    const finalHandle = await handle.stat();
+    const finalPath = await lstat(path);
+    if (!isBoundedRegularFile(finalHandle, maxBytes)
+      || !isBoundedRegularFile(finalPath, maxBytes)
+      || !sameFileIdentity(opened, finalHandle)
+      || !sameFileIdentity(finalHandle, finalPath)
+      || bytes.byteLength !== finalHandle.size) {
+      return undefined;
+    }
+    return bytes;
   } catch {
     return undefined;
   } finally {
     await handle?.close();
   }
+}
+
+function isBoundedRegularFile(metadata: Stats, maxBytes: number): boolean {
+  return !metadata.isSymbolicLink()
+    && metadata.isFile()
+    && Number.isSafeInteger(metadata.size)
+    && metadata.size >= 0
+    && metadata.size <= maxBytes;
+}
+
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function identityField(value: unknown): string | undefined {
