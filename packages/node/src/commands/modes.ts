@@ -6,6 +6,11 @@ import { normalizeLabel, normalizeWhitespace } from "../dom/visible-text.js";
 import type { CommandResult, GetModeArgs, LocatorLike, PageLike, RuntimeEnv, SelectToolArgs, SetModeArgs } from "../types.js";
 import type { ModeOptionId } from "../dom/locale/types.js";
 import { contextFromPage } from "./context.js";
+import {
+  discoverPowerSlider,
+  observedPowerSlider,
+  resolvePowerTarget
+} from "./power-discovery.js";
 import { ensurePage } from "./session.js";
 
 const DEFAULT_MODE_EFFORT = "Thinking";
@@ -55,6 +60,10 @@ type RequestedMode = {
   modeId?: ModeOptionId;
 };
 
+type PowerSliderSelection = {
+  selected: string;
+};
+
 export async function setMode(
   env: RuntimeEnv,
   args: SetModeArgs
@@ -98,7 +107,11 @@ export async function setMode(
       if (match === undefined) {
         const sliderSelection = await selectModeWithPowerSlider(page, request);
         if (sliderSelection !== undefined) {
-          selected.push(sliderSelection);
+          // A slider press is already a mutation. Even if the postcondition
+          // label is unavailable, do not fall through to Advanced and issue a
+          // second UI action against the same request. The final warning pass
+          // will expose that this selection remains unverified.
+          selected.push(sliderSelection.selected);
           continue;
         }
         const nested = await openEffortSubmenu(page, candidates, request);
@@ -146,21 +159,27 @@ export async function setMode(
 }
 
 /**
- * Chat's compact picker exposes the five canonical intelligence levels as an
- * ARIA slider. Use it only when its visible min/max/current metadata exactly
- * matches that five-step scale, and accept the move only when the composer
- * visibly echoes the requested label. The Advanced submenu remains the
- * fallback for every unrecognized shape.
+ * Chat's compact picker can expose a Power/reasoning ARIA slider. Discover the
+ * control from its semantic relationship to the localized Power axis and its
+ * owning menu, then use only a complete, bounded, DOM-provided value mapping.
+ * The Advanced submenu remains the fallback for every unrecognized or
+ * unprobed shape; in particular, this path never infers labels from a fixed
+ * five-position range.
  */
 async function selectModeWithPowerSlider(
   page: PageLike,
   request: RequestedMode
-): Promise<string | undefined> {
-  const wanted = request.modeId === undefined
-    ? undefined
-    : CANONICAL_INTELLIGENCE_ORDER.get(request.modeId);
-  const slider = page.locator?.("[role='slider'][aria-valuemin='0'][aria-valuemax='4']");
-  if (wanted === undefined
+): Promise<PowerSliderSelection | undefined> {
+  const discovery = await discoverPowerSlider(page, {
+    powerLabels: localeLabels.configurationAxes.power
+  });
+  if (!discovery.ok || await isWorkPowerSurface(page, discovery.evidence.surface)) {
+    return undefined;
+  }
+
+  const target = resolvePowerTarget(discovery, request.labels);
+  const slider = observedPowerSlider(page, discovery);
+  if (target === undefined
     || slider?.count === undefined
     || slider.evaluate === undefined
     || slider.press === undefined
@@ -170,26 +189,48 @@ async function selectModeWithPowerSlider(
     return undefined;
   }
 
+  // Re-read the three values on the selected locator so a menu replacement
+  // between discovery and selection cannot apply an old operation's plan to a
+  // newly rendered slider.
   const state = await slider.evaluate(element => ({
     min: Number(element.getAttribute("aria-valuemin")),
     max: Number(element.getAttribute("aria-valuemax")),
     now: Number(element.getAttribute("aria-valuenow"))
   })).catch(() => undefined);
   if (state === undefined
-    || state.min !== 0
-    || state.max !== CANONICAL_INTELLIGENCE_ORDER.size - 1
+    || state.min !== discovery.range.minimum
+    || state.max !== discovery.range.maximum
     || !Number.isInteger(state.now)
     || state.now < state.min
-    || state.now > state.max) {
+    || state.now > state.max
+    || target < state.min
+    || target > state.max) {
     return undefined;
   }
 
-  const key = wanted > state.now ? "ArrowRight" : "ArrowLeft";
-  for (let step = 0; step < Math.abs(wanted - state.now); step += 1) {
+  const key = target > state.now ? "ArrowRight" : "ArrowLeft";
+  for (let step = 0; step < Math.abs(target - state.now); step += 1) {
     await slider.press(key);
   }
   await page.waitForTimeout?.(150);
-  return findUniqueVisibleLabelForRequest(await visibleModeButtonLabelList(page), request);
+  const after = await slider.evaluate(element => Number(element.getAttribute("aria-valuenow")))
+    .catch(() => undefined);
+  const reflected = findUniqueVisibleLabelForRequest(await visibleModeButtonLabelList(page), request);
+  return {
+    // A silent/no-op keypress must not be reported as the requested level. We
+    // still return a handled selection to prevent a second Advanced mutation;
+    // the normal visible-mode verification warning exposes the unresolved
+    // postcondition to the caller.
+    selected: after === target ? reflected ?? request.requested : request.requested
+  };
+}
+
+async function isWorkPowerSurface(page: PageLike, discoveredSurface: "chat" | "work" | "unknown"): Promise<boolean> {
+  if (discoveredSurface === "work") return true;
+  const url = typeof page.url === "function"
+    ? await Promise.resolve(page.url()).catch(() => "")
+    : "";
+  return /\/work(?:\/|$|\?)/i.test(url);
 }
 
 /**

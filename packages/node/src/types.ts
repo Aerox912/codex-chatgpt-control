@@ -1,3 +1,6 @@
+import type { OperationControlReceiptV1, OperationHandleV1 } from "./operations/types.js";
+import type { BackendCompatibilityReport } from "./backend/protocol.js";
+
 export type CommandStatus =
   | "ok"
   | "partial"
@@ -821,6 +824,8 @@ export type WorkTaskRef = {
 
 export type StartWorkArgs = {
   prompt: string;
+  /** Caller-owned durable identity. Supplying it opts Work start into operations.run. */
+  operationId?: string;
   /** Start from a blank Work task when possible. Defaults to true. */
   newTask?: boolean;
   files?: string[];
@@ -833,6 +838,17 @@ export type StartWorkArgs = {
 export type StartWorkData = {
   task: WorkTaskRef;
   submitted: SubmitData;
+  /** Requested runner output format for the transactional Work path. */
+  responseFormat?: Extract<ResponseFormat, "markdown" | "text">;
+  /** Effective durable operation identity when the transactional path was selected. */
+  operationId?: string;
+  /** Durable locator returned by the transactional Work path. */
+  handle?: OperationHandleV1;
+  requestDigest?: string;
+  pending?: boolean;
+  responseDigest?: string;
+  responseBytes?: number;
+  complete?: boolean;
   configuration?: ApplyConfigurationData;
   wait?: WaitData;
   response?: ReadLatestData;
@@ -854,12 +870,32 @@ export type WorkWaitData = WaitData;
 
 export type SteerWorkArgs = {
   prompt: string;
+  /**
+   * Caller-owned parent operation identity. A transactional steer must also
+   * provide the exact parent handle, control action ID, and assistant turn;
+   * omitting all operation fields preserves the legacy primitive path.
+   */
+  operationId?: string;
+  handle?: OperationHandleV1;
+  /** Caller-owned immutable identity for this one steer action. */
+  controlActionId?: string;
+  expectedAssistantTurnId?: string;
   wait?: boolean | WaitArgs;
   read?: boolean | ReadLatestArgs;
   timeoutMs?: number;
 };
 
-export type SteerWorkData = AskReadData;
+export type SteerWorkData = Omit<AskReadData, "prompt"> & {
+  /** Legacy steering returns the prompt; transactional errors never echo it. */
+  prompt?: string;
+  operationId?: string;
+  controlActionId?: string;
+  requestDigest?: string;
+  /** Exact parent locator used for a transactional steer. */
+  handle?: OperationHandleV1;
+  parentHandle?: OperationHandleV1;
+  control?: OperationControlReceiptV1;
+};
 
 export type ReadWorkLatestArgs = ReadLatestArgs;
 export type ReadWorkLatestData = ReadLatestData;
@@ -928,6 +964,8 @@ export type RuntimeEnv = {
   clipboard?: ClipboardLike;
   now?: () => Date;
   expectedTabId?: string;
+  /** Optional transport-owned compatibility diagnostics for doctor. */
+  compatibility?: BackendCompatibilityReport;
 };
 
 export type ClipboardLike = {

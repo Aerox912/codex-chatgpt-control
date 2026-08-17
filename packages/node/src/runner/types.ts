@@ -22,6 +22,7 @@ import type {
 import type { RunReportOptions } from "../commands/reports.js";
 import type { UntrustedOutputReturnEnvelope } from "../safety/untrusted-output.js";
 import type { ChatGPTRunStream } from "./stream.js";
+import type { OperationHandleV1 } from "../operations/types.js";
 
 export type ChatGPTThreadSelector =
   | { type: "new" }
@@ -116,6 +117,8 @@ export type ChatGPTRunInput =
   | string
   | {
       input: string | ChatGPTInputItem[];
+      /** Caller-owned durable identity; opts this invocation into operations.run. */
+      operationId?: string;
       thread?: ChatGPTThreadSelector;
       existingTab?: BootstrapArgs["existingTab"];
       preferExistingTab?: boolean;
@@ -232,6 +235,8 @@ export type ChatGPTConfirmation = {
 export type ChatGPTRunState = {
   id: string;
   resumable: boolean;
+  operationId?: string;
+  handle?: OperationHandleV1;
   thread?: ChatGPTThreadRef;
   nextStepId?: string;
   submissionState?: SubmissionState;
@@ -241,6 +246,11 @@ export type ChatGPTRunState = {
 export type ChatGPTRunData<TOutput = string> = {
   finalOutput?: TOutput;
   outputText: string;
+  /** Effective caller-owned operation identity when the transactional path was selected. */
+  operationId?: string;
+  /** Durable locator returned by the transactional operation path. */
+  handle?: OperationHandleV1;
+  requestDigest?: string;
   untrustedOutput?: UntrustedOutputReturnEnvelope;
   thread?: ChatGPTThreadRef;
   downloads?: DownloadedFileSummary[];
@@ -290,6 +300,8 @@ export type ChatGPTResponse = {
     submissionState?: SubmissionState;
     completionState?: CompletionState;
     generationActive?: boolean;
+    operationId?: string;
+    handle?: OperationHandleV1;
     untrustedOutput?: UntrustedOutputReturnEnvelope;
     unsupported?: UnsupportedField[];
   };

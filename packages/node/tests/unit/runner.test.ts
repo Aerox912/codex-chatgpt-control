@@ -283,6 +283,169 @@ describe("ChatGPT runner facade", () => {
     expect(result.interruptions[0]?.status).toBe("partial");
     expect(result.interruptions[0]?.type).toBe("timeout");
   });
+
+  it("extracts bounded nested result data without invoking accessors or looping on cycles", () => {
+    const chatgpt = createChatGPT({ now: () => new Date("2026-06-10T00:00:00.000Z") });
+    const agent = chatgpt.agent({ name: "reviewer" });
+    let getterReads = 0;
+    const nested: Record<string, unknown> = {
+      responseText: "safe nested response",
+      responseFormat: "text",
+      completionState: "complete"
+    };
+    nested.self = nested;
+    const data: Record<string, unknown> = { nested };
+    data.self = data;
+    Object.defineProperty(data, "privateValue", {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        throw new Error("private accessor must not run");
+      }
+    });
+    Object.defineProperty(data, "format", {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        throw new Error("format accessor must not run");
+      }
+    });
+
+    const result = toRunResult(agent, {
+      ok: true,
+      status: "ok",
+      data,
+      warnings: [],
+      context: { timestamp: "2026-06-10T00:00:00.000Z" }
+    });
+
+    expect(result.output_text).toBe("safe nested response");
+    expect(result.data?.completionState).toBe("complete");
+    expect(result.output).toContainEqual(expect.objectContaining({
+      type: "message.completed",
+      format: "text"
+    }));
+    expect(getterReads).toBe(0);
+  });
+
+  it("binds legacy format to the nearest record that supplies selected nested output", () => {
+    const chatgpt = createChatGPT({ now: () => new Date("2026-06-10T00:00:00.000Z") });
+    const agent = chatgpt.agent({ name: "reviewer" });
+    const result = toRunResult(agent, {
+      ok: true,
+      status: "ok",
+      data: {
+        metadata: { format: "html", artifact: { format: "blocks" } },
+        response: {
+          responseText: "nested answer",
+          format: "text",
+          complete: true
+        }
+      },
+      warnings: [],
+      context: { timestamp: "2026-06-10T00:00:00.000Z" }
+    });
+
+    expect(result.output_text).toBe("nested answer");
+    expect(result.output).toContainEqual(expect.objectContaining({
+      type: "message.completed",
+      output_text: "nested answer",
+      format: "text"
+    }));
+  });
+
+  it("keeps an adjacent legacy text and format pair together", () => {
+    const chatgpt = createChatGPT({ now: () => new Date("2026-06-10T00:00:00.000Z") });
+    const agent = chatgpt.agent({ name: "reviewer" });
+    const result = toRunResult(agent, {
+      ok: true,
+      status: "ok",
+      data: {
+        message: {
+          text: "legacy answer",
+          format: "visible_text",
+          complete: true
+        }
+      },
+      warnings: [],
+      context: { timestamp: "2026-06-10T00:00:00.000Z" }
+    });
+
+    expect(result.output_text).toBe("legacy answer");
+    expect(result.output).toContainEqual(expect.objectContaining({
+      type: "message.completed",
+      output_text: "legacy answer",
+      format: "visible_text"
+    }));
+  });
+
+  it("honors an explicit valid top-level response format over nested legacy metadata", () => {
+    const chatgpt = createChatGPT({ now: () => new Date("2026-06-10T00:00:00.000Z") });
+    const agent = chatgpt.agent({ name: "reviewer" });
+    const result = toRunResult(agent, {
+      ok: true,
+      status: "ok",
+      data: {
+        responseFormat: "blocks",
+        metadata: { format: "html" },
+        response: {
+          responseText: "explicitly formatted answer",
+          format: "text",
+          complete: true
+        }
+      },
+      warnings: [],
+      context: { timestamp: "2026-06-10T00:00:00.000Z" }
+    });
+
+    expect(result.output).toContainEqual(expect.objectContaining({
+      type: "message.completed",
+      output_text: "explicitly formatted answer",
+      format: "blocks"
+    }));
+  });
+
+  it("keeps assistant output bound to the selected sibling text record", () => {
+    const chatgpt = createChatGPT({ now: () => new Date("2026-06-10T00:00:00.000Z") });
+    const agent = chatgpt.agent({ name: "reviewer" });
+    const result = toRunResult(agent, {
+      ok: true,
+      status: "ok",
+      data: {
+        legacyBranch: {
+          text: "selected legacy answer",
+          format: "text",
+          complete: true,
+          completionState: "complete"
+        },
+        laterBranch: {
+          prompt: "preserve this submitted prompt",
+          responseText: "unselected later answer",
+          format: "html",
+          complete: false,
+          completionState: "generating",
+          generationActive: true
+        }
+      },
+      warnings: [],
+      context: { timestamp: "2026-06-10T00:00:00.000Z" }
+    });
+
+    expect(result.output_text).toBe("selected legacy answer");
+    expect(result.output).toContainEqual(expect.objectContaining({
+      type: "message.submitted",
+      preview: "preserve this submitted prompt"
+    }));
+    expect(result.output).toContainEqual({
+      type: "message.completed",
+      role: "assistant",
+      output_text: "selected legacy answer",
+      format: "text"
+    });
+    expect(result.output).not.toContainEqual(expect.objectContaining({
+      output_text: "unselected later answer"
+    }));
+  });
 });
 
 function finalAsk(plan: SequencePlan): Extract<SequenceStep, { command: "messages.ask" }> {

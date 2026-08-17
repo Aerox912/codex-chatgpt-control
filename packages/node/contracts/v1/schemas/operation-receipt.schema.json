@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/operation-receipt.schema.json",
+  "title": "Transactional browser operation receipt",
+  "description": "A durable terminal receipt containing ownership digests and transfer metadata, never raw response or file content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "operationId",
+    "requestDigest",
+    "targetBindingDigest",
+    "userTurnId",
+    "userTurnEvidenceDigest",
+    "assistantTurnId",
+    "ownershipEvidenceDigest",
+    "finishReason",
+    "contentAvailable",
+    "artifacts",
+    "completedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "chatgpt.browser_control.operation_receipt.v1" },
+    "operationId": { "$ref": "#/$defs/uuid" },
+    "requestDigest": { "$ref": "#/$defs/digest" },
+    "targetBindingDigest": { "$ref": "#/$defs/digest" },
+    "userTurnId": { "$ref": "#/$defs/opaqueId" },
+    "userTurnEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "assistantTurnId": { "$ref": "#/$defs/opaqueId" },
+    "ownershipEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "responseDigest": { "$ref": "#/$defs/digest" },
+    "responseBytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "responseFormat": { "enum": ["markdown", "text"] },
+    "finishReason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "contentAvailable": { "type": "boolean" },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" },
+      "maxItems": 32
+    },
+    "completedAt": { "$ref": "#/$defs/instant" }
+  },
+  "dependentRequired": {
+    "responseDigest": ["responseBytes"],
+    "responseBytes": ["responseDigest"]
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "contentAvailable": { "const": true } }, "required": ["contentAvailable"] },
+      "then": {
+        "required": ["responseDigest", "responseBytes"],
+        "properties": {
+          "responseDigest": { "$ref": "#/$defs/digest" },
+          "responseBytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "instant": {
+      "type": "string",
+      "pattern": "^(?!\\d{4}-02-(?:30|31)T)(?!\\d{4}-(?:04|06|09|11)-31T)\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    },
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001f\\u007f]{1,512}$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "artifactKey", "assistantTurnId", "sourceIdentityDigest", "kind", "ordinal", "status"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_artifact_receipt.v1" },
+        "operationId": { "$ref": "#/$defs/uuid" },
+        "artifactKey": { "$ref": "#/$defs/opaqueKey" },
+        "assistantTurnId": { "$ref": "#/$defs/opaqueId" },
+        "sourceIdentityDigest": { "$ref": "#/$defs/digest" },
+        "kind": { "enum": ["file", "image", "other"] },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "outputKey": { "$ref": "#/$defs/outputKey" },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 127,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+/-]{0,126}$"
+        },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "status": { "enum": ["available", "transferred", "partial", "blocked"] },
+        "blockerCode": { "$ref": "#/$defs/code" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "transferred" } }, "required": ["status"] },
+          "then": {
+            "required": ["outputKey", "bytes", "sha256"],
+            "properties": {
+              "outputKey": { "$ref": "#/$defs/outputKey" },
+              "bytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+              "sha256": { "$ref": "#/$defs/sha256" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "enum": ["partial", "blocked"] } }, "required": ["status"] },
+          "then": {
+            "required": ["blockerCode"],
+            "properties": { "blockerCode": { "$ref": "#/$defs/code" } }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "enum": ["available", "transferred"] } }, "required": ["status"] },
+          "then": { "not": { "required": ["blockerCode"] } }
+        }
+      ]
+    },
+    "opaqueKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "outputKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

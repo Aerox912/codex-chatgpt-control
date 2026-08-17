@@ -1,0 +1,13 @@
+{
+  "actionId": "33333333-3333-4333-8333-333333333333",
+  "kind": "file_handoff",
+  "repeatPolicy": "observe_only_after_intent",
+  "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "targetDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "intentRevision": 4,
+  "intentAt": "2026-08-16T00:00:01.000Z",
+  "outcome": "satisfied",
+  "receiptRevision": 5,
+  "receiptAt": "2026-08-16T00:00:02.000Z",
+  "evidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}

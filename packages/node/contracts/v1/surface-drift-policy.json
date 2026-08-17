@@ -17,6 +17,11 @@
       "reason": "Backend metadata command used by protocol clients, not a user-facing SDK command descriptor."
     },
     {
+      "command": "backend.hello",
+      "date": "2026-08-16",
+      "reason": "Backend handshake metadata command used by transport negotiation, not a user-facing SDK command descriptor."
+    },
+    {
       "command": "runner.plan",
       "date": "2026-06-10",
       "reason": "Lower-level planning command covered by the runner facade and parity suite rather than a separate public descriptor."
@@ -70,6 +75,26 @@
       "command": "help",
       "date": "2026-06-10",
       "reason": "Command-discovery metadata command that returns help text; it is not itself a public descriptor."
+    },
+    {
+      "command": "operations.submit",
+      "date": "2026-08-16",
+      "reason": "Transactional operation protocol command exposed through the typed operations facade, not the legacy command descriptor registry."
+    },
+    {
+      "command": "operations.collect",
+      "date": "2026-08-16",
+      "reason": "Transactional operation protocol command exposed through the typed operations facade, not the legacy command descriptor registry."
+    },
+    {
+      "command": "operations.inspect",
+      "date": "2026-08-16",
+      "reason": "Transactional operation protocol command exposed through the typed operations facade, not the legacy command descriptor registry."
+    },
+    {
+      "command": "operations.control",
+      "date": "2026-08-16",
+      "reason": "Transactional operation protocol command exposed through the typed operations facade, not the legacy command descriptor registry."
     }
   ],
   "descriptorBackendCommandExemptions": [
@@ -126,6 +151,31 @@
       "command": "backend.version",
       "date": "2026-06-10",
       "reason": "Python exposes the generic BackendClient.request path for backend.version; health and capabilities have dedicated facades."
+    },
+    {
+      "command": "backend.hello",
+      "date": "2026-08-16",
+      "reason": "Python can use the generic BackendClient.request path while the typed hello diagnostics facade is completed in the parity lane."
+    },
+    {
+      "command": "operations.submit",
+      "date": "2026-08-16",
+      "reason": "Python OperationsClient routes this command through a bounded module constant; the static facade scanner cannot infer constant values."
+    },
+    {
+      "command": "operations.collect",
+      "date": "2026-08-16",
+      "reason": "Python OperationsClient routes this command through a bounded module constant; the static facade scanner cannot infer constant values."
+    },
+    {
+      "command": "operations.inspect",
+      "date": "2026-08-16",
+      "reason": "Python OperationsClient routes this command through a bounded module constant; the static facade scanner cannot infer constant values."
+    },
+    {
+      "command": "operations.control",
+      "date": "2026-08-16",
+      "reason": "Python OperationsClient routes this command through a bounded module constant; the static facade scanner cannot infer constant values."
     }
   ],
   "generatedBlockerDocs": [

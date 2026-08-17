@@ -11,8 +11,10 @@ import type { BootstrapArgs, CommandResult, ExistingTabPolicy, RuntimeEnv } from
 import { contextFromPage } from "./context.js";
 import type { RunReportOptions } from "./reports.js";
 import { bootstrap } from "./session.js";
+import type { BackendCompatibilityReport } from "../backend/protocol.js";
 
 export type DoctorCheckName =
+  | "compatibility"
   | "bridge"
   | "login"
   | "upload"
@@ -51,7 +53,7 @@ export type DoctorReport = {
   checks: Partial<Record<DoctorCheckName, CapabilityCheck>>;
 };
 
-const DEFAULT_CHECKS: DoctorCheckName[] = ["bridge", "login", "upload", "download", "clipboard", "modes", "tools", "selectors"];
+const DEFAULT_CHECKS: DoctorCheckName[] = ["compatibility", "bridge", "login", "upload", "download", "clipboard", "modes", "tools", "selectors"];
 const BOOTSTRAP_CHECKS = new Set<DoctorCheckName>(["bridge", "login", "upload", "download", "modes", "tools", "selectors"]);
 const UPLOAD_REMEDIATION = [
   "Codex Settings > Computer Use > Chrome > Permissions > Uploads: set to Always allow, or add chatgpt.com to the allowed upload domains.",
@@ -92,6 +94,9 @@ export async function doctor(env: RuntimeEnv, args: DoctorArgs = {}): Promise<Co
 
   for (const check of wanted) {
     switch (check) {
+      case "compatibility":
+        checks.compatibility = compatibilityCheck(env.compatibility);
+        break;
       case "bridge":
         checks.bridge = boot?.ok
           ? ok("Chrome bridge is available.")
@@ -140,6 +145,26 @@ export async function doctor(env: RuntimeEnv, args: DoctorArgs = {}): Promise<Co
 
   const ready = Object.values(checks).every(check => check?.status === "ok" || check?.status === "unknown");
   return resultOk({ ready, checks }, await contextFromPage(env.page));
+}
+
+function compatibilityCheck(report: BackendCompatibilityReport | undefined): CapabilityCheck {
+  if (report === undefined) return unknown("Backend compatibility has not been negotiated.");
+  const firstWarning = report.warnings[0];
+  const message = firstWarning === undefined
+    ? "Backend protocol and advertised capabilities are compatible."
+    : firstWarning.message;
+  return {
+    status: report.status === "blocked"
+      ? "blocked"
+      : report.status === "warning"
+        ? "unknown"
+        : report.status === "unknown"
+          ? "unknown"
+          : "ok",
+    message,
+    ...(firstWarning?.code === undefined ? {} : { code: firstWarning.code }),
+    details: report
+  };
 }
 
 function bridgeCheck(boot: CommandResult<unknown> | undefined): CapabilityCheck {

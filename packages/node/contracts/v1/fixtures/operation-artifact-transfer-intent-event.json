@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "chatgpt.browser_control.operation_event.v1",
+  "revision": 5,
+  "previousEventDigest": "hmac-sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "eventDigest": "hmac-sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "event": {
+    "type": "artifact_transfer_intent",
+    "intent": {
+      "schemaVersion": "chatgpt.browser_control.artifact_transfer_intent.v1",
+      "operationId": "11111111-1111-4111-8111-111111111111",
+      "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "assistantTurnId": "assistant-turn-1",
+      "sourceIdentityDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "kind": "file",
+      "ordinal": 0,
+      "transferActionId": "66666666-6666-4666-8666-666666666666",
+      "destinationIdentityDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "actionKind": "local_output_commit",
+      "repeatPolicy": "reconcile_local_effect",
+      "intentAt": "2026-08-16T00:00:03.000Z"
+    }
+  }
+}

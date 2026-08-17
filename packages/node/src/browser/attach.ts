@@ -2,6 +2,12 @@ import { BrowserBridgeUnavailableError, ChatGPTControlError, LoginRequiredError 
 import type { BootstrapArgs, BrowserLike, BrowserUserTabInfo, ExistingTabDiagnostics, ExistingTabPolicy, ExistingTabTarget, PageLike, RuntimeEnv } from "../types.js";
 import { CHATGPT_HOME, isChatGPTUrl } from "./chatgpt-url.js";
 import { parseConversationId, readPageState } from "./page-state.js";
+import {
+  createCoordinatedBrowser,
+  createCoordinatedPageForBrowser,
+  type CoordinatedBrowserOptions
+} from "../runtime/coordinated-browser.js";
+import { unwrapCoordinatedPage } from "../runtime/coordinated-page.js";
 
 const MAX_EXISTING_TAB_DIAGNOSTIC_CANDIDATES = 10;
 const MAX_EXISTING_TAB_DIAGNOSTIC_FIELD_LENGTH = 240;
@@ -20,10 +26,11 @@ export type AttachedBrowser = {
 
 export async function attachChatGPTBrowser(
   env: RuntimeEnv,
-  args: BootstrapArgs = {}
+  args: BootstrapArgs = {},
+  coordination?: CoordinatedBrowserOptions
 ): Promise<AttachedBrowser> {
-  const browser = await getBrowser(env);
-  const page = await getOrCreateChatGPTPage(browser, env, args);
+  const browser = await getBrowser(env, coordination);
+  const page = await getOrCreateChatGPTPage(browser, env, args, coordination);
   await assertPageOnChatGPTOrigin(page);
   const state = await readPageState(page);
   if (!isChatGPTUrl(state.url)) throw unsafeChatGPTOriginError();
@@ -46,9 +53,20 @@ export async function attachChatGPTBrowser(
   return attached;
 }
 
-async function getBrowser(env: RuntimeEnv): Promise<BrowserLike> {
+/** Resolve the configured provider browser without selecting, claiming, or creating a tab. */
+export async function resolveChatGPTBrowser(
+  env: RuntimeEnv,
+  coordination?: CoordinatedBrowserOptions
+): Promise<BrowserLike> {
+  return await getBrowser(env, coordination);
+}
+
+async function getBrowser(
+  env: RuntimeEnv,
+  coordination?: CoordinatedBrowserOptions
+): Promise<BrowserLike> {
   if (env.browser !== undefined) {
-    return env.browser;
+    return createCoordinatedBrowser(env.browser, coordination);
   }
 
   const anyEnv = env as Record<string, unknown>;
@@ -61,7 +79,7 @@ async function getBrowser(env: RuntimeEnv): Promise<BrowserLike> {
       ?? await tryBrowserGet(browsers, "chrome");
 
     if (maybeBrowser !== undefined) {
-      return maybeBrowser;
+      return createCoordinatedBrowser(maybeBrowser, coordination);
     }
   }
 
@@ -130,14 +148,18 @@ async function tryBrowserGetPreferredListed(browsers: unknown): Promise<BrowserL
 async function getOrCreateChatGPTPage(
   browser: BrowserLike,
   env: RuntimeEnv,
-  args: BootstrapArgs
+  args: BootstrapArgs,
+  coordination?: CoordinatedBrowserOptions
 ): Promise<PageLike> {
   const targetUrl = args.url ?? CHATGPT_HOME;
   assertSafeChatGPTNavigation(targetUrl);
   const explicitExistingPolicy = normalizeExplicitExistingTabPolicy(args);
 
   if (env.page !== undefined) {
-    const cached = normalizePage(env.page);
+    // An invocation can begin with a page captured before browser discovery.
+    // Rebind it to the discovered browser-wide actor, unwrapping only through
+    // the explicit seam so a page is never nested under two coordinators.
+    const cached = createCoordinatedPageForBrowser(normalizePage(env.page), browser, coordination);
     if (await cachedPageMatchesBootstrapArgs(cached, args, explicitExistingPolicy)) {
       return cached;
     }
@@ -686,6 +708,7 @@ async function hydrateTab(browser: BrowserLike, pageOrTab: unknown): Promise<Pag
 }
 
 function normalizePage(pageOrTab: unknown): PageLike {
+  if (isPageWrapper(pageOrTab)) return pageOrTab;
   const maybe = pageOrTab as Record<string, unknown>;
   const playwright = maybe.playwright ?? maybe.page;
   if (playwright !== undefined && typeof playwright === "object") {
@@ -710,6 +733,11 @@ function normalizePage(pageOrTab: unknown): PageLike {
   }
 
   return pageOrTab as PageLike;
+}
+
+function isPageWrapper(value: unknown): value is PageLike {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) return false;
+  return unwrapCoordinatedPage(value as PageLike) !== value;
 }
 
 export function tabIdFromPage(page: PageLike): string | undefined {

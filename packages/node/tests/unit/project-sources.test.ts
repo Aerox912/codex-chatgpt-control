@@ -154,6 +154,266 @@ describe("Project Sources browser commands", () => {
     expect(result.data.added).toEqual([{ name: "smoke.txt", status: "processing" }]);
   });
 
+  it("registers the sole chooser waiter before clicking Add source", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-waiter-order-"));
+    const file = join(dir, "order.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({ chooser: "success", chooserDelayMs: 10 });
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 250
+    });
+
+    expect(result.ok).toBe(true);
+    expect(page.waitForEventCalls).toBe(1);
+    expect(page.eventLog.indexOf("waitForEvent")).toBeGreaterThan(-1);
+    expect(page.eventLog.indexOf("waitForEvent")).toBeLessThan(page.eventLog.indexOf("click:Add sources"));
+  });
+
+  it.each(["sync", "async"] as const)("does not click Add source after an immediately %s rejected waiter", async mode => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-immediate-rejection-"));
+    const file = join(dir, `${mode}-rejection.txt`);
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({ chooser: "rejection", chooserRejectsOnWait: mode });
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 250
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker?.message).toContain("chooser rejected immediately");
+    expect(page.waitForEventCalls).toBe(1);
+    expect(page.clicks).toEqual(["Sources"]);
+    expect(page.uploadedPaths).toEqual([]);
+  });
+
+  it("reconciles a delayed chooser success discovered while Upload is being resolved", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-delayed-success-"));
+    const file = join(dir, "delayed.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({
+      chooser: "success",
+      chooserDelayMs: 10,
+      uploadDiscoveryDelayMs: 35
+    });
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 250
+    });
+
+    expect(result.ok).toBe(true);
+    expect(page.waitForEventCalls).toBe(1);
+    expect(page.clicks).toEqual(["Sources", "Add sources"]);
+    expect(page.uploadedPaths).toEqual([file]);
+  });
+
+  it("maps a chooser rejection racing Upload discovery without clicking Upload", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-racing-rejection-"));
+    const file = join(dir, "rejected.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({
+      chooser: "rejection",
+      chooserDelayMs: 10,
+      uploadDiscoveryDelayMs: 35
+    });
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 250
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker?.message).toContain("chooser rejected");
+    expect(page.waitForEventCalls).toBe(1);
+    expect(page.clicks).toEqual(["Sources", "Add sources"]);
+    expect(page.uploadedPaths).toEqual([]);
+  });
+
+  it("accepts a chooser success when Add source acts before its click rejects", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-add-throws-success-"));
+    const file = join(dir, "add-throws.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({
+      chooser: "success",
+      chooserDelayMs: 20,
+      addClickThrows: true
+    });
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 250
+    });
+
+    expect(result.ok).toBe(true);
+    expect(page.clicks).toEqual(["Sources", "Add sources"]);
+    expect(page.uploadedPaths).toEqual([file]);
+  });
+
+  it("does not retry UI after Add source acts before its click rejects and chooser rejects", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-add-throws-rejection-"));
+    const file = join(dir, "add-throws.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({
+      chooser: "rejection",
+      chooserDelayMs: 20,
+      addClickThrows: true
+    });
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 250
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker?.message).toContain("chooser rejected");
+    expect(page.clicks).toEqual(["Sources", "Add sources"]);
+    expect(page.uploadedPaths).toEqual([]);
+  });
+
+  it("accepts a chooser success when Upload acts before its click rejects", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-upload-throws-success-"));
+    const file = join(dir, "upload-throws.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({
+      chooser: "success",
+      chooserDelayMs: 20,
+      chooserStartsOn: "upload",
+      uploadClickThrows: true
+    });
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 250
+    });
+
+    expect(result.ok).toBe(true);
+    expect(page.clicks).toEqual(["Sources", "Add sources", "Upload"]);
+    expect(page.uploadedPaths).toEqual([file]);
+  });
+
+  it("maps a late Upload click rejection without retrying or calling setFiles", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-upload-throws-rejection-"));
+    const file = join(dir, "upload-throws.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({
+      chooser: "rejection",
+      chooserDelayMs: 20,
+      chooserStartsOn: "upload",
+      uploadClickThrows: true
+    });
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 250
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker?.message).toContain("chooser rejected");
+    expect(page.clicks).toEqual(["Sources", "Add sources", "Upload"]);
+    expect(page.uploadedPaths).toEqual([]);
+  });
+
+  it.each([
+    ["hidden", { addVisibility: "hidden" as const }],
+    ["duplicate", { addCount: 2 }],
+    ["missing visibility", { addVisibility: "missing" as const }]
+  ])("fails closed when Add source is %s", async (_label, options) => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-add-control-"));
+    const file = join(dir, "control.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage(options);
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 100
+    });
+
+    expect(result.ok).toBe(false);
+    expect(page.clicks).toEqual(["Sources"]);
+    expect(page.waitForEventCalls).toBe(0);
+    expect(page.uploadedPaths).toEqual([]);
+  });
+
+  it.each([
+    ["hidden", { uploadVisibility: "hidden" as const }],
+    ["duplicate", { uploadCount: 2 }],
+    ["missing visibility", { uploadVisibility: "missing" as const }]
+  ])("fails closed without an Upload click when Upload control is %s", async (_label, options) => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-upload-control-"));
+    const file = join(dir, "control.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({ chooser: "never", ...options });
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 100
+    });
+
+    expect(result.ok).toBe(false);
+    expect(page.clicks).toEqual(["Sources", "Add sources"]);
+    expect(page.waitForEventCalls).toBe(1);
+    expect(page.uploadedPaths).toEqual([]);
+  });
+
+  it("bounds a never-settling chooser independently from the file timeout", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-chooser-timeout-"));
+    const file = join(dir, "timeout.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({ chooser: "never", uploadCount: 0 });
+    const startedAt = Date.now();
+    const result = await createChatGPT({ page }).projects.sources.add({
+      projectUrl: PROJECT_URL,
+      files: [file],
+      confirmMutation: true,
+      timeoutMs: 75
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocker?.message).toContain("chooser");
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(page.clicks).toEqual(["Sources", "Add sources"]);
+    expect(page.uploadedPaths).toEqual([]);
+  });
+
+  it("handles a late chooser rejection after a failed control lookup without an unhandled promise", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-project-source-late-rejection-"));
+    const file = join(dir, "late-rejection.txt");
+    await writeFile(file, "hello");
+    const page = chooserScenarioPage({ chooser: "rejection", chooserDelayMs: 30, uploadVisibility: "hidden" });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const result = await createChatGPT({ page }).projects.sources.add({
+        projectUrl: PROJECT_URL,
+        files: [file],
+        confirmMutation: true,
+        timeoutMs: 100
+      });
+      await new Promise(resolve => setTimeout(resolve, 60));
+
+      expect(result.ok).toBe(false);
+      expect(unhandled).toEqual([]);
+      expect(page.waitForEventCalls).toBe(1);
+      expect(page.uploadedPaths).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("extracts source names and statuses from a fixture list without source content", () => {
     const html = `
       <main>
@@ -354,6 +614,7 @@ function projectSourcesUploadMenuPage(uploadedName: string): PageLike & { clicks
   const locatorFor = (label: string, count: () => number, onClick?: () => void): LocatorLike => {
     const locator: LocatorLike = {
       count: async () => count(),
+      isVisible: async () => true,
       click: async () => {
         clicks.push(label);
         onClick?.();
@@ -402,5 +663,140 @@ function projectSourcesUploadMenuPage(uploadedName: string): PageLike & { clicks
       });
     },
     waitForTimeout: async () => undefined
+  };
+}
+
+type ChooserScenarioOptions = {
+  chooser?: "success" | "rejection" | "never";
+  chooserDelayMs?: number;
+  chooserStartsOn?: "add" | "upload";
+  chooserRejectsOnWait?: "sync" | "async";
+  addVisibility?: "visible" | "hidden" | "missing";
+  uploadVisibility?: "visible" | "hidden" | "missing";
+  addCount?: number;
+  uploadCount?: number;
+  uploadDiscoveryDelayMs?: number;
+  addClickThrows?: boolean;
+  uploadClickThrows?: boolean;
+};
+
+function chooserScenarioPage(options: ChooserScenarioOptions): PageLike & {
+  clicks: string[];
+  uploadedPaths: string[];
+  waitForEventCalls: number;
+  eventLog: string[];
+} {
+  const chooserKind = options.chooser ?? "never";
+  const chooserDelayMs = options.chooserDelayMs ?? 0;
+  const chooserStartsOn = options.chooserStartsOn ?? "add";
+  const clicks: string[] = [];
+  const eventLog: string[] = [];
+  const uploadedPaths: string[] = [];
+  let menuOpen = false;
+  let chooserScheduled = false;
+  let chooserResolve: ((chooser: FileChooserLike) => void) | undefined;
+  let chooserReject: ((error: unknown) => void) | undefined;
+  let waitForEventCalls = 0;
+
+  const chooser: FileChooserLike = {
+    setFiles: async paths => {
+      uploadedPaths.push(...paths);
+    }
+  };
+
+  const scheduleChooser = (source: "add" | "upload") => {
+    if (chooserScheduled || chooserKind === "never" || source !== chooserStartsOn) {
+      return;
+    }
+    chooserScheduled = true;
+    setTimeout(() => {
+      if (chooserKind === "success") {
+        chooserResolve?.(chooser);
+      } else {
+        chooserReject?.(new Error("chooser rejected"));
+      }
+    }, chooserDelayMs);
+  };
+
+  const control = (label: "Sources" | "Add sources" | "Upload"): LocatorLike => {
+    const isUpload = label === "Upload";
+    const visibility = isUpload ? options.uploadVisibility : label === "Add sources" ? options.addVisibility : "visible";
+    const count = label === "Sources"
+      ? 1
+      : isUpload
+        ? options.uploadCount ?? (menuOpen ? 1 : 0)
+        : options.addCount ?? 1;
+    const locator: LocatorLike = {
+      count: async () => {
+        if (isUpload && options.uploadDiscoveryDelayMs !== undefined) {
+          await new Promise(resolve => setTimeout(resolve, options.uploadDiscoveryDelayMs));
+        }
+        return count;
+      },
+      click: async () => {
+        clicks.push(label);
+        eventLog.push(`click:${label}`);
+        if (label === "Add sources") {
+          menuOpen = true;
+          scheduleChooser("add");
+          if (options.addClickThrows) {
+            throw new Error("Add source click bridge error");
+          }
+        }
+        if (label === "Upload") {
+          scheduleChooser("upload");
+          if (options.uploadClickThrows) {
+            throw new Error("Upload click bridge error");
+          }
+        }
+      }
+    };
+    if (visibility !== "missing") {
+      locator.isVisible = async () => visibility !== "hidden";
+    }
+    return locator;
+  };
+
+  return {
+    clicks,
+    uploadedPaths,
+    eventLog,
+    get waitForEventCalls() {
+      return waitForEventCalls;
+    },
+    url: () => PROJECT_URL,
+    title: async () => "ChatGPT Project",
+    content: async () => uploadedPaths.length === 0
+      ? `<main><button role="tab" aria-selected="true">Sources</button></main>`
+      : `<main><button role="tab" aria-selected="true">Sources</button><div data-testid="project-source"><span>scenario.txt</span><span>Processing</span></div></main>`,
+    locator: () => ({ count: async () => 0 }),
+    getByRole: (role, roleOptions) => {
+      const name = roleOptions?.name;
+      const matches = (label: string) => name instanceof RegExp ? name.test(label) : name === label;
+      if (role === "tab" && matches("Sources")) return control("Sources");
+      if (role === "button" && matches("Add sources")) return control("Add sources");
+      if (role === "button" && matches("Upload")) return control("Upload");
+      return { count: async () => 0 };
+    },
+    waitForEvent: event => {
+      if (event !== "filechooser") {
+        throw new Error(`Unexpected event: ${event}`);
+      }
+      waitForEventCalls += 1;
+      eventLog.push("waitForEvent");
+      if (options.chooserRejectsOnWait === "sync") {
+        throw new Error("chooser rejected immediately");
+      }
+      if (options.chooserRejectsOnWait === "async") {
+        return Promise.reject(new Error("chooser rejected immediately"));
+      }
+      return new Promise<FileChooserLike>((resolve, reject) => {
+        chooserResolve = resolve;
+        chooserReject = reject;
+      });
+    },
+    waitForTimeout: async ms => {
+      await new Promise(resolve => setTimeout(resolve, ms));
+    }
   };
 }

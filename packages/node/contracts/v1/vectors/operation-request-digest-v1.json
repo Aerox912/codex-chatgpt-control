@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "chatgpt.browser_control.operation_request_digest_vector.v1",
+  "keyHex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "input": {
+    "operationId": "123e4567-e89b-42d3-a456-426614174000",
+    "surface": "chat",
+    "target": {
+      "type": "conversation_id",
+      "conversationId": "fixture-conversation"
+    },
+    "prompt": "Fixture prompt.",
+    "configuration": {
+      "effort": "High",
+      "model": "Fixture Model"
+    },
+    "tools": [
+      "search"
+    ],
+    "files": [
+      {
+        "displayName": "fixture.txt",
+        "bytes": 12,
+        "contentSha256": "abababababababababababababababababababababababababababababababab"
+      }
+    ],
+    "capturePolicy": {
+      "responseContent": "metadata",
+      "responseFormat": "markdown",
+      "artifacts": "transfer",
+      "outputDirectory": "/ignored-by-request-identity"
+    },
+    "behavior": {
+      "existingTab": true
+    }
+  },
+  "expected": {
+    "canonicalInput": "{\"behavior\":{\"existingTab\":true},\"capturePolicy\":{\"artifacts\":\"transfer\",\"responseContent\":\"metadata\",\"responseFormat\":\"markdown\"},\"configuration\":{\"effort\":\"High\",\"model\":\"Fixture Model\"},\"files\":[{\"bytes\":12,\"contentDigest\":\"hmac-sha256:416895599948182096b0bd5f39f3e39ef81e98471569cb001dac1aaeff429e9b\",\"displayNameDigest\":\"hmac-sha256:da8ab313a5f0c9d3dcd227826d8f1e1c12c450d94659e4add5596c05bb0e50e4\"}],\"operationId\":\"123e4567-e89b-42d3-a456-426614174000\",\"prompt\":{\"bytes\":15,\"digest\":\"hmac-sha256:bc599d7caf5f2108976533e17d21b94c20c26ca65f64430a0bed1543f107cd08\"},\"schemaVersion\":\"chatgpt.browser_control.operation_request_identity.v1\",\"surface\":\"chat\",\"target\":{\"conversationId\":\"fixture-conversation\",\"type\":\"conversation_id\"},\"tools\":[\"search\"]}",
+    "promptDigest": "hmac-sha256:bc599d7caf5f2108976533e17d21b94c20c26ca65f64430a0bed1543f107cd08",
+    "displayNameDigest": "hmac-sha256:da8ab313a5f0c9d3dcd227826d8f1e1c12c450d94659e4add5596c05bb0e50e4",
+    "contentDigest": "hmac-sha256:416895599948182096b0bd5f39f3e39ef81e98471569cb001dac1aaeff429e9b",
+    "requestDigest": "hmac-sha256:040c070ecbf1a649f21523187cb183d4036e283cbc2556aa2916261aca7dc1ba"
+  }
+}

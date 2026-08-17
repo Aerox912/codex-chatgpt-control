@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/operation-blocker.schema.json",
+  "title": "Transactional browser operation blocker",
+  "description": "A structured public blocker taxonomy. The message is a transient caller-facing explanation and must be redacted before durable journal persistence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "code", "recoverable", "operationId", "requestDigest", "phase", "mutationBoundary", "message"],
+  "properties": {
+    "schemaVersion": { "const": "chatgpt.browser_control.operation_blocker.v1" },
+    "code": {
+      "enum": [
+        "operation_not_found",
+        "operation_request_mismatch",
+        "operation_state_corrupt",
+        "operation_receipt_expired",
+        "operation_quota_exceeded",
+        "operation_cancelled",
+        "operation_timeout",
+        "ambiguous_file_handoff",
+        "ambiguous_submit",
+        "attachment_manifest_mismatch",
+        "input_file_changed",
+        "target_binding_mismatch",
+        "target_evidence_unavailable",
+        "turn_ownership_ambiguous",
+        "concurrent_user_turn",
+        "configuration_drift",
+        "tab_ownership_conflict",
+        "provider_concurrency_unsupported",
+        "runtime_incompatible",
+        "backend_unavailable",
+        "browser_bridge_unavailable",
+        "login_required",
+        "captcha",
+        "rate_limited",
+        "permission_required",
+        "needs_confirmation",
+        "selector_drift",
+        "send_control_unavailable",
+        "capture_ownership_lost",
+        "artifact_unavailable",
+        "artifact_transfer_partial",
+        "output_collision",
+        "output_commit_indeterminate",
+        "clipboard_restore_failed"
+      ]
+    },
+    "recoverable": { "type": "boolean" },
+    "operationId": { "$ref": "#/$defs/uuid" },
+    "requestDigest": { "$ref": "#/$defs/digest" },
+    "phase": {
+      "enum": ["prepared", "handoff_pending", "ready", "send_pending", "submitted", "generating", "capturing", "completed", "uncertain"]
+    },
+    "mutationBoundary": {
+      "enum": ["none", "handoff_may_have_occurred", "send_may_have_occurred", "control_may_have_occurred"]
+    },
+    "message": { "type": "string", "minLength": 1, "maxLength": 4096 }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    }
+  }
+}

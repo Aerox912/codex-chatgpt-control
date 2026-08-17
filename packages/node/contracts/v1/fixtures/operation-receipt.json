@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "chatgpt.browser_control.operation_receipt.v1",
+  "operationId": "11111111-1111-4111-8111-111111111111",
+  "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "userTurnId": "user-turn-1",
+  "userTurnEvidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "assistantTurnId": "assistant-turn-1",
+  "ownershipEvidenceDigest": "hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "responseDigest": "hmac-sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "responseBytes": 64,
+  "responseFormat": "markdown",
+  "finishReason": "stop",
+  "contentAvailable": false,
+  "artifacts": [
+    {
+      "schemaVersion": "chatgpt.browser_control.operation_artifact_receipt.v1",
+      "operationId": "11111111-1111-4111-8111-111111111111",
+      "artifactKey": "artifact-0",
+      "assistantTurnId": "assistant-turn-1",
+      "sourceIdentityDigest": "hmac-sha256:abababababababababababababababababababababababababababababababab",
+      "kind": "file",
+      "ordinal": 0,
+      "outputKey": "operation-11111111-result.bin",
+      "mimeType": "application/octet-stream",
+      "bytes": 32,
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "status": "transferred"
+    }
+  ],
+  "completedAt": "2026-08-16T00:00:03.000Z"
+}

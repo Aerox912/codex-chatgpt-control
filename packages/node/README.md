@@ -29,6 +29,33 @@ const result = await chatgpt.runner.run(reviewer, {
 });
 ```
 
+## Transactional operation preview
+
+Supported Chat, Work, Runner, and Responses workflows accept an optional
+caller-owned canonical UUID `operationId`. Supplying it opts that invocation
+into durable submit-once recovery and exact-turn collection; omitting it keeps
+the compatibility path.
+
+```ts
+const result = await chatgpt.ask({
+  operationId: "123e4567-e89b-42d3-a456-426614174000",
+  prompt: "Summarize the visible thread.",
+  thread: { type: "conversationId", conversationId: "caller-owned-conversation-id" },
+  wait: false,
+  read: false
+});
+```
+
+The direct `chatgpt.operations` surface exposes `submit`, `collect`, `inspect`,
+`control`, and SDK-composed `run`. Persist and reuse the fresh returned handle
+after partial or uncertain results; never retry the same logical Send under a
+new ID. `operations.inspect` is browser-free. Browser-touching calls fail
+closed when bridge access, target evidence, or a required provider primitive
+is unavailable. See
+[Transactional browser operations](references/2026-08-16-transactional-operations.md)
+for request schemas, concurrency, recovery, privacy, transport bounds, and the
+stricter transactional artifact-provider capability matrix.
+
 Inspect the visible surface and apply verified configuration:
 
 ```ts
