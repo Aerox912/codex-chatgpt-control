@@ -524,9 +524,16 @@ type BrowserGateWaiter = {
  * actors for many different tabs are active concurrently.
  */
 class BrowserGate {
-  private readonly queue: BrowserGateWaiter[] = [];
+  /** Reserved but not yet acquired waiters; Set gives O(1) removal. */
+  private readonly queued = new Set<BrowserGateWaiter>();
+  /** Started shared waiters are the only shared entries a drain may grant. */
+  private readonly startedShared = new Set<BrowserGateWaiter>();
+  /** Min-heap by reservation sequence; stale cancelled entries are removed lazily. */
+  private readonly startedExclusiveHeap: BrowserGateWaiter[] = [];
   private readonly activeShared = new Set<BrowserGateWaiter>();
   private activeExclusive?: BrowserGateWaiter;
+  private queuedExclusiveCount = 0;
+  private queuedSharedCount = 0;
   private sequence = 0;
   private drainScheduled = false;
   private rejectedCount = 0;
@@ -630,7 +637,7 @@ class BrowserGate {
   }
 
   isIdle(): boolean {
-    return this.queue.length === 0 &&
+    return this.queued.size === 0 &&
       this.activeExclusive === undefined &&
       this.activeShared.size === 0 &&
       this.acceptedSharedReservations === 0;
@@ -640,11 +647,11 @@ class BrowserGate {
     return {
       resourceKind: "browser",
       resourceKey: this.resourceKey,
-      queueDepth: this.queue.length + this.pendingSharedReservations,
+      queueDepth: this.queued.size + this.pendingSharedReservations,
       active: this.activeExclusive !== undefined || this.activeShared.size > 0,
       activeSharedCount: this.activeShared.size,
-      queuedExclusiveCount: this.queue.filter((waiter) => waiter.kind === "exclusive").length,
-      queuedSharedCount: this.queue.filter((waiter) => waiter.kind === "shared").length + this.pendingSharedReservations,
+      queuedExclusiveCount: this.queuedExclusiveCount,
+      queuedSharedCount: this.queuedSharedCount + this.pendingSharedReservations,
       rejectedCount: this.rejectedCount,
       ...(this.activeExclusive === undefined ? {} : {
         activeExclusiveRequestId: this.activeExclusive.requestId,
@@ -659,7 +666,7 @@ class BrowserGate {
     return {
       resourceKind: "browser",
       resourceKey: this.resourceKey,
-      queueDepth: this.queue.length + this.pendingSharedReservations,
+      queueDepth: this.queued.size + this.pendingSharedReservations,
       active: this.activeExclusive !== undefined || this.activeShared.size > 0,
       ...(this.activeExclusive === undefined ? {} : { activeRequestId: this.activeExclusive.requestId }),
       completedCount: 0,
@@ -677,12 +684,14 @@ class BrowserGate {
       acquired: false,
       settled: false
     };
-    this.queue.push(waiter);
+    this.queued.add(waiter);
+    if (kind === "exclusive") this.queuedExclusiveCount += 1;
+    else this.queuedSharedCount += 1;
     return waiter;
   }
 
   private assertReservationCapacity(): void {
-    if (this.queue.length + this.pendingSharedReservations < this.maxQueueSize) return;
+    if (this.queued.size + this.pendingSharedReservations < this.maxQueueSize) return;
     this.rejectedCount += 1;
     throw new CoordinatorQueueFullError(this.queueSnapshot());
   }
@@ -696,6 +705,8 @@ class BrowserGate {
     }
     waiter.started = true;
     waiter.context = context;
+    if (waiter.kind === "exclusive") this.pushStartedExclusive(waiter);
+    else this.startedShared.add(waiter);
     waiter.promise = new Promise<AdmissionLease>((resolve, reject) => {
       waiter.resolve = resolve;
       waiter.reject = reject;
@@ -716,7 +727,7 @@ class BrowserGate {
   }
 
   private hasExclusiveWaiter(): boolean {
-    return this.queue.some((waiter) => waiter.kind === "exclusive");
+    return this.queuedExclusiveCount > 0;
   }
 
   private scheduleDrain(): void {
@@ -736,13 +747,9 @@ class BrowserGate {
     // prevents a stream of other tabs from starving browser-level controls.
     if (this.activeShared.size > 0 && this.hasExclusiveWaiter()) return;
 
-    const exclusive = this.queue
-      .filter((waiter) => waiter.kind === "exclusive" && waiter.started)
-      .sort((left, right) => left.sequence - right.sequence)[0];
-
-    const shared = this.queue.filter((waiter) => waiter.kind === "shared" && waiter.started);
+    const exclusive = this.nextStartedExclusive();
     if (
-      shared.length > 0 &&
+      this.startedShared.size > 0 &&
       this.consecutiveExclusive >= this.maxConsecutiveExclusives
     ) {
       // A browser-exclusive waiter has writer preference so new tab work
@@ -751,7 +758,7 @@ class BrowserGate {
       // admit the already queued shared batch.  New shared reservations remain
       // blocked while the batch is active because hasExclusiveWaiter() is
       // still true.
-      for (const waiter of shared) this.grant(waiter);
+      for (const waiter of [...this.startedShared]) this.grant(waiter);
       this.consecutiveExclusive = 0;
       return;
     }
@@ -767,15 +774,12 @@ class BrowserGate {
     // be overtaken by a tab started in the meantime.
     if (this.hasExclusiveWaiter()) return;
 
-    for (const waiter of [...this.queue]) {
-      if (waiter.kind === "shared" && waiter.started) this.grant(waiter);
-    }
+    for (const waiter of [...this.startedShared]) this.grant(waiter);
   }
 
   private grant(waiter: BrowserGateWaiter): void {
-    const index = this.queue.indexOf(waiter);
-    if (index < 0 || waiter.settled || !waiter.started) return;
-    this.queue.splice(index, 1);
+    if (!this.queued.has(waiter) || waiter.settled || !waiter.started) return;
+    this.removeQueued(waiter);
     waiter.acquired = true;
     if (waiter.kind === "exclusive") this.activeExclusive = waiter;
     else this.activeShared.add(waiter);
@@ -811,14 +815,60 @@ class BrowserGate {
 
   private cancel(waiter: BrowserGateWaiter, reason?: unknown): void {
     if (waiter.settled || waiter.acquired) return;
-    const index = this.queue.indexOf(waiter);
-    if (index >= 0) this.queue.splice(index, 1);
+    this.removeQueued(waiter);
     waiter.settled = true;
     this.detachAbortListener(waiter);
     if (waiter.started) {
       waiter.reject?.(reason ?? new CoordinatorAbortedError("in_flight", waiter.context!.timing));
     }
     this.scheduleDrain();
+  }
+
+  private removeQueued(waiter: BrowserGateWaiter): void {
+    if (!this.queued.delete(waiter)) return;
+    if (waiter.kind === "exclusive") this.queuedExclusiveCount -= 1;
+    else {
+      this.queuedSharedCount -= 1;
+      this.startedShared.delete(waiter);
+    }
+  }
+
+  private pushStartedExclusive(waiter: BrowserGateWaiter): void {
+    const heap = this.startedExclusiveHeap;
+    heap.push(waiter);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (heap[parent]!.sequence <= waiter.sequence) break;
+      heap[index] = heap[parent]!;
+      index = parent;
+    }
+    heap[index] = waiter;
+  }
+
+  private nextStartedExclusive(): BrowserGateWaiter | undefined {
+    const heap = this.startedExclusiveHeap;
+    while (heap.length > 0 && !this.queued.has(heap[0]!)) this.popStartedExclusive();
+    return heap[0];
+  }
+
+  private popStartedExclusive(): BrowserGateWaiter | undefined {
+    const heap = this.startedExclusiveHeap;
+    const first = heap[0];
+    const last = heap.pop();
+    if (first === undefined || last === undefined || heap.length === 0) return first;
+    let index = 0;
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      if (left >= heap.length) break;
+      const child = right < heap.length && heap[right]!.sequence < heap[left]!.sequence ? right : left;
+      if (heap[child]!.sequence >= last.sequence) break;
+      heap[index] = heap[child]!;
+      index = child;
+    }
+    heap[index] = last;
+    return first;
   }
 
   private detachAbortListener(waiter: BrowserGateWaiter): void {

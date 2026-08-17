@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import type { FileChooserLike, LocatorLike, PageLike } from "../../src/types.js";
 import {
@@ -199,6 +200,97 @@ function makePrimitive(options: Readonly<{
 }
 
 describe("production attachment primitive", () => {
+  it("accepts native chooser, click, and setFiles promises from a foreign realm", async () => {
+    const ForeignPromise = runInNewContext("Promise") as PromiseConstructor;
+    let resolveChooser: ((chooser: FileChooserLike) => void) | undefined;
+    let clickCalls = 0;
+    let setFilesCalls = 0;
+    const chooser: FileChooserLike = {
+      setFiles: () => new ForeignPromise<void>(resolve => {
+        setFilesCalls += 1;
+        resolve();
+      })
+    };
+    const activation: LocatorLike = {
+      count: () => ForeignPromise.resolve(1),
+      isVisible: () => ForeignPromise.resolve(true),
+      click: () => new ForeignPromise<void>(resolve => {
+        clickCalls += 1;
+        queueMicrotask(() => resolveChooser?.(chooser));
+        resolve();
+      })
+    };
+    const page = {
+      waitForEvent: () => new ForeignPromise<FileChooserLike>(resolve => {
+        resolveChooser = resolve;
+      }),
+      locator: () => activation,
+      waitForEventCalls: 0,
+      clickCalls: 0,
+      setFilesCalls: 0,
+      events: [],
+      paths: []
+    } as unknown as FakePage;
+    const { primitive } = makePrimitive({
+      page,
+      revalidateFile: () => ForeignPromise.resolve(),
+      resolveActivation: () => ForeignPromise.resolve({
+        locator: activation,
+        candidateCount: 1,
+        capabilityKey: "chat.attachments.upload"
+      })
+    });
+
+    const result = await primitive.handoffFiles(handoffRequest(), page, target);
+
+    expect(result.status).toBe("satisfied");
+    expect(clickCalls).toBe(1);
+    expect(setFilesCalls).toBe(1);
+  });
+
+  it("preserves a proxied file chooser's private-field method binding", async () => {
+    const page = pageFixture({ chooser: "delayed" });
+    let resolveChooser: ((chooser: FileChooserLike) => void) | undefined;
+    class PrivateChooser {
+      #calls = 0;
+      readonly paths: string[][] = [];
+
+      get calls(): number {
+        return this.#calls;
+      }
+
+      async setFiles(paths: string[]): Promise<void> {
+        this.#calls += 1;
+        this.paths.push([...paths]);
+      }
+    }
+    const rawChooser = new PrivateChooser();
+    const chooser = new Proxy(rawChooser, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    }) as unknown as FileChooserLike;
+    page.waitForEvent = () => new Promise<FileChooserLike>(resolve => {
+      resolveChooser = resolve;
+    });
+    page.locator = () => ({
+      count: async () => 1,
+      isVisible: async () => true,
+      click: async () => {
+        page.clickCalls += 1;
+        resolveChooser?.(chooser);
+      }
+    });
+    const { primitive } = makePrimitive({ page });
+
+    const result = await primitive.handoffFiles(handoffRequest(), page, target);
+
+    expect(result.status).toBe("satisfied");
+    expect(rawChooser.calls).toBe(1);
+    expect(rawChooser.paths).toEqual([[SECRET_PATH]]);
+  });
+
   it("registers one handled chooser waiter before one visible activation and one setFiles", async () => {
     const page = pageFixture({ chooser: "delayed" });
     const events: string[] = [];
@@ -222,6 +314,56 @@ describe("production attachment primitive", () => {
     expect(JSON.stringify(result)).not.toContain(SECRET_PATH);
     expect(JSON.stringify(result)).not.toContain(SECRET_NAME);
     expect(JSON.stringify(result)).not.toContain(CONTENT_A);
+  });
+
+  it("supports one provider-owned hidden-control gesture after chooser registration", async () => {
+    const page = pageFixture({ chooser: "delayed" });
+    const events: string[] = [];
+    const locator = page.locator?.("input[type='file']");
+    if (locator?.click === undefined) throw new Error("fixture click missing");
+    const { primitive } = makePrimitive({
+      page,
+      resolveActivation: async () => ({
+        activate: async options => {
+          expect(options.timeoutMs).toBeGreaterThan(0);
+          events.push("activate");
+          await locator.click?.({ timeoutMs: options.timeoutMs });
+        },
+        candidateCount: 1,
+        capabilityKey: "chat.attachments.hidden-input"
+      })
+    });
+
+    const result = await primitive.handoffFiles(handoffRequest(), page, target);
+
+    expect(result.status).toBe("satisfied");
+    expect(events).toEqual(["activate"]);
+    expect(page.events).toEqual(["waitForEvent", "click", "setFiles"]);
+    expect(page.setFilesCalls).toBe(1);
+  });
+
+  it("rejects ambiguous activation shapes before any provider gesture", async () => {
+    const page = pageFixture({ chooser: "delayed" });
+    const locator = page.locator?.("input[type='file']");
+    if (locator === undefined) throw new Error("fixture locator missing");
+    let providerCalls = 0;
+    const { primitive } = makePrimitive({
+      page,
+      resolveActivation: async () => ({
+        locator,
+        activate: () => { providerCalls += 1; },
+        candidateCount: 1,
+        capabilityKey: "chat.attachments.invalid"
+      } as unknown as ProductionAttachmentActivation),
+      timeoutMs: 20
+    });
+
+    const result = await primitive.handoffFiles(handoffRequest(), page, target);
+
+    expect(result).toEqual({ status: "not_satisfied", blockerCode: "selector_drift" });
+    expect(providerCalls).toBe(0);
+    expect(page.clickCalls).toBe(0);
+    expect(page.setFilesCalls).toBe(0);
   });
 
   it("captures callbacks and evidence before the caller can mutate the options object", async () => {
@@ -441,7 +583,9 @@ describe("production attachment primitive", () => {
         resolveChooser?.();
       }
     });
-    const { primitive } = makePrimitive({ page, timeoutMs: 1 });
+    // Leave enough pre-mutation budget for CI scheduling while keeping each
+    // 25 ms native mutation well beyond the provider's local 10 ms budget.
+    const { primitive } = makePrimitive({ page, timeoutMs: 10 });
     const startedAt = Date.now();
     const result = await primitive.handoffFiles(handoffRequest(), page, target);
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(45);

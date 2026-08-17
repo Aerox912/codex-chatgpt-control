@@ -1,3 +1,5 @@
+import { isByteArrayView } from "../runtime/value-boundaries.js";
+
 /**
  * Internal source-to-file streaming boundary.
  *
@@ -23,7 +25,7 @@ export function copyProviderChunk(value: unknown, maxBytes = MAX_PROVIDER_CHUNK_
   const allowedBytes = Number.isSafeInteger(maxBytes) && maxBytes >= 0
     ? Math.min(maxBytes, MAX_PROVIDER_CHUNK_BYTES)
     : -1;
-  if (!(value instanceof Uint8Array)
+  if (!isByteArrayView(value)
     || allowedBytes < 0
     || value.byteLength > allowedBytes) {
     throw new Error("provider chunk is invalid or oversized");
@@ -34,5 +36,5 @@ export function copyProviderChunk(value: unknown, maxBytes = MAX_PROVIDER_CHUNK_
 }
 
 export function isOwnedProviderChunk(value: unknown): value is Uint8Array {
-  return value instanceof Uint8Array && ownedChunks.has(value);
+  return isByteArrayView(value) && ownedChunks.has(value);
 }

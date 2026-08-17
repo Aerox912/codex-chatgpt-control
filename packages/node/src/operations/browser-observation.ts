@@ -15,6 +15,7 @@ import {
   type CollectorTextDigest
 } from "./collector.js";
 import type { OperationResponseFormatV1 } from "./types.js";
+import { isPlainDataRecord } from "../runtime/value-boundaries.js";
 
 /**
  * A read-only browser observation has deliberately fewer powers than the
@@ -113,7 +114,7 @@ const MAX_ARTIFACTS_PER_TURN = 32;
 const MAX_TEXT_CHARS = 1_000_000;
 const MAX_TOTAL_TEXT_CHARS = 8_000_000;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
-const MAX_NODES = 4096;
+const MAX_NODES = 32_768;
 const MAX_ATTRIBUTE_LENGTH = 4096;
 const MAX_ARTIFACT_BYTES = 128 * 1024 * 1024;
 const OPAQUE_URL_PREFIX = "https://opaque.invalid/thread/";
@@ -277,7 +278,7 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
   const MAX_ARTIFACTS_PER_TURN = 32;
   const MAX_TEXT_CHARS = 1_000_000;
   const MAX_TOTAL_TEXT_CHARS = 8_000_000;
-  const MAX_NODES = 4096;
+  const MAX_NODES = 32_768;
   const MAX_ATTRIBUTE_LENGTH = 4096;
   const MAX_ARTIFACT_BYTES = 128 * 1024 * 1024;
   const ID_PATTERN = /^[A-Za-z0-9._:-]{1,512}$/;
@@ -307,9 +308,9 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
     const candidate = index >= 0 ? parts[index + 1] : undefined;
     return candidate !== undefined && ID_PATTERN.test(candidate) ? candidate : undefined;
   };
-  const uniqueNodeAttribute = (root: HTMLElement, roleNode: HTMLElement, names: readonly string[]): string | undefined => {
+  const uniqueNodeAttribute = (root: HTMLElement, roleNodes: readonly HTMLElement[], names: readonly string[]): string | undefined => {
     const values = new Set<string>();
-    for (const node of [root, roleNode]) {
+    for (const node of [root, ...roleNodes]) {
       for (const name of names) {
         const value = node.getAttribute(name);
         if (value !== null && value.length > 0) {
@@ -320,6 +321,22 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
     }
     if (values.size > 1) throw new Error("unstable identity");
     return [...values][0];
+  };
+  const preferredNodeAttribute = (root: HTMLElement, roleNodes: readonly HTMLElement[], names: readonly string[]): string | undefined => {
+    for (const name of names) {
+      const values = new Set<string>();
+      for (const node of [root, ...roleNodes]) {
+        const value = node.getAttribute(name);
+        if (value !== null && value.length > 0) {
+          if (value.length > MAX_ATTRIBUTE_LENGTH || !ID_PATTERN.test(value)) throw new Error("attribute drift");
+          values.add(value);
+        }
+      }
+      if (values.size > 1) throw new Error("unstable identity");
+      const selected = [...values][0];
+      if (selected !== undefined) return selected;
+    }
+    return undefined;
   };
   const boundedText = (value: string, max: number): string => {
     if (value.length > max || value.includes("\u0000")) throw new Error("text limit exceeded");
@@ -371,9 +388,13 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
   const captureAssistantTurnId = args?.captureAssistantTurnId;
   if (captureAssistantTurnId !== undefined && !isBoundedId(captureAssistantTurnId)) throw new Error("capture identity unavailable");
   const allowBlankTask = args?.allowBlankTask === true;
-  const documentRoot = (globalThis as unknown as { document?: Document }).document;
+  // Chrome's serialized evaluation realm exposes the ambient DOM globals but
+  // can intentionally shadow `globalThis`. Use guarded ambient bindings so
+  // this self-contained callback works in that realm and still fails closed
+  // when reconstructed outside a browser.
+  const documentRoot = typeof document === "undefined" ? undefined : document;
   if (documentRoot === undefined) throw new Error("document unavailable");
-  const locationRoot = (globalThis as unknown as { location?: Location }).location;
+  const locationRoot = typeof location === "undefined" ? undefined : location;
   const currentUrl = locationRoot?.href;
   if (typeof currentUrl !== "string" || currentUrl.length === 0 || currentUrl.length > MAX_ATTRIBUTE_LENGTH) {
     throw new Error("navigation unavailable");
@@ -407,6 +428,7 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
   let roleNodeCount = 0;
   let blankTaskMarker = false;
   let visibleComposerCount = 0;
+  let visibleStructuralStopControlCount = 0;
   let completenessMarker: string | undefined;
   let visitedNodes = 0;
   const consumeNode = (): void => {
@@ -423,13 +445,22 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
       }
     }
   };
-  const isTurnRoot = (element: HTMLElement): boolean => {
+  const isStructuralTurnRoot = (element: HTMLElement): boolean => {
     const testId = element.getAttribute("data-testid");
     return (testId !== null && testId.startsWith("conversation-turn"))
       || element.hasAttribute("data-conversation-turn-id")
-      || element.hasAttribute("data-turn-id")
-      || element.hasAttribute("data-message-id");
+      || element.hasAttribute("data-turn-id");
   };
+  const isFallbackTurnRoot = (element: HTMLElement): boolean => element.hasAttribute("data-message-id")
+    && element.hasAttribute("data-message-author-role");
+  const isRendered = (element: HTMLElement): boolean => {
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(element) : undefined;
+    if (style !== undefined && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) return false;
+    const rect = typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : undefined;
+    return rect === undefined || rect.width > 0 || rect.height > 0;
+  };
+  const isStructuralStopControl = (element: HTMLElement): boolean => element.tagName.toLowerCase() === "button"
+    && (element.getAttribute("data-testid") === "stop-button" || element.getAttribute("id") === "composer-stop-button");
   const isIgnoredMessageElement = (element: HTMLElement): boolean => {
     const tag = element.tagName.toLowerCase();
     return tag === "button"
@@ -508,13 +539,21 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
     activeArtifacts.push(state);
     return state;
   };
-  const ownerDocument = typeof documentRoot.createTreeWalker === "function" ? documentRoot : undefined;
-  if (ownerDocument === undefined) throw new Error("DOM traversal unavailable");
-  // SHOW_ALL is deliberate. This is one aggregate transaction budget: every
-  // element, text node, and comment returned by this walker consumes exactly
-  // one slot, including nodes later used for text and artifact attribution.
-  const walker = ownerDocument.createTreeWalker(documentRoot, 0xffffffff);
-  let current = walker.nextNode();
+  // The Chrome bridge exposes firstChild/nextSibling but intentionally omits
+  // TreeWalker and NodeFilter. Walk depth-first with bounded DOM pointers so
+  // every element, text node, and comment still consumes exactly one slot.
+  const nextDepthFirstNode = (node: Node, root: Node): Node | null => {
+    if (node.firstChild !== null) return node.firstChild;
+    let cursor: Node | null = node;
+    while (cursor !== null && cursor !== root) {
+      if (cursor.nextSibling !== null) return cursor.nextSibling;
+      cursor = cursor.parentNode;
+    }
+    return null;
+  };
+  const mainRoot = typeof documentRoot.getElementById === "function" ? documentRoot.getElementById("main") : null;
+  const traversalRoot: Node = mainRoot !== null && mainRoot.tagName.toLowerCase() === "main" ? mainRoot : documentRoot;
+  let current: Node | null = traversalRoot.firstChild;
   while (current !== null) {
     consumeNode();
     while (activeElements.length > 0
@@ -529,11 +568,46 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
       const element = current as HTMLElement;
       const parent = activeElements[activeElements.length - 1];
       const inheritedTurn = parent?.turn;
-      const rootCandidate = isTurnRoot(element);
+      const inheritedHidden = parent?.hiddenAncestor ?? false;
+      const ownHidden = element.hidden === true
+        || element.hasAttribute("hidden")
+        || element.hasAttribute("inert")
+        || element.getAttribute("aria-hidden") === "true";
+      const hiddenAncestor = inheritedHidden || ownHidden;
+      const role = element.getAttribute("data-message-author-role");
+      const structuralTurnCandidate = isStructuralTurnRoot(element);
+      const fallbackTurnCandidate = inheritedTurn === undefined && isFallbackTurnRoot(element);
+      const identityCandidate = element.hasAttribute("data-conversation-id")
+        || element.hasAttribute("data-chat-id")
+        || element.hasAttribute("data-thread-id")
+        || element.hasAttribute("data-conversation-thread-id");
+      const completenessCandidate = element.hasAttribute("data-observation-completeness")
+        || element.hasAttribute("data-conversation-completeness")
+        || element.hasAttribute("data-turns-truncated");
+      const blankTaskCandidate = isBlankTaskMarker(element);
+      const composerCandidate = isComposer(element);
+      const stopControlCandidate = isStructuralStopControl(element);
+      const artifactCandidate = inheritedTurn !== undefined && isArtifact(element);
+      // Layout/style reads are the expensive part of the aggregate DOM probe.
+      // Only nodes that can affect a returned semantic fact need one; ordinary
+      // message wrappers and text descendants remain covered by the same node
+      // and hidden-ancestor budgets without forcing layout per element.
+      const needsRenderedCheck = structuralTurnCandidate
+        || fallbackTurnCandidate
+        || role !== null
+        || identityCandidate
+        || completenessCandidate
+        || blankTaskCandidate
+        || composerCandidate
+        || stopControlCandidate
+        || artifactCandidate;
+      const semanticVisible = !hiddenAncestor && (!needsRenderedCheck || isRendered(element));
+      const structuralRoot = semanticVisible && structuralTurnCandidate;
+      const rootCandidate = structuralRoot || (semanticVisible && fallbackTurnCandidate);
       // A nested provider root would otherwise make one role/artifact subtree
       // belong to two owners. Reject it before descending so the exact visit
       // budget cannot be multiplied by overlapping ownership interpretations.
-      if (rootCandidate && inheritedTurn !== undefined) throw new Error("nested turn root");
+      if (structuralRoot && inheritedTurn !== undefined) throw new Error("nested turn root");
       let turn = rootCandidate
         ? {
             root: element,
@@ -550,8 +624,7 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
         roots.push(turn);
       }
       if (parent !== undefined && parent.turn?.root === parent.element) parent.turn.directChildCount += 1;
-      const role = element.getAttribute("data-message-author-role");
-      if (role !== null) {
+      if (role !== null && semanticVisible) {
         roleNodeCount += 1;
         if (role !== "user" && role !== "assistant") throw new Error("role drift");
         if (turn === undefined) {
@@ -569,37 +642,24 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
         turn.roleMarkers.push(element);
         if (turn.firstRoleNode === undefined) turn.firstRoleNode = element;
       }
-      addIdentityValues(element, ["data-conversation-id", "data-chat-id"], conversationValues);
-      addIdentityValues(element, ["data-thread-id", "data-conversation-thread-id"], threadValues);
-      if (completenessMarker === undefined
-        && (element.hasAttribute("data-observation-completeness")
-          || element.hasAttribute("data-conversation-completeness")
-          || element.hasAttribute("data-turns-truncated"))) {
+      if (semanticVisible) addIdentityValues(element, ["data-conversation-id", "data-chat-id"], conversationValues);
+      if (semanticVisible) addIdentityValues(element, ["data-thread-id", "data-conversation-thread-id"], threadValues);
+      if (semanticVisible && completenessMarker === undefined && completenessCandidate) {
         completenessMarker = (element.getAttribute("data-observation-completeness")
           ?? element.getAttribute("data-conversation-completeness")
           ?? element.getAttribute("data-turns-truncated")
           ?? "").toLowerCase();
       }
-      if (isBlankTaskMarker(element)) blankTaskMarker = true;
-      const inheritedHidden = parent?.hiddenAncestor ?? false;
-      const ownHidden = element.hidden === true
-        || element.hasAttribute("hidden")
-        || element.hasAttribute("inert")
-        || element.getAttribute("aria-hidden") === "true";
-      const hiddenAncestor = inheritedHidden || ownHidden;
-      if (!hiddenAncestor && isComposer(element)) {
-        const style = globalThis.getComputedStyle?.(element);
-        if (style === undefined || (style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0")) {
-          visibleComposerCount += 1;
-        }
-      }
+      if (semanticVisible && blankTaskCandidate) blankTaskMarker = true;
+      if (semanticVisible && composerCandidate) visibleComposerCount += 1;
+      if (semanticVisible && stopControlCandidate) visibleStructuralStopControlCount += 1;
       const selectedRoleNode = turn?.firstRoleNode === element;
       const messageOwner = selectedRoleNode ? turn : parent?.messageOwner;
       const messageIgnored = selectedRoleNode
         ? false
-        : (parent?.messageIgnored ?? false) || isIgnoredMessageElement(element);
+        : (parent?.messageIgnored ?? false) || hiddenAncestor || isIgnoredMessageElement(element);
       let artifact: (typeof activeArtifacts)[number] | undefined;
-      if (turn !== undefined && turn.root !== element && isArtifact(element)) artifact = readArtifact(element, turn);
+      if (semanticVisible && turn !== undefined && turn.root !== element && artifactCandidate) artifact = readArtifact(element, turn);
       activeElements.push({
         element,
         ...(turn === undefined ? {} : { turn }),
@@ -621,7 +681,7 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
         if (value.length > 0) owner.messageOwner.messageChunks.push(value);
       }
     }
-    current = walker.nextNode();
+    current = nextDepthFirstNode(current, traversalRoot);
   }
   while (activeElements.length > 0) {
     const closed = activeElements.pop();
@@ -629,6 +689,12 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
   }
   const conversationId = [...conversationValues][0];
   const threadId = [...threadValues][0];
+  // A stale rendered conversation must never override a different current
+  // navigation target. Both sources are independently useful, but when both
+  // are exposed they must identify the same provider conversation exactly.
+  if (conversationId !== undefined && fromUrl !== undefined && conversationId !== fromUrl) {
+    throw new Error("conversation navigation mismatch");
+  }
   const resolvedConversationId = conversationId ?? fromUrl;
   const resolvedThreadId = threadId ?? resolvedConversationId;
   if ((resolvedConversationId === undefined || resolvedThreadId === undefined)
@@ -638,7 +704,7 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
   const outputRoots = roots.filter(root => root.roleMarkers.length > 0);
   if (outputRoots.length > maxTurns) throw new Error("turn limit exceeded");
   let totalTextChars = 0;
-  const turns: RawTurn[] = [];
+  let turns: RawTurn[] = [];
   for (const root of outputRoots) {
     const roleMarkers = root.roleMarkers;
     const distinctRoles = new Set(roleMarkers.map(node => node.getAttribute("data-message-author-role")));
@@ -647,10 +713,16 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
     if (role !== "user" && role !== "assistant") throw new Error("role drift");
     const roleNode = roleMarkers[0];
     if (roleNode === undefined) throw new Error("role missing");
-    const stableId = uniqueNodeAttribute(root.root, roleNode, ["data-message-id", "data-turn-id", "data-conversation-turn-id"]);
+    const stableId = preferredNodeAttribute(root.root, roleMarkers, ["data-message-id", "data-conversation-turn-id", "data-turn-id"]);
     if (stableId === undefined) throw new Error("turn identity unavailable");
-    const parentStableId = uniqueNodeAttribute(root.root, roleNode, ["data-parent-message-id", "data-parent-turn-id", "data-parent-id"]);
-    const branchStableId = uniqueNodeAttribute(root.root, roleNode, ["data-branch-id", "data-conversation-branch-id", "data-message-branch-id"]);
+    const explicitParentStableId = uniqueNodeAttribute(root.root, roleMarkers, ["data-parent-message-id", "data-parent-turn-id", "data-parent-id"]);
+    const explicitBranchStableId = uniqueNodeAttribute(root.root, roleMarkers, ["data-branch-id", "data-conversation-branch-id", "data-message-branch-id"]);
+    const previousTurn = turns.at(-1);
+    const parentStableId = role === "assistant"
+      ? explicitParentStableId ?? (previousTurn?.role === "user" ? previousTurn.stableId : undefined)
+      : explicitParentStableId;
+    if (role === "assistant" && parentStableId === undefined) throw new Error("branch ambiguity");
+    const branchStableId = role === "assistant" ? explicitBranchStableId ?? stableId : explicitBranchStableId;
     const text = boundedText(root.messageChunks.join("").replace(/\s+/g, " ").trim().normalize("NFC"), maxTextChars);
     totalTextChars += text.length;
     if (totalTextChars > MAX_TOTAL_TEXT_CHARS) throw new Error("text limit exceeded");
@@ -681,6 +753,24 @@ export function readPageObservation(args: RawEvaluateArguments): RawPageObservat
       artifacts
     });
   }
+  if (visibleStructuralStopControlCount > 1) throw new Error("generation state ambiguity");
+  const assistantIndexes = turns.flatMap((turn, index) => turn.role === "assistant" ? [index] : []);
+  if (visibleStructuralStopControlCount === 1 && assistantIndexes.length === 0) throw new Error("assistant identity unavailable");
+  const latestAssistantIndex = assistantIndexes.at(-1);
+  turns = turns.map((turn, index) => {
+    if (turn.role !== "assistant") return turn;
+    const inferredState: "generating" | "terminal" = visibleStructuralStopControlCount === 1 && index === latestAssistantIndex
+      ? "generating"
+      : "terminal";
+    if (turn.state !== undefined && turn.state !== inferredState) throw new Error("unstable generation state");
+    return {
+      ...turn,
+      state: turn.state ?? inferredState,
+      ...((turn.state ?? inferredState) === "terminal" && turn.finishReason === undefined
+        ? { finishReason: "provider_terminal" }
+        : {})
+    };
+  });
   validateRawTurnOrdering(turns);
   const assistantTurns = turns.filter(turn => turn.role === "assistant");
   if (assistantTurns.some(turn => turn.state === undefined)) throw new Error("assistant state unavailable");
@@ -1125,17 +1215,7 @@ function validateRawTurnOrdering(turns: readonly RawTurn[]): void {
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  try {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return false;
-    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
-      if (!("value" in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
+  return isPlainDataRecord(value);
 }
 
 function assertExactKeys(value: Record<string, unknown>, allowed: readonly string[]): void {
@@ -1186,153 +1266,6 @@ function conversationIdFromUrl(urlValue: string): string | undefined {
   return candidate !== undefined && ID_PATTERN.test(candidate) ? candidate : undefined;
 }
 
-function boundedQueryElements<T extends Element>(
-  root: Node,
-  selector: string,
-  maxMatched = MAX_NODES,
-  maxVisited = MAX_NODES
-): T[] {
-  const ownerDocument = root.nodeType === 9 ? root as Document : root.ownerDocument;
-  if (ownerDocument === null || typeof ownerDocument.createTreeWalker !== "function") {
-    throw new Error("DOM traversal unavailable");
-  }
-  // Count every browser node, not only selector-capable elements.
-  const walker = ownerDocument.createTreeWalker(root, 0xffffffff);
-  const matches: T[] = [];
-  let visited = 0;
-  let current = walker.nextNode();
-  while (current !== null) {
-    visited += 1;
-    if (visited > maxVisited) throw new Error("node limit exceeded");
-    const element = current.nodeType === 1 ? current as Element : undefined;
-    if (element !== undefined && element.matches(selector)) {
-      matches.push(element as T);
-      if (matches.length > maxMatched) throw new Error("node limit exceeded");
-    }
-    current = walker.nextNode();
-  }
-  return matches;
-}
-
-function uniqueAttributeValue(root: Document, names: readonly string[], max: number): string | undefined {
-  const values = new Set<string>();
-  const selector = names.map(name => `[${name}]`).join(",");
-  const nodes = boundedQueryElements<HTMLElement>(root, selector);
-  for (const node of nodes) {
-    for (const name of names) {
-      const value = node.getAttribute(name);
-      if (value !== null && value.length > 0) {
-        if (value.length > max || !ID_PATTERN.test(value)) throw new Error("attribute drift");
-        values.add(value);
-      }
-    }
-  }
-  if (values.size > 1) throw new Error("ambiguous identity");
-  return [...values][0];
-}
-
-function uniqueNodeAttribute(root: HTMLElement, roleNode: HTMLElement, names: readonly string[]): string | undefined {
-  const values = new Set<string>();
-  for (const node of [root, roleNode]) {
-    for (const name of names) {
-      const value = node.getAttribute(name);
-      if (value !== null && value.length > 0) {
-        if (value.length > MAX_ATTRIBUTE_LENGTH || !ID_PATTERN.test(value)) throw new Error("attribute drift");
-        values.add(value);
-      }
-    }
-  }
-  if (values.size > 1) throw new Error("unstable identity");
-  return [...values][0];
-}
-
-function messageText(node: HTMLElement): string {
-  const ignored = (element: Element): boolean => element.matches("button,[role='button'],[aria-hidden='true'],script,style,svg");
-  const chunks: string[] = [];
-  const ancestors: Node[] = [];
-  let visited = 0;
-  let total = 0;
-  let current: Node | null = node.firstChild;
-  while (current !== null) {
-    visited += 1;
-    if (visited > MAX_NODES) throw new Error("node limit exceeded");
-    const element = current.nodeType === 1 ? current as Element : undefined;
-    const skip = element !== undefined && ignored(element);
-    if (!skip && current.nodeType === 3) {
-      const value = current.nodeValue ?? "";
-      total += value.length;
-      if (total > MAX_TEXT_CHARS) throw new Error("text limit exceeded");
-      if (value.length > 0) chunks.push(value);
-    }
-    const child: Node | null = skip ? null : current.firstChild;
-    if (child !== null) {
-      if (ancestors.length >= MAX_NODES) throw new Error("node limit exceeded");
-      ancestors.push(current);
-      current = child;
-      continue;
-    }
-    while (current !== null && current.nextSibling === null) current = ancestors.pop() ?? null;
-    if (current !== null) current = current.nextSibling;
-  }
-  return chunks.join("").replace(/\s+/g, " ").trim().normalize("NFC");
-}
-
-function boundedTextLength(node: Element, max: number): number {
-  const ancestors: Node[] = [];
-  let total = 0;
-  let visited = 0;
-  let current: Node | null = node;
-  while (current !== null) {
-    visited += 1;
-    if (visited > MAX_NODES) throw new Error("node limit exceeded");
-    if (current.nodeType === 3) {
-      total += (current.nodeValue ?? "").length;
-      if (total > max) throw new Error("artifact text limit");
-    }
-    const child: Node | null = current.firstChild;
-    if (child !== null) {
-      if (ancestors.length >= MAX_NODES) throw new Error("node limit exceeded");
-      ancestors.push(current);
-      current = child;
-      continue;
-    }
-    while (current !== null && current !== node && current.nextSibling === null) current = ancestors.pop() ?? null;
-    if (current === node) break;
-    if (current !== null) current = current.nextSibling;
-  }
-  return total;
-}
-
-function boundedText(value: string, max: number): string {
-  if (value.length > max || value.includes("\u0000")) throw new Error("text limit exceeded");
-  return value;
-}
-
-function readArtifacts(root: HTMLElement, maxArtifacts: number, maxTextChars: number): RawArtifact[] {
-  const selector = "[data-artifact-id],[data-file-id],[data-attachment-id],[data-image-id],[data-testid*='artifact' i],[data-testid*='file' i],[data-testid*='image' i],a[download]";
-  const nodes = boundedQueryElements<HTMLElement>(root, selector, maxArtifacts);
-  const seen = new Set<string>();
-  const artifacts: RawArtifact[] = [];
-  for (const node of nodes) {
-    const identity = uniqueNodeAttribute(node, node, ["data-artifact-id", "data-file-id", "data-attachment-id", "data-image-id"])
-      ?? (node.getAttribute("data-testid") ?? "");
-    if (!isBoundedId(identity) || seen.has(identity)) throw new Error("artifact identity unavailable");
-    seen.add(identity);
-    const testId = (node.getAttribute("data-testid") ?? "").toLowerCase();
-    const kind = node.tagName.toLowerCase() === "img" || testId.includes("image") || node.hasAttribute("data-image-id") ? "image" : testId.includes("file") || node.hasAttribute("data-file-id") || node.hasAttribute("data-attachment-id") || node.tagName.toLowerCase() === "a" ? "file" : "other";
-    const contentDigest = node.getAttribute("data-content-sha256") ?? node.getAttribute("data-sha256") ?? undefined;
-    if (contentDigest !== undefined && !isContentDigest(contentDigest)) throw new Error("artifact digest drift");
-    const bytesRaw = node.getAttribute("data-bytes") ?? node.getAttribute("data-size") ?? undefined;
-    const bytes = bytesRaw === undefined ? undefined : Number(bytesRaw);
-    if (bytes !== undefined && (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > MAX_ARTIFACT_BYTES)) throw new Error("artifact bytes limit");
-    const mimeType = node.getAttribute("data-mime-type") ?? node.getAttribute("type") ?? undefined;
-    if (mimeType !== undefined && !isBoundedText(mimeType, 128)) throw new Error("artifact MIME drift");
-    boundedTextLength(node, maxTextChars);
-    artifacts.push({ kind, identity, ...(contentDigest === undefined ? {} : { contentDigest }), ...(bytes === undefined ? {} : { bytes }), ...(mimeType === undefined ? {} : { mimeType }) });
-  }
-  return artifacts;
-}
-
 function readTurnState(root: HTMLElement, roleNode: HTMLElement): "generating" | "terminal" | undefined {
   const values = [root, roleNode].flatMap(node => [
     node.getAttribute("data-generation-state"),
@@ -1358,17 +1291,6 @@ function readFinishReason(root: HTMLElement, roleNode: HTMLElement): string | un
     }
   }
   return undefined;
-}
-
-function readCompleteness(root: Document): RawPageObservation["completeness"] {
-  const markers = boundedQueryElements<HTMLElement>(root, "[data-observation-completeness],[data-conversation-completeness],[data-turns-truncated]");
-  for (const marker of markers) {
-    const value = (marker.getAttribute("data-observation-completeness") ?? marker.getAttribute("data-conversation-completeness") ?? marker.getAttribute("data-turns-truncated") ?? "").toLowerCase();
-    if (value === "truncated" || value === "true") return "truncated";
-    if (value === "incomplete") return "incomplete";
-    if (value === "out_of_order") return "out_of_order";
-  }
-  return "complete";
 }
 
 function utf8Bytes(value: string): number {

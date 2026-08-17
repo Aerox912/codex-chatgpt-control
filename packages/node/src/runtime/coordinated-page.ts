@@ -120,6 +120,19 @@ function readDataMember<T>(value: ObjectLike, key: PropertyKey, label: string): 
       if (!("value" in descriptor)) {
         return invalid(`Cannot use ${label}: accessor-backed provider members are not supported`);
       }
+      if (current !== value && typeof descriptor.value === "function") {
+        // The Codex browser bridge exposes class instances through proxies.
+        // Its normal property read returns a receiver-safe bound callable;
+        // applying the raw prototype method to the proxy fails private-field
+        // brand checks. Only consult the provider binding after proving the
+        // member is an inherited data method, never for an accessor.
+        try {
+          const receiverSafe = Reflect.get(value, key, value);
+          if (typeof receiverSafe === "function") return receiverSafe as T;
+        } catch (error) {
+          return invalid(`Cannot use ${label}: provider method binding failed`, error);
+        }
+      }
       return descriptor.value as T;
     }
     try {

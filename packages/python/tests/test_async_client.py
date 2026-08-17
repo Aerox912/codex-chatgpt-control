@@ -873,13 +873,13 @@ def command_result(data: dict) -> dict:
 class SlowSyncBackend:
     def __init__(self, *, block_until_closed: bool = False) -> None:
         self.block_until_closed = block_until_closed
-        self.last_stream: SlowSyncEventIterator | None = None
+        self.last_stream: "SlowSyncEventIterator | None" = None
 
     def request(self, command: str, payload: dict | None = None) -> dict:
         time.sleep(0.08)
         return command_result({"command": command, "payload": payload or {}})
 
-    def runner_stream(self, _agent: dict, _input: object) -> SlowSyncEventIterator:
+    def runner_stream(self, _agent: dict, _input: object) -> "SlowSyncEventIterator":
         self.last_stream = SlowSyncEventIterator(block_until_closed=self.block_until_closed)
         return self.last_stream
 

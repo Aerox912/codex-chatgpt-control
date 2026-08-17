@@ -51,6 +51,7 @@ import {
   type ControlParentSnapshot,
   type ControlPorts,
   type ControlPostconditionObservation,
+  type ControlPostconditionRetryPolicy,
   type ControlPostconditionRequest,
   type ControlReceiptPersistenceRequest,
   type ControlSteerDurableIntent,
@@ -277,6 +278,7 @@ export type OperationControlAdapter = Readonly<{
   observeTurn(request: ControlTurnObservationRequest): Promise<ControlTurnObservation>;
   executeOnce(request: ControlExecutionRequest): Promise<ControlExecutionResult>;
   observePostcondition(request: ControlPostconditionRequest): Promise<ControlPostconditionObservation>;
+  postconditionRetry?: ControlPostconditionRetryPolicy;
   /** Read-only Work-steer preparation; prompt text remains in the adapter closure. */
   prepareSteer?(request: ControlSteerPrepareRequest): Promise<ControlSteerPhaseResult>;
   /** One-shot Work-steer mutation over an authenticated prepared record. */
@@ -778,6 +780,9 @@ export class OperationService {
       persistActionIntent: action => this.persistControlIntent(action),
       executeOnce: execution => adapter.control!.executeOnce(execution),
       observePostcondition: postcondition => adapter.control!.observePostcondition(postcondition),
+      ...(adapter.control.postconditionRetry === undefined
+        ? {}
+        : { postconditionRetry: adapter.control.postconditionRetry }),
       persistReceipt: receipt => this.persistControlReceipt(receipt)
     };
     if (typeof adapter.control.prepareSteer === "function") {

@@ -20,6 +20,7 @@ import type {
   OperationStagingMutationResult,
   OperationStagingObservation
 } from "./staging.js";
+import { isPlainDataRecord } from "../runtime/value-boundaries.js";
 
 /**
  * Provider-specific staging for the reversible configuration surfaces.
@@ -656,7 +657,7 @@ function evaluateMenuState(
     .map(control => control.label)
     .filter(label => !isToolLabel(label));
   const unknown = [...needed].some(requested => {
-    if (requested.key === "experience") return snapshot.surface === requested.value;
+    if (requested.key === "experience") return snapshot.surface === "unknown";
     const axes = axesForDesired(requested.value, requested.axes, configurationForKind(kind));
     const hasAxisValue = axes.some(axis => (values.get(axis)?.length ?? 0) > 0);
     const hasSelectedValue = selectedValues.some(value => labelsMatchAny(value, valueAliases("configuration", requested.value)));
@@ -811,30 +812,99 @@ async function discoverMenuSnapshot(page: Readonly<PageLike>, surface: Productio
     chatSurfaceLabels: string[];
   }>>((config) => {
     const normalize = (input: string): string => input.replace(/\s+/g, " ").trim().slice(0, 512);
+    const elementParent = (node: Node): Element | null => {
+      const parent: ParentNode | null = node.parentNode;
+      return parent?.nodeType === 1 ? parent as Element : null;
+    };
+    const simpleMatch = (element: Element, rawToken: string): boolean => {
+      const checked = rawToken.endsWith(":checked");
+      const token = checked ? rawToken.slice(0, -":checked".length) : rawToken;
+      let offset = 0;
+      const tag = /^[A-Za-z][A-Za-z0-9-]*/u.exec(token);
+      if (tag !== null) {
+        if (element.tagName.toLocaleLowerCase() !== tag[0].toLocaleLowerCase()) return false;
+        offset = tag[0].length;
+      }
+      while (offset < token.length) {
+        if (token[offset] !== "[") return false;
+        const close = token.indexOf("]", offset + 1);
+        if (close < 0) return false;
+        const expression = token.slice(offset + 1, close).trim();
+        const attribute = /^([A-Za-z0-9_:-]+)(?:(\*=|=)'([^']*)'(?:\s+(i))?)?$/u.exec(expression);
+        if (attribute === null) return false;
+        const actual = element.getAttribute(attribute[1]!);
+        if (attribute[2] === undefined) {
+          if (actual === null) return false;
+        } else {
+          if (actual === null) return false;
+          const insensitive = attribute[4] === "i";
+          const left = insensitive ? actual.toLocaleLowerCase() : actual;
+          const rightValue = attribute[3] ?? "";
+          const right = insensitive ? rightValue.toLocaleLowerCase() : rightValue;
+          if (attribute[2] === "=" ? left !== right : !left.includes(right)) return false;
+        }
+        offset = close + 1;
+      }
+      if (checked && (element as HTMLInputElement).checked !== true && !element.hasAttribute("checked")) return false;
+      return true;
+    };
+    const selectorTokens = (branch: string): string[] => {
+      const tokens: string[] = [];
+      let depth = 0;
+      let start = 0;
+      for (let index = 0; index <= branch.length; index += 1) {
+        const character = branch[index];
+        if (character === "[") depth += 1;
+        if (character === "]") depth -= 1;
+        if ((character === undefined || /\s/u.test(character)) && depth === 0) {
+          const token = branch.slice(start, index).trim();
+          if (token.length > 0) tokens.push(token);
+          start = index + 1;
+        }
+      }
+      return tokens;
+    };
+    const selectorMatch = (element: Element, selector: string): boolean => {
+      for (const rawBranch of selector.split(",")) {
+        const tokens = selectorTokens(rawBranch.trim());
+        if (tokens.length === 0 || !simpleMatch(element, tokens[tokens.length - 1]!)) continue;
+        let ancestor: Element | null = elementParent(element);
+        let tokenIndex = tokens.length - 2;
+        while (tokenIndex >= 0) {
+          while (ancestor !== null && !simpleMatch(ancestor, tokens[tokenIndex]!)) {
+            ancestor = elementParent(ancestor);
+          }
+          if (ancestor === null) break;
+          tokenIndex -= 1;
+          ancestor = elementParent(ancestor);
+        }
+        if (tokenIndex < 0) return true;
+      }
+      return false;
+    };
     const boundedQuery = <T extends Element>(
       root: Node,
       selector: string,
       maxMatched: number,
       maxVisited = 4096
     ): T[] => {
-      const ownerDocument = root.nodeType === 9 ? root as Document : root.ownerDocument;
-      if (ownerDocument === null || typeof ownerDocument.createTreeWalker !== "function") {
-        throw new Error("DOM traversal unavailable");
-      }
-      // A bounded probe must count all browser nodes, not just elements.
-      const walker = ownerDocument.createTreeWalker(root, 0xffffffff);
       const matches: T[] = [];
       let visited = 0;
-      let current = walker.nextNode();
+      let current: Node | null = root.firstChild;
       while (current !== null) {
         visited += 1;
         if (visited > maxVisited) throw new Error("node limit exceeded");
         const element = current.nodeType === 1 ? current as Element : undefined;
-        if (element !== undefined && element.matches(selector)) {
+        if (element !== undefined && selectorMatch(element, selector)) {
           matches.push(element as T);
           if (matches.length > maxMatched) throw new Error("node limit exceeded");
         }
-        current = walker.nextNode();
+        if (current.firstChild !== null) {
+          current = current.firstChild;
+          continue;
+        }
+        while (current !== null && current !== root && current.nextSibling === null) current = current.parentNode;
+        current = current === null || current === root ? null : current.nextSibling;
       }
       return matches;
     };
@@ -871,14 +941,15 @@ async function discoverMenuSnapshot(page: Readonly<PageLike>, surface: Productio
     const visible = (node: Element): boolean => {
       let current: Element | null = node;
       let depth = 0;
-      while (current !== null && depth < 16) {
+      while (current !== null && depth < 4096) {
         const html = current as HTMLElement;
-        if (html.hidden || current.getAttribute("aria-hidden") === "true" || current.hasAttribute("inert")) return false;
+        if (current.hasAttribute("hidden") || current.getAttribute("aria-hidden") === "true" || current.hasAttribute("inert")) return false;
         const style = typeof window !== "undefined" ? window.getComputedStyle?.(html) : undefined;
         if (style?.display === "none" || style?.visibility === "hidden" || style?.opacity === "0") return false;
-        current = current.parentElement ?? null;
+        current = elementParent(current);
         depth += 1;
       }
+      if (current !== null) throw new Error("node limit exceeded");
       const rect = (node as HTMLElement).getBoundingClientRect?.();
       return rect === undefined || (rect.width > 0 && rect.height > 0);
     };
@@ -900,7 +971,7 @@ async function discoverMenuSnapshot(page: Readonly<PageLike>, surface: Productio
           || config.chatSurfaceLabels.some(label => value === normalize(label).toLocaleLowerCase())) signals.add("chat");
       };
       const composerNodes = boundedQuery<HTMLElement>(document,
-        "main form, main [data-testid*='composer' i], main [class*='composer' i], main textarea, main [contenteditable='true'], main [role='textbox']",
+        "main textarea, main [contenteditable='true'], main [role='textbox']",
         32).filter(visible);
       for (const node of composerNodes) {
         addLabel(normalize(node.getAttribute("aria-label")
@@ -917,7 +988,7 @@ async function discoverMenuSnapshot(page: Readonly<PageLike>, surface: Productio
             const value = current.getAttribute(attribute);
             if (value !== null) addMarker(value);
           }
-          current = current.parentElement;
+          current = elementParent(current);
           depth += 1;
         }
       }
@@ -941,8 +1012,14 @@ async function discoverMenuSnapshot(page: Readonly<PageLike>, surface: Productio
     const menuIndices = new Map<Element, number>();
     for (let index = 0; index < menus.length; index += 1) menuIndices.set(menus[index]!, index);
     const menuIndex = (node: Element): number => {
-      const owner = node.closest("[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper], [data-radix-menu-content]");
-      return owner === null ? -1 : menuIndices.get(owner) ?? -1;
+      const menuSelector = "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper], [data-radix-menu-content]";
+      let owner: Element | null = node;
+      for (let depth = 0; owner !== null && depth < 4096; depth += 1) {
+        if (selectorMatch(owner, menuSelector)) return menuIndices.get(owner) ?? -1;
+        owner = elementParent(owner);
+      }
+      if (owner !== null) throw new Error("node limit exceeded");
+      return -1;
     };
     for (const node of all) {
       if (!visible(node)) continue;
@@ -1452,7 +1529,7 @@ function snapshotProductionOptions(value: unknown): RawProductionConfigurationOp
 }
 
 function snapshotDataRecord(value: unknown, code: ProductionConfigurationBlockerCode): Record<string, unknown> {
-  if (!isPlainRecord(value)) throw new ProductionConfigurationPrimitiveError(code);
+  if (!isPlainDataRecord(value)) throw new ProductionConfigurationPrimitiveError(code);
   let descriptors: PropertyDescriptorMap;
   try {
     descriptors = Object.getOwnPropertyDescriptors(value);
@@ -1520,16 +1597,6 @@ function readOwnDataProperty(value: unknown, key: string): unknown {
       : undefined;
   } catch {
     return undefined;
-  }
-}
-
-function isPlainRecord(value: unknown): value is Record<string, any> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  try {
-    const prototype = Object.getPrototypeOf(value);
-    return prototype === Object.prototype || prototype === null;
-  } catch {
-    return false;
   }
 }
 

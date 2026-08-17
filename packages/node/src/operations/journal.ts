@@ -1,4 +1,4 @@
-import { constants as fsConstants, type Stats } from "node:fs";
+import { constants as fsConstants, type BigIntStats, type Stats } from "node:fs";
 import {
   chmod,
   lstat,
@@ -14,6 +14,8 @@ import {
 import { homedir, hostname, platform } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
+import { nodeErrorCode } from "../errors.js";
+import { isByteArrayView } from "../runtime/value-boundaries.js";
 import { canonicalJson, hmacDigest } from "./canonical.js";
 import {
   operationControlRequestDigest,
@@ -48,10 +50,18 @@ const LOCK_DIRECTORY = "locks";
 const TERMINAL_DIRECTORY = "terminals";
 const SNAPSHOT_DIRECTORY = "snapshots";
 const TOMBSTONE_DIRECTORY = "tombstones";
+const TRACKED_STATE_DIRECTORIES = [
+  LOG_DIRECTORY,
+  TERMINAL_DIRECTORY,
+  SNAPSHOT_DIRECTORY,
+  TOMBSTONE_DIRECTORY
+] as const;
 const QUOTA_LOCK_FILE = "quota-admission.lock";
+const QUOTA_COUNTER_FILE = "quota-state.json";
 const LOCK_RECOVERY_SUFFIX = ".reclaim";
 const TERMINAL_SCHEMA_VERSION = "chatgpt.browser_control.operation_terminal.v1" as const;
 const TOMBSTONE_SCHEMA_VERSION = "chatgpt.browser_control.operation_tombstone.v1" as const;
+const QUOTA_COUNTER_SCHEMA_VERSION = "chatgpt.browser_control.operation_quota_state.v1" as const;
 const GENESIS_EVENT_DIGEST = `hmac-sha256:${"0".repeat(64)}`;
 const DEFAULT_MAX_STATE_BYTES = 64 * 1024 * 1024;
 const MAX_SINGLE_RECORD_FILE_BYTES = 64 * 1024 * 1024;
@@ -178,6 +188,37 @@ type AuthenticatedOperationSnapshotV1 = OperationJournalSnapshotV1 & {
   snapshotDigest: string;
 };
 
+type QuotaDirectoryFingerprintV1 = Readonly<{
+  device: string;
+  inode: string;
+  modifiedNs: string;
+  changedNs: string;
+}>;
+
+type OperationQuotaCounterV1 = Readonly<{
+  schemaVersion: typeof QUOTA_COUNTER_SCHEMA_VERSION;
+  revision: number;
+  totalBytes: number;
+  entryCount: number;
+  dirty: boolean;
+  directories: Readonly<Record<
+    typeof LOG_DIRECTORY | typeof TERMINAL_DIRECTORY | typeof SNAPSHOT_DIRECTORY | typeof TOMBSTONE_DIRECTORY,
+    QuotaDirectoryFingerprintV1
+  >>;
+  counterDigest: string;
+}>;
+
+type StateUsage = Readonly<{
+  totalBytes: number;
+  entryCount: number;
+}>;
+
+type QuotaMutationResult<T> = Readonly<{
+  value: T;
+  byteDelta: number;
+  entryDelta: number;
+}>;
+
 type HeldLock = {
   path: string;
   token: string;
@@ -291,7 +332,9 @@ export class OperationJournal {
     await ensureSecureDirectory(join(canonicalRoot, SNAPSHOT_DIRECTORY));
     await ensureSecureDirectory(join(canonicalRoot, TOMBSTONE_DIRECTORY));
     const key = await loadOrCreateKey(canonicalRoot, entropy);
-    return new OperationJournal(canonicalRoot, key, clock, entropy, options);
+    const journal = new OperationJournal(canonicalRoot, key, clock, entropy, options);
+    await journal.ensureQuotaCounter();
+    return journal;
   }
 
   async create(event: Extract<OperationEventV1, { type: "operation_created" }>): Promise<LoadedOperationJournalV1> {
@@ -370,20 +413,20 @@ export class OperationJournal {
           syncParent: expectedRevision === 0,
           inject: point => this.inject(point)
         });
-        if (expectedRevision === 0) {
-          const quotaLockPath = this.quotaLockPath();
-          await serializeInProcess(quotaLockPath, async () => {
-            const quotaLock = await acquireLock(quotaLockPath, this.lockTimeoutMs, this.clock, this.entropy);
-            try {
-              await this.assertQuotaForNewOperation(encoded.byteLength);
-              await persist();
-            } finally {
-              await releaseLock(quotaLock);
-            }
-          });
-        } else {
-          await persist();
-        }
+        const byteDelta = encoded.byteLength - parsed.partialTailBytes;
+        await this.mutateQuotaTrackedState(
+          async () => {
+            await persist();
+            return {
+              value: undefined,
+              byteDelta,
+              entryDelta: parsed.exists ? 0 : 1
+            };
+          },
+          expectedRevision === 0
+            ? counter => this.assertQuotaForNewOperation(counter, Math.max(0, byteDelta))
+            : undefined
+        );
 
         return {
           state: nextState,
@@ -434,16 +477,26 @@ export class OperationJournal {
           lastEventDigest,
           state: jsonRoundTrip(loaded.state)
         };
-        await writeAuthenticatedAtomic(
-          this.snapshotPath(operationId),
-          snapshot,
-          this.key,
-          "codex-chatgpt-control/operation-snapshot/v1",
-          "snapshotDigest",
-          this.entropy,
-          point => this.inject(point),
-          true
-        );
+        const snapshotPath = this.snapshotPath(operationId);
+        await this.mutateQuotaTrackedState(async () => {
+          const beforeBytes = await optionalFileSize(snapshotPath);
+          await writeAuthenticatedAtomic(
+            snapshotPath,
+            snapshot,
+            this.key,
+            "codex-chatgpt-control/operation-snapshot/v1",
+            "snapshotDigest",
+            this.entropy,
+            point => this.inject(point),
+            true
+          );
+          const afterBytes = await fileSize(snapshotPath);
+          return {
+            value: undefined,
+            byteDelta: afterBytes - (beforeBytes ?? 0),
+            entryDelta: beforeBytes === undefined ? 1 : 0
+          };
+        });
         return snapshot;
       } finally {
         await releaseLock(lock);
@@ -526,10 +579,10 @@ export class OperationJournal {
           if (await pathExists(terminalPath)) {
             const terminal = await readTerminal(terminalPath, this.key);
             assertSameIdentity(tombstone.operationId, tombstone.requestDigest, terminal.operationId, terminal.requestDigest);
-            deletedTerminalBytes = await removeFileAndSync(terminalPath, dirname(terminalPath));
+            deletedTerminalBytes = await this.removeQuotaTrackedFile(terminalPath);
           }
           const snapshotPath = this.snapshotPath(operationId);
-          const deletedSnapshotBytes = await removeFileAndSync(snapshotPath, dirname(snapshotPath));
+          const deletedSnapshotBytes = await this.removeQuotaTrackedFile(snapshotPath);
           return {
             status: "already_pruned",
             operationId: tombstone.operationId,
@@ -550,19 +603,26 @@ export class OperationJournal {
           "codex-chatgpt-control/operation-tombstone/v1",
           withoutField(tombstone, "tombstoneDigest")
         );
-        await writeAtomicJson(
-          tombstonePath,
-          tombstone,
-          this.entropy,
-          point => this.inject(point),
-          false
-        );
+        await this.mutateQuotaTrackedState(async () => {
+          const beforeBytes = await optionalFileSize(tombstonePath);
+          await writeAtomicJson(
+            tombstonePath,
+            tombstone,
+            this.entropy,
+            point => this.inject(point),
+            false
+          );
+          const afterBytes = await fileSize(tombstonePath);
+          return {
+            value: undefined,
+            byteDelta: afterBytes - (beforeBytes ?? 0),
+            entryDelta: beforeBytes === undefined ? 1 : 0
+          };
+        });
 
-        const terminalBytes = await fileSize(terminalPath);
-        await unlink(terminalPath);
-        await syncDirectory(dirname(terminalPath));
+        const terminalBytes = await this.removeQuotaTrackedFile(terminalPath);
         const snapshotPath = this.snapshotPath(operationId);
-        const snapshotBytes = await removeFileAndSync(snapshotPath, dirname(snapshotPath));
+        const snapshotBytes = await this.removeQuotaTrackedFile(snapshotPath);
         return {
           status: "pruned",
           operationId: terminal.operationId,
@@ -621,7 +681,7 @@ export class OperationJournal {
         const deleted: OperationTombstonePurgeResultV1["deleted"] = [];
         let deletedBytes = 0;
         for (const [kind, path] of paths) {
-          const bytes = await removeFileAndSync(path, dirname(path));
+          const bytes = await this.removeQuotaTrackedFile(path);
           if (bytes > 0) {
             deleted.push(kind);
             deletedBytes += bytes;
@@ -646,6 +706,10 @@ export class OperationJournal {
 
   private quotaLockPath(): string {
     return childPath(this.stateRoot, LOCK_DIRECTORY, QUOTA_LOCK_FILE);
+  }
+
+  private quotaCounterPath(): string {
+    return childPath(this.stateRoot, QUOTA_COUNTER_FILE);
   }
 
   private terminalPath(operationId: string): string {
@@ -768,10 +832,10 @@ export class OperationJournal {
       if (await pathExists(logPath)) {
         const parsed = await readLog(logPath, this.key, false);
         reconcileTerminalWithLog(terminal, parsed, operationId);
-        const deletedLogBytes = await fileSize(logPath);
-        await unlink(logPath);
-        await syncDirectory(dirname(logPath));
-        await this.inject("after_log_deleted");
+        const deletedLogBytes = await this.removeQuotaTrackedFile(
+          logPath,
+          () => this.inject("after_log_deleted")
+        );
         return {
           status: "already_compacted",
           operationId: terminal.operationId,
@@ -799,23 +863,32 @@ export class OperationJournal {
     const lastEventDigest = parsed.envelopes.at(-1)?.eventDigest;
     if (lastEventDigest === undefined) throw corrupt("Completed operation has no final event digest.");
     const terminal = makeTerminalRecord(this.key, state, lastEventDigest);
-    await writeAuthenticatedAtomic(
-      terminalPath,
-      terminal,
-      this.key,
-      "codex-chatgpt-control/operation-terminal/v1",
-      "terminalDigest",
-      this.entropy,
-      point => this.inject(point),
-      false
-    );
+    await this.mutateQuotaTrackedState(async () => {
+      const beforeBytes = await optionalFileSize(terminalPath);
+      await writeAuthenticatedAtomic(
+        terminalPath,
+        terminal,
+        this.key,
+        "codex-chatgpt-control/operation-terminal/v1",
+        "terminalDigest",
+        this.entropy,
+        point => this.inject(point),
+        false
+      );
+      const afterBytes = await fileSize(terminalPath);
+      return {
+        value: undefined,
+        byteDelta: afterBytes - (beforeBytes ?? 0),
+        entryDelta: beforeBytes === undefined ? 1 : 0
+      };
+    });
     // Re-read the newly durable record before deleting the only historical log.
     const durableTerminal = await readTerminal(terminalPath, this.key);
     reconcileTerminalWithLog(durableTerminal, parsed, operationId);
-    const deletedLogBytes = await fileSize(logPath);
-    await unlink(logPath);
-    await syncDirectory(dirname(logPath));
-    await this.inject("after_log_deleted");
+    const deletedLogBytes = await this.removeQuotaTrackedFile(
+      logPath,
+      () => this.inject("after_log_deleted")
+    );
     return {
       status: "compacted",
       operationId: durableTerminal.operationId,
@@ -826,9 +899,141 @@ export class OperationJournal {
     };
   }
 
-  private async assertQuotaForNewOperation(additionalBytes: number): Promise<void> {
-    const total = await scanStateBytes(this.stateRoot);
-    if (!Number.isSafeInteger(additionalBytes) || additionalBytes < 0 || additionalBytes > MAX_QUOTA_SCAN_BYTES - total) {
+  private async ensureQuotaCounter(): Promise<void> {
+    const quotaLockPath = this.quotaLockPath();
+    await serializeInProcess(quotaLockPath, async () => {
+      const quotaLock = await acquireLock(quotaLockPath, this.lockTimeoutMs, this.clock, this.entropy);
+      try {
+        await this.loadCurrentQuotaCounter();
+      } finally {
+        await releaseLock(quotaLock);
+      }
+    });
+  }
+
+  private async mutateQuotaTrackedState<T>(
+    mutation: () => Promise<QuotaMutationResult<T>>,
+    preflight?: (counter: OperationQuotaCounterV1) => void
+  ): Promise<T> {
+    const quotaLockPath = this.quotaLockPath();
+    return await serializeInProcess(quotaLockPath, async () => {
+      const quotaLock = await acquireLock(quotaLockPath, this.lockTimeoutMs, this.clock, this.entropy);
+      try {
+        const counter = await this.loadCurrentQuotaCounter();
+        preflight?.(counter);
+        const dirty = await writeQuotaCounter(
+          this.quotaCounterPath(),
+          {
+            ...counter,
+            revision: nextQuotaRevision(counter.revision),
+            dirty: true,
+            counterDigest: ""
+          },
+          this.key,
+          this.entropy
+        );
+        try {
+          const result = await mutation();
+          assertQuotaDelta(result.byteDelta, "byteDelta");
+          assertQuotaDelta(result.entryDelta, "entryDelta");
+          const totalBytes = dirty.totalBytes + result.byteDelta;
+          const entryCount = dirty.entryCount + result.entryDelta;
+          if (!Number.isSafeInteger(totalBytes) || totalBytes < 0
+            || !Number.isSafeInteger(entryCount) || entryCount < 0) {
+            throw new OperationJournalError("journal_quota_counter_corrupt", "Operation quota accounting produced an invalid total.");
+          }
+          await writeQuotaCounter(
+            this.quotaCounterPath(),
+            {
+              schemaVersion: QUOTA_COUNTER_SCHEMA_VERSION,
+              revision: nextQuotaRevision(dirty.revision),
+              totalBytes,
+              entryCount,
+              dirty: false,
+              directories: await readQuotaDirectoryFingerprints(this.stateRoot),
+              counterDigest: ""
+            },
+            this.key,
+            this.entropy
+          );
+          return result.value;
+        } catch (error) {
+          // A thrown mutation may still have changed durable state. Rebuild
+          // while the global quota lock is held; if this process actually
+          // dies, the authenticated dirty bit forces the next opener to scan.
+          try {
+            await this.rebuildQuotaCounter(nextQuotaRevision(dirty.revision));
+          } catch {
+            // Preserve the original mutation failure. The dirty counter is a
+            // fail-closed recovery marker for the next admission attempt.
+          }
+          throw error;
+        }
+      } finally {
+        await releaseLock(quotaLock);
+      }
+    });
+  }
+
+  private async removeQuotaTrackedFile(
+    path: string,
+    afterDelete?: () => void | Promise<void>
+  ): Promise<number> {
+    return await this.mutateQuotaTrackedState(async () => {
+      const beforeBytes = await optionalFileSize(path);
+      if (beforeBytes === undefined) {
+        return { value: 0, byteDelta: 0, entryDelta: 0 };
+      }
+      await unlink(path);
+      await syncDirectory(dirname(path));
+      await afterDelete?.();
+      return { value: beforeBytes, byteDelta: -beforeBytes, entryDelta: -1 };
+    });
+  }
+
+  private async loadCurrentQuotaCounter(): Promise<OperationQuotaCounterV1> {
+    const path = this.quotaCounterPath();
+    if (!(await pathExists(path))) return await this.rebuildQuotaCounter(1);
+    const counter = await readQuotaCounter(path, this.key);
+    if (counter.dirty) return await this.rebuildQuotaCounter(nextQuotaRevision(counter.revision));
+    const currentDirectories = await readQuotaDirectoryFingerprints(this.stateRoot);
+    if (!sameQuotaDirectoryFingerprints(counter.directories, currentDirectories)) {
+      return await this.rebuildQuotaCounter(nextQuotaRevision(counter.revision));
+    }
+    return counter;
+  }
+
+  private async rebuildQuotaCounter(revision: number): Promise<OperationQuotaCounterV1> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const before = await readQuotaDirectoryFingerprints(this.stateRoot);
+      const usage = await scanStateUsage(this.stateRoot);
+      const after = await readQuotaDirectoryFingerprints(this.stateRoot);
+      if (!sameQuotaDirectoryFingerprints(before, after)) continue;
+      return await writeQuotaCounter(
+        this.quotaCounterPath(),
+        {
+          schemaVersion: QUOTA_COUNTER_SCHEMA_VERSION,
+          revision,
+          totalBytes: usage.totalBytes,
+          entryCount: usage.entryCount,
+          dirty: false,
+          directories: after,
+          counterDigest: ""
+        },
+        this.key,
+        this.entropy
+      );
+    }
+    throw new OperationJournalError(
+      "journal_quota_state_changed",
+      "Operation state changed while rebuilding its quota counter."
+    );
+  }
+
+  private assertQuotaForNewOperation(counter: OperationQuotaCounterV1, additionalBytes: number): void {
+    const total = counter.totalBytes;
+    if (counter.entryCount > MAX_QUOTA_SCAN_ENTRIES || total > MAX_QUOTA_SCAN_BYTES
+      || !Number.isSafeInteger(additionalBytes) || additionalBytes < 0 || additionalBytes > MAX_QUOTA_SCAN_BYTES - total) {
       throw new OperationJournalError("journal_scan_limit", "Operation journal quota scan exceeded its hard byte limit.");
     }
     if (total + additionalBytes > this.maxStateBytes) {
@@ -1144,6 +1349,118 @@ async function readAuthenticatedFile<T>(
   return value as T;
 }
 
+async function readQuotaCounter(path: string, key: Uint8Array): Promise<OperationQuotaCounterV1> {
+  const value = await readAuthenticatedFile<OperationQuotaCounterV1>(
+    path,
+    key,
+    "codex-chatgpt-control/operation-quota-state/v1",
+    "counterDigest",
+    "journal_quota_counter_corrupt"
+  );
+  if (!hasExactKeys(value, [
+    "schemaVersion",
+    "revision",
+    "totalBytes",
+    "entryCount",
+    "dirty",
+    "directories",
+    "counterDigest"
+  ])
+    || value.schemaVersion !== QUOTA_COUNTER_SCHEMA_VERSION
+    || !Number.isSafeInteger(value.revision) || value.revision < 1
+    || !Number.isSafeInteger(value.totalBytes) || value.totalBytes < 0
+    || !Number.isSafeInteger(value.entryCount) || value.entryCount < 0
+    || typeof value.dirty !== "boolean"
+    || !isDigest(value.counterDigest)
+    || !isQuotaDirectoryFingerprintRecord(value.directories)) {
+    throw new OperationJournalError(
+      "journal_quota_counter_corrupt",
+      "Authenticated operation quota state has an invalid shape."
+    );
+  }
+  return value;
+}
+
+async function writeQuotaCounter(
+  path: string,
+  material: OperationQuotaCounterV1,
+  key: Uint8Array,
+  entropy: OperationJournalEntropy
+): Promise<OperationQuotaCounterV1> {
+  const withoutDigest = withoutField(material, "counterDigest");
+  const value = {
+    ...withoutDigest,
+    counterDigest: hmacDigest(
+      key,
+      "codex-chatgpt-control/operation-quota-state/v1",
+      withoutDigest
+    )
+  } as OperationQuotaCounterV1;
+  await writeAtomicJson(path, value, entropy, async () => undefined, true);
+  return value;
+}
+
+async function readQuotaDirectoryFingerprints(
+  stateRoot: string
+): Promise<OperationQuotaCounterV1["directories"]> {
+  const entries = await Promise.all(TRACKED_STATE_DIRECTORIES.map(async directoryName => {
+    const path = childPath(stateRoot, directoryName);
+    const metadata = await lstat(path, { bigint: true });
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new OperationJournalError("unsafe_state_root", "Operation state path is not a secure directory.");
+    }
+    assertOwnerAndMode(metadata, path, POSIX_DIRECTORY_MODE);
+    const fingerprint: QuotaDirectoryFingerprintV1 = {
+      device: String(metadata.dev),
+      inode: String(metadata.ino),
+      modifiedNs: String(metadata.mtimeNs),
+      changedNs: String(metadata.ctimeNs)
+    };
+    return [directoryName, fingerprint] as const;
+  }));
+  return Object.fromEntries(entries) as OperationQuotaCounterV1["directories"];
+}
+
+function sameQuotaDirectoryFingerprints(
+  left: OperationQuotaCounterV1["directories"],
+  right: OperationQuotaCounterV1["directories"]
+): boolean {
+  return TRACKED_STATE_DIRECTORIES.every(directoryName => {
+    const a = left[directoryName];
+    const b = right[directoryName];
+    return a.device === b.device
+      && a.inode === b.inode
+      && a.modifiedNs === b.modifiedNs
+      && a.changedNs === b.changedNs;
+  });
+}
+
+function isQuotaDirectoryFingerprintRecord(
+  value: unknown
+): value is OperationQuotaCounterV1["directories"] {
+  if (!isRecord(value) || !hasExactKeys(value, [...TRACKED_STATE_DIRECTORIES])) return false;
+  return TRACKED_STATE_DIRECTORIES.every(directoryName => {
+    const fingerprint = value[directoryName];
+    return isRecord(fingerprint)
+      && hasExactKeys(fingerprint, ["device", "inode", "modifiedNs", "changedNs"])
+      && [fingerprint.device, fingerprint.inode, fingerprint.modifiedNs, fingerprint.changedNs]
+        .every(item => typeof item === "string" && /^\d+$/u.test(item));
+  });
+}
+
+function nextQuotaRevision(revision: number): number {
+  if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) {
+    throw new OperationJournalError("journal_quota_counter_corrupt", "Operation quota revision is invalid.");
+  }
+  return revision + 1;
+}
+
+function assertQuotaDelta(value: number, label: string): void {
+  if (!Number.isSafeInteger(value)) {
+    throw new OperationJournalError("journal_quota_counter_corrupt", `Operation quota ${label} is invalid.`);
+  }
+}
+
 function withoutField(value: Record<string, unknown>, field: string): Record<string, unknown> {
   const copy = { ...value };
   delete copy[field];
@@ -1243,22 +1560,19 @@ async function fileSize(path: string): Promise<number> {
   return metadata.size;
 }
 
-async function removeFileAndSync(path: string, directory: string): Promise<number> {
-  let bytes: number;
+async function optionalFileSize(path: string): Promise<number | undefined> {
   try {
-    bytes = await fileSize(path);
+    return await fileSize(path);
   } catch (error) {
-    if (isNodeError(error, "ENOENT")) return 0;
+    if (isNodeError(error, "ENOENT")) return undefined;
     throw error;
   }
-  await unlink(path);
-  await syncDirectory(directory);
-  return bytes;
 }
 
 async function hasDurableState(stateRoot: string): Promise<boolean> {
+  if (await pathExists(childPath(stateRoot, QUOTA_COUNTER_FILE))) return true;
   let scannedEntries = 0;
-  for (const directoryName of [LOG_DIRECTORY, TERMINAL_DIRECTORY, SNAPSHOT_DIRECTORY, TOMBSTONE_DIRECTORY]) {
+  for (const directoryName of TRACKED_STATE_DIRECTORIES) {
     const directory = childPath(stateRoot, directoryName);
     const handle = await opendir(directory);
     try {
@@ -1274,8 +1588,9 @@ async function hasDurableState(stateRoot: string): Promise<boolean> {
   return false;
 }
 
-async function scanStateBytes(stateRoot: string): Promise<number> {
+async function scanStateUsage(stateRoot: string): Promise<StateUsage> {
   let total = 0;
+  let entryCount = 0;
   let scannedEntries = 0;
   const directories: Array<[string, RegExp]> = [
     [LOG_DIRECTORY, /^[0-9a-f]{64}\.jsonl$/],
@@ -1292,6 +1607,7 @@ async function scanStateBytes(stateRoot: string): Promise<number> {
         scannedEntries += 1;
         assertQuotaScanEntryLimit(scannedEntries);
         if (entry.name === ".DS_Store") continue;
+        entryCount += 1;
         if (!canonicalPattern.test(entry.name) && !temporaryPattern.test(entry.name)) {
           throw new OperationJournalError("unsafe_journal_entry", "Unexpected journal entry in operation state.");
         }
@@ -1310,7 +1626,7 @@ async function scanStateBytes(stateRoot: string): Promise<number> {
       await closeDirectory(handle);
     }
   }
-  return total;
+  return { totalBytes: total, entryCount };
 }
 
 function assertQuotaScanEntryLimit(scannedEntries: number): void {
@@ -1555,10 +1871,14 @@ async function assertSecureFileHandle(handle: Awaited<ReturnType<typeof open>>, 
   return metadata;
 }
 
-function assertOwnerAndMode(metadata: Awaited<ReturnType<typeof stat>>, path: string, expectedMode: number): void {
+function assertOwnerAndMode(
+  metadata: Pick<Stats, "uid" | "mode"> | Pick<BigIntStats, "uid" | "mode">,
+  path: string,
+  expectedMode: number
+): void {
   if (platform() === "win32") return;
   const getuid = process.getuid;
-  if (typeof getuid === "function" && metadata.uid !== getuid()) {
+  if (typeof getuid === "function" && Number(metadata.uid) !== getuid()) {
     throw new OperationJournalError("unsafe_state_owner", "Operation state path is not owned by the current user.");
   }
   if ((Number(metadata.mode) & 0o077) !== 0) {
@@ -1937,7 +2257,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === code;
+  return nodeErrorCode(error) === code;
 }
 
 function validatePositiveInteger(value: number | undefined, label: string): void {
@@ -2013,19 +2333,19 @@ function entropyUuid(entropy: OperationJournalEntropy): string {
 }
 
 function entropyBytes(entropy: OperationJournalEntropy, size: number): Buffer {
-  let value: Uint8Array;
+  let value: unknown;
   try {
     value = entropy.randomBytes(size);
   } catch {
     throw new OperationJournalError("invalid_journal_entropy", "Operation journal entropy failed to provide key bytes.");
   }
-  if (!(value instanceof Uint8Array) || value.byteLength !== size) {
+  if (!isByteArrayView(value) || value.byteLength !== size) {
     throw new OperationJournalError(
       "invalid_journal_entropy",
       "Operation journal entropy returned key bytes with an invalid length."
     );
   }
-  const key = Buffer.from(value);
+  const key = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
   if (key.every(byte => byte === 0)) {
     throw new OperationJournalError("invalid_journal_entropy", "Operation journal entropy returned an invalid key.");
   }

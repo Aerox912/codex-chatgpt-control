@@ -530,6 +530,40 @@ describe("operation-bound Stop and Work steer", () => {
     expect(fake.calls).toEqual(["readParent", "observeTurn", "persistIntent", "executeOnce", "observePostcondition", "persistReceipt"]);
   });
 
+  it("polls a transient generating Stop postcondition without repeating the control mutation", async () => {
+    const fake = fakePorts({ execution: { status: "uncertain" } });
+    const observations: ControlPostconditionObservation[] = [
+      { status: "not_satisfied", blockerCode: "send_control_unavailable", evidenceDigest: EVIDENCE_DIGEST },
+      { status: "uncertain", blockerCode: "target_evidence_unavailable", evidenceDigest: EVIDENCE_DIGEST },
+      { status: "satisfied", assistantTurnId: ASSISTANT_ID, evidenceDigest: EVIDENCE_DIGEST }
+    ];
+    Object.assign(fake, {
+      postconditionRetry: { maxAttempts: observations.length, intervalMs: 0 },
+      observePostcondition: async () => {
+        fake.calls.push("observePostcondition");
+        return observations.shift()!;
+      }
+    });
+
+    const result = await runOperationControl(request("stop", undefined), CONTROL_DIGEST, fake);
+
+    expect(result).toMatchObject({ kind: "completed", receipt: { outcome: "satisfied" } });
+    expect(fake.executeCount).toBe(1);
+    expect(fake.calls.filter(call => call === "observePostcondition")).toHaveLength(3);
+    expect(fake.calls.at(-1)).toBe("persistReceipt");
+  });
+
+  it("rejects an unbounded postcondition retry policy before browser access", async () => {
+    const fake = fakePorts({ execution: { status: "uncertain" } });
+    Object.assign(fake, { postconditionRetry: { maxAttempts: 1_000, intervalMs: 1_000 } });
+
+    const result = await runOperationControl(request("stop", undefined), CONTROL_DIGEST, fake);
+
+    expect(result).toMatchObject({ kind: "blocked", blocker: { code: "operation_state_corrupt" } });
+    expect(fake.calls).toEqual([]);
+    expect(fake.executeCount).toBe(0);
+  });
+
   it("recovers a persisted intent observation-only after receipt persistence failed", async () => {
     const fake = fakePorts({ throwOnExecute: true, post: { status: "uncertain", blockerCode: "send_control_unavailable" }, throwOnReceipt: true });
     const first = await runOperationControl(request("stop", undefined), CONTROL_DIGEST, fake);

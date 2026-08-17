@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { runInNewContext } from "node:vm";
 import {
   OperationClient,
   OperationClientError,
@@ -30,6 +31,51 @@ const CONTENT_B = "b".repeat(64);
 const SIGNAL = new AbortController().signal;
 
 describe("OperationClient", () => {
+  it("accepts descriptor-safe operation records and arrays from another JavaScript realm", async () => {
+    const service = fakeService();
+    const client = new OperationClient(service, makeAdapter());
+    const foreignRequest = runInNewContext(`({
+      schemaVersion: "chatgpt.browser_control.operation_request.v1",
+      operationId: "11111111-1111-4111-8111-111111111111",
+      surface: "chat",
+      prompt: "private prompt",
+      target: { type: "new" },
+      capture: { responseContent: "metadata", responseFormat: "markdown", artifacts: "receipt_only" },
+      files: []
+    })`) as OperationSubmitRequestV1;
+
+    await expect(client.submit(foreignRequest)).resolves.toMatchObject({
+      handle: { operationId: OPERATION_ID },
+      submission: { kind: "submitted" }
+    });
+    expect(service.submitRequest).not.toBe(foreignRequest);
+    expect(service.submitRequest.capture).toEqual({
+      responseContent: "metadata",
+      responseFormat: "markdown",
+      artifacts: "receipt_only"
+    });
+    expect(service.submitRequest.files).toEqual([]);
+  });
+
+  it("still rejects foreign custom-class instances at the operation boundary", async () => {
+    const service = fakeService();
+    const client = new OperationClient(service, makeAdapter());
+    const foreignRequest = runInNewContext(`new (class OperationRequest {
+      constructor() {
+        this.schemaVersion = "chatgpt.browser_control.operation_request.v1";
+        this.operationId = "11111111-1111-4111-8111-111111111111";
+        this.surface = "chat";
+        this.prompt = "private prompt";
+        this.target = { type: "new" };
+      }
+    })()`) as OperationSubmitRequestV1;
+
+    await expect(client.submit(foreignRequest)).rejects.toMatchObject({
+      code: "invalid_operation_request"
+    });
+    expect(service.submit).not.toHaveBeenCalled();
+  });
+
   it("fingerprints files in exact request order and keeps raw paths in the adapter closure", async () => {
     const request = submitRequest({
       files: [
@@ -356,6 +402,27 @@ describe("OperationClient", () => {
     expect(() => new OperationClient(fakeService(), adapter, { maxCachedAdapters: 257 })).toThrowError(
       expect.objectContaining({ code: "invalid_adapter_cache_size" })
     );
+  });
+
+  it("reuses the request adapter for same-operation submit reconciliation", async () => {
+    const baseService = fakeService();
+    const adapters: OperationBrowserAdapter[] = [];
+    const submit = vi.fn(async (...args: Parameters<OperationServicePort["submit"]>) => {
+      adapters.push(args[2]);
+      return baseService.submitResult as never;
+    });
+    const service = Object.assign(baseService, { submit }) as unknown as OperationServicePort;
+    const requestAdapter = makeAdapter();
+    const adapterFactory = vi.fn(async () => requestAdapter);
+    const client = new OperationClient(service, makeAdapter(), { adapterFactory });
+    const request = submitRequest();
+
+    await client.submit(request);
+    await client.submit(request);
+
+    expect(adapterFactory).toHaveBeenCalledTimes(1);
+    expect(adapters).toHaveLength(2);
+    expect(adapters[1]).toBe(adapters[0]);
   });
 
   it("promotes a handle on access before evicting the least recently used adapter", async () => {
@@ -691,6 +758,14 @@ describe("OperationClient", () => {
     const submitAdapter = makeAdapter();
     const firstControlAdapter = makeAdapter();
     const secondControlAdapter = makeAdapter();
+    for (const adapter of [firstControlAdapter, secondControlAdapter]) {
+      (adapter as unknown as Record<string, unknown>).control = {
+        observeTurn: vi.fn(),
+        executeOnce: vi.fn(),
+        observePostcondition: vi.fn(),
+        postconditionRetry: { maxAttempts: 32, intervalMs: 250 }
+      };
+    }
     const service = fakeService();
     const controlContexts: OperationControlAdapterFactoryContext[] = [];
     const controlAdapters = [firstControlAdapter, secondControlAdapter];
@@ -714,6 +789,8 @@ describe("OperationClient", () => {
     expect(service.controlAdapter).toBeDefined();
     expect(service.controlAdapter).not.toBe(submitAdapter);
     expect(service.controlAdapter).not.toBe(firstControlAdapter);
+    expect(service.controlAdapter.control?.postconditionRetry).toEqual({ maxAttempts: 32, intervalMs: 250 });
+    expect(service.controlAdapter.control?.postconditionRetry).not.toBe(secondControlAdapter.control?.postconditionRetry);
     const firstContext = controlContexts[0] as any;
     const secondContext = controlContexts[1] as any;
     expect(firstContext?.request).toEqual(request);

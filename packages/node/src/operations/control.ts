@@ -40,6 +40,9 @@ const BASELINE_EPOCH = "1970-01-01T00:00:00.000Z";
 const MAX_STEER_PROMPT_BYTES = 8 * 1024 * 1024;
 const MAX_TIMEOUT_MS = 86_400_000;
 const MAX_DEADLINE_AT = Date.UTC(2100, 0, 1);
+const MAX_POSTCONDITION_RETRY_ATTEMPTS = 64;
+const MAX_POSTCONDITION_RETRY_INTERVAL_MS = 1_000;
+const MAX_POSTCONDITION_RETRY_WINDOW_MS = 15_000;
 // These values are intentionally not valid UUIDs or digests.  They are only
 // used on the fail-closed input-error path, where returning a result-shaped
 // blocker still requires the public identity fields.  In particular, never
@@ -421,6 +424,19 @@ export type ControlExecutionRequest = Readonly<{
 
 export type ControlExecutionResult = ControlPostconditionObservation;
 
+export type ControlPostconditionRetryPolicy = Readonly<{
+  /** Total observations including the first immediate postcondition read. */
+  maxAttempts: number;
+  /** Delay between observation-only attempts; no browser actor is held while waiting. */
+  intervalMs: number;
+}>;
+
+/** Default bounded settle window for provider Stop controls. */
+export const CONTROL_POSTCONDITION_RETRY_POLICY: ControlPostconditionRetryPolicy = Object.freeze({
+  maxAttempts: 32,
+  intervalMs: 250
+});
+
 export type ControlReceiptPersistenceRequest = Readonly<{
   receipt: OperationControlReceiptV1;
   /** Rich per-action ownership evidence for Work-steer integration. */
@@ -433,6 +449,7 @@ export type ControlPorts = Readonly<{
   persistActionIntent(request: ControlIntentPersistenceRequest): Promise<void>;
   executeOnce(request: ControlExecutionRequest): Promise<ControlExecutionResult>;
   observePostcondition(request: ControlPostconditionRequest): Promise<ControlPostconditionObservation>;
+  postconditionRetry?: ControlPostconditionRetryPolicy;
   persistReceipt(request: ControlReceiptPersistenceRequest): Promise<void>;
   /** Read-only Work-steer preparation. No prompt crosses this boundary. */
   prepareSteer?(request: ControlSteerPrepareRequest): Promise<ControlSteerPhaseResult>;
@@ -1186,7 +1203,7 @@ function validateSteerPreparedTarget(prepared: ControlSteerPrepared, state: Oper
 }
 
 async function reconcileExisting(normalized: Normalized, boundary: MutationBoundary): Promise<ControlResult> {
-  const observation = await observePostconditionSafely(normalized);
+  const observation = await observePostconditionUntilSettled(normalized);
   return await settleObservation(normalized, boundary, observation, "send_control_unavailable");
 }
 
@@ -1196,7 +1213,7 @@ async function settleAfterIntent(
   cancellation: "operation_cancelled" | "operation_timeout"
 ): Promise<ControlResult> {
   if (canAttemptObservation(normalized)) {
-    const observation = await observePostconditionSafely(normalized);
+    const observation = await observePostconditionUntilSettled(normalized);
     return await settleObservation(normalized, boundary, observation, cancellation);
   }
   return await persistOutcome(normalized, boundary, {
@@ -1211,7 +1228,7 @@ async function reconcileAfterIntent(
   execution: Extract<ControlExecutionResult, { status: "uncertain" }>
 ): Promise<ControlResult> {
   if (canAttemptObservation(normalized)) {
-    const observation = await observePostconditionSafely(normalized);
+    const observation = await observePostconditionUntilSettled(normalized);
     return await settleObservation(
       normalized,
       boundary,
@@ -1405,6 +1422,57 @@ async function observePostconditionSafely(normalized: Normalized): Promise<Contr
   }
 }
 
+async function observePostconditionUntilSettled(normalized: Normalized): Promise<ControlPostconditionObservation> {
+  let observation = await observePostconditionSafely(normalized);
+  const policy = normalized.ports.postconditionRetry;
+  if (policy === undefined) return observation;
+  for (let attempt = 1; attempt < policy.maxAttempts && retryablePostcondition(observation); attempt += 1) {
+    if (!await waitForPostconditionRetry(normalized, policy.intervalMs)) {
+      const code = cancellationCode(normalized);
+      return code === undefined
+        ? observation
+        : {
+            status: "uncertain",
+            blockerCode: code,
+            ...(observation.evidenceDigest === undefined ? {} : { evidenceDigest: observation.evidenceDigest })
+          };
+    }
+    observation = await observePostconditionSafely(normalized);
+  }
+  return observation;
+}
+
+function retryablePostcondition(observation: ControlPostconditionObservation): boolean {
+  return observation.status !== "satisfied"
+    && (observation.blockerCode === "send_control_unavailable"
+      || observation.blockerCode === "target_evidence_unavailable");
+}
+
+async function waitForPostconditionRetry(normalized: Normalized, milliseconds: number): Promise<boolean> {
+  if (normalized.signal.aborted) return false;
+  let remaining: number;
+  try {
+    remaining = normalized.deadlineAt - normalized.now();
+  } catch {
+    return false;
+  }
+  if (remaining <= 0) return false;
+  const delay = Math.min(milliseconds, remaining);
+  if (delay === 0) return true;
+  return await new Promise<boolean>(resolve => {
+    const timer = setTimeout(() => {
+      normalized.signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, delay);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      normalized.signal.removeEventListener("abort", onAbort);
+      resolve(false);
+    };
+    normalized.signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function normalizeInput(
   request: OperationControlRequestV1,
   requestDigest: string,
@@ -1418,6 +1486,19 @@ function normalizeInput(
   }
   if (request.action === "stop" && (typeof ports.observeTurn !== "function" || typeof ports.persistActionIntent !== "function" || typeof ports.executeOnce !== "function" || typeof ports.observePostcondition !== "function")) {
     throw new ControlInputError("operation_state_corrupt", "Stop control ports are incomplete.");
+  }
+  if (ports.postconditionRetry !== undefined) {
+    const policy = ports.postconditionRetry;
+    if (!isRecord(policy)
+      || !Number.isSafeInteger(policy.maxAttempts)
+      || policy.maxAttempts < 1
+      || policy.maxAttempts > MAX_POSTCONDITION_RETRY_ATTEMPTS
+      || !Number.isSafeInteger(policy.intervalMs)
+      || policy.intervalMs < 0
+      || policy.intervalMs > MAX_POSTCONDITION_RETRY_INTERVAL_MS
+      || (policy.maxAttempts - 1) * policy.intervalMs > MAX_POSTCONDITION_RETRY_WINDOW_MS) {
+      throw new ControlInputError("operation_state_corrupt", "Control postcondition retry policy is invalid.");
+    }
   }
   if (request.action === "steer" && (typeof ports.prepareSteer !== "function" || typeof ports.persistSteerIntentAndBaseline !== "function" || typeof ports.executeSteerPrepared !== "function" || typeof ports.verifySteer !== "function" || typeof ports.recoverSteer !== "function")) {
     throw new ControlInputError("operation_state_corrupt", "Work-steer phase ports are incomplete.");

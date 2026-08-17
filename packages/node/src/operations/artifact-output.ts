@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { lstat, open, opendir, realpath, type FileHandle } from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
+import { isByteArrayView } from "../runtime/value-boundaries.js";
 import { isOwnedProviderChunk, MAX_PROVIDER_CHUNK_BYTES } from "./artifact-stream.js";
 
 const OUTPUT_KEY_PREFIX = "artifact-";
@@ -1228,7 +1229,7 @@ async function writeSource(temp: TempOwnership, options: ArtifactOutputCommitOpt
       if (isSignalAborted(options.signal)) {
         throw new StreamOutcome("blocked", "source_aborted", bytes, digest.copy().digest("hex"));
       }
-      if (!(chunk instanceof Uint8Array)) {
+      if (!isByteArrayView(chunk)) {
         throw new StreamOutcome("blocked", "source_invalid", bytes, digest.copy().digest("hex"));
       }
       // Reject an oversized provider allocation before copying it.  The
@@ -1689,7 +1690,7 @@ async function entropyHex(entropy: ArtifactOutputEntropy | undefined, runtime: O
     const value = entropy === undefined
       ? randomBytes(TEMP_TOKEN_BYTES)
       : await bounded(runtime, () => entropy(TEMP_TOKEN_BYTES));
-    if (!(value instanceof Uint8Array) || value.byteLength < TEMP_TOKEN_BYTES) {
+    if (!isByteArrayView(value) || value.byteLength < TEMP_TOKEN_BYTES) {
       throw new Error("invalid entropy");
     }
     return Buffer.from(value.subarray(0, TEMP_TOKEN_BYTES)).toString("hex");

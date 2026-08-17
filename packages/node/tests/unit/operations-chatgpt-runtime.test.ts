@@ -700,6 +700,7 @@ describe("default ChatGPT operation runtime", () => {
 
     expect(browserValue.listCalls).toBe(0);
     expect(Object.keys(adapter.control ?? {})).toEqual([
+      "postconditionRetry",
       "observeTurn",
       "executeOnce",
       "observePostcondition",
@@ -708,6 +709,7 @@ describe("default ChatGPT operation runtime", () => {
       "verifySteer",
       "recoverSteer"
     ]);
+    expect(adapter.control?.postconditionRetry).toEqual({ maxAttempts: 32, intervalMs: 250 });
     const phase = await adapter.control!.prepareSteer!({
       schemaVersion: "chatgpt.browser_control.operation_control_coordinator.v1",
       parentOperationId: OPERATION_ID,

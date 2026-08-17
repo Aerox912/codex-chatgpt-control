@@ -29,6 +29,7 @@ import {
   type CollectorObservationRequest
 } from "./collector.js";
 import {
+  classifyTurnOwnership,
   TURN_OWNERSHIP_SCHEMA_VERSION,
   type OwnershipBaseline,
   type OwnershipBinding,
@@ -184,7 +185,6 @@ export function createProductionOperationPrimitives(
     ...(options.authoritativeTabClaim === undefined ? {} : { authoritativeTabClaim: options.authoritativeTabClaim }),
     ...(options.target === undefined ? {} : { target: options.target })
   };
-
   const staging: OperationBrowserStagingPrimitive = Object.freeze({
     readCurrent: request => readStaging(request, options.evidenceDigest, state),
     mutateOnce: request => mutateStagingOnce(request, options.evidenceDigest, state),
@@ -193,7 +193,22 @@ export function createProductionOperationPrimitives(
 
   const sendObservers: SendOnceObservers = Object.freeze({
     observePrecondition: request => observeSendPrecondition(request, options.evidenceDigest, state, options.observeAttachments),
-    observePostcondition: request => observeSendPostcondition(request, options.evidenceDigest, state)
+    observePostcondition: async request => {
+      const result = await observeSendPostcondition(request, options.evidenceDigest, state);
+      return result.status === "blocked"
+        && (result.blockerCode === "ambiguous_submit" || result.blockerCode === "target_evidence_unavailable")
+        ? { result, retryable: true }
+        : result;
+    },
+    // Every retry is an observation-only transaction. The delay remains
+    // outside the tab actor and can never repeat the Send activation.
+    sleep: sleepOutsideBrowser,
+    // ChatGPT can establish the canonical conversation URL before it exposes
+    // stable user/assistant DOM identities. Keep that provider settling window
+    // bounded without collapsing a successful one-shot Send into uncertainty.
+    maxPostconditionAttempts: 32,
+    postconditionIntervalMs: 250,
+    postconditionTimeoutMs: 15_000
   });
 
   const submission: OperationBrowserSubmissionPrimitive = Object.freeze({
@@ -336,7 +351,7 @@ async function observeSubmissionStaging(
   }
   const expectedConfiguration = state.requestDigest === undefined
     ? undefined
-    : safeDigestWith(evidenceDigest, "configuration-request", { requestDigest: state.requestDigest });
+    : safeDigestWith(evidenceDigest, "configuration-request", state.requestDigest);
   const expectedComposer = state.requestDigest === undefined
     ? undefined
     : safeDigestWith(evidenceDigest, "composer-request", state.requestDigest);
@@ -404,7 +419,7 @@ async function observeSendPrecondition(
   }
   if (state.desiredComposerText === undefined) return { status: "unavailable", code: "composer_drift" };
   const expectedComposer = safeDigestWith(evidenceDigest, "composer-request", state.requestDigest);
-  const expectedConfiguration = safeDigestWith(evidenceDigest, "configuration-request", { requestDigest: state.requestDigest });
+  const expectedConfiguration = safeDigestWith(evidenceDigest, "configuration-request", state.requestDigest);
   if (expectedComposer === undefined || expectedConfiguration === undefined) {
     return { status: "unavailable", code: "target_evidence_unavailable" };
   }
@@ -635,11 +650,19 @@ async function readEmptyAttachmentState(page: Readonly<PageLike>): Promise<{
   try {
     const result = await page.evaluate(() => {
       const visible = (element: HTMLElement): boolean => {
-        if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+        let ancestor: Node | null = element;
+        for (let depth = 0; ancestor !== null && depth < 4096; depth += 1) {
+          if (ancestor.nodeType === 1) {
+            const candidate = ancestor as Element;
+            if (candidate.hasAttribute("hidden") || candidate.hasAttribute("inert") || candidate.getAttribute("aria-hidden") === "true") return false;
+          }
+          ancestor = ancestor.parentNode;
+        }
+        if (ancestor !== null) throw new Error("node limit exceeded");
         const style = window.getComputedStyle(element);
         if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
-        const rect = element.getBoundingClientRect();
-        return rect.width > 0 || rect.height > 0;
+        const rect = typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : undefined;
+        return rect === undefined || rect.width > 0 || rect.height > 0;
       };
       const boundedQuery = <T extends Element>(
         root: Node,
@@ -647,35 +670,111 @@ async function readEmptyAttachmentState(page: Readonly<PageLike>): Promise<{
         maxMatched = 4096,
         maxVisited = 4096
       ): T[] => {
-        const ownerDocument = root.nodeType === 9 ? root as Document : root.ownerDocument;
-        if (ownerDocument === null || typeof ownerDocument.createTreeWalker !== "function") {
-          throw new Error("DOM traversal unavailable");
-        }
-        // Count all nodes in the bounded browser transaction, including text
-        // and comments that cannot match the selector.
-        const walker = ownerDocument.createTreeWalker(root, 0xffffffff);
-        const matches: T[] = [];
+        const simpleMatch = (element: Element, token: string): boolean => {
+          let offset = 0;
+          const tag = /^[A-Za-z][A-Za-z0-9-]*/u.exec(token);
+          if (tag !== null) {
+            if (element.tagName.toLocaleLowerCase() !== tag[0].toLocaleLowerCase()) return false;
+            offset = tag[0].length;
+          }
+          while (offset < token.length) {
+            if (token[offset] !== "[") return false;
+            const close = token.indexOf("]", offset + 1);
+            if (close < 0) return false;
+            const expression = token.slice(offset + 1, close).trim();
+            const attribute = /^([A-Za-z0-9_:-]+)(?:(\*=|=)'([^']*)'(?:\s+(i))?)?$/u.exec(expression);
+            if (attribute === null) return false;
+            const actual = element.getAttribute(attribute[1]!);
+            if (attribute[2] === undefined) {
+              if (actual === null) return false;
+            } else {
+              if (actual === null) return false;
+              const insensitive = attribute[4] === "i";
+              const left = insensitive ? actual.toLocaleLowerCase() : actual;
+              const rightValue = attribute[3] ?? "";
+              const right = insensitive ? rightValue.toLocaleLowerCase() : rightValue;
+              if (attribute[2] === "=" ? left !== right : !left.includes(right)) return false;
+            }
+            offset = close + 1;
+          }
+          return true;
+        };
+        const tokensFor = (branch: string): string[] => {
+          const tokens: string[] = [];
+          let depth = 0;
+          let start = 0;
+          for (let index = 0; index <= branch.length; index += 1) {
+            const character = branch[index];
+            if (character === "[") depth += 1;
+            if (character === "]") depth -= 1;
+            if ((character === undefined || /\s/u.test(character)) && depth === 0) {
+              const token = branch.slice(start, index).trim();
+              if (token.length > 0) tokens.push(token);
+              start = index + 1;
+            }
+          }
+          return tokens;
+        };
+        const selectorMatch = (element: Element): boolean => {
+          for (const rawBranch of selector.split(",")) {
+            const tokens = tokensFor(rawBranch.trim());
+            if (tokens.length === 0 || !simpleMatch(element, tokens[tokens.length - 1]!)) continue;
+            let ancestor: Node | null = element.parentNode;
+            let tokenIndex = tokens.length - 2;
+            while (tokenIndex >= 0) {
+              while (ancestor !== null
+                && (ancestor.nodeType !== 1 || !simpleMatch(ancestor as Element, tokens[tokenIndex]!))) {
+                ancestor = ancestor.parentNode;
+              }
+              if (ancestor === null) break;
+              tokenIndex -= 1;
+              ancestor = ancestor.parentNode;
+            }
+            if (tokenIndex < 0) return true;
+          }
+          return false;
+        };
         let visited = 0;
-        let current = walker.nextNode();
+        const matches: T[] = [];
+        let current: Node | null = root.firstChild;
         while (current !== null) {
           visited += 1;
           if (visited > maxVisited) throw new Error("node limit exceeded");
-          const element = current.nodeType === 1 ? current as Element : undefined;
-          if (element !== undefined && element.matches(selector)) {
-            matches.push(element as T);
+          if (current.nodeType === 1 && selectorMatch(current as Element)) {
+            matches.push(current as T);
             if (matches.length > maxMatched) throw new Error("node limit exceeded");
           }
-          current = walker.nextNode();
+          if (current.firstChild !== null) {
+            current = current.firstChild;
+            continue;
+          }
+          while (current !== null && current !== root && current.nextSibling === null) current = current.parentNode;
+          current = current === null || current === root ? null : current.nextSibling;
         }
         return matches;
       };
       const textboxes = boundedQuery<HTMLElement>(document,
         "textarea, [contenteditable='true'], [role='textbox']").filter(visible);
+      const composerAncestor = (textbox: Element): HTMLElement | null => {
+        let fallback: HTMLElement | null = null;
+        let current: Node | null = textbox;
+        for (let depth = 0; current !== null && depth < 4096; depth += 1) {
+          if (current.nodeType === 1) {
+            const element = current as HTMLElement;
+            if (element.tagName === "FORM") return element;
+            const testId = (element.getAttribute("data-testid") ?? "").toLocaleLowerCase();
+            const classTokens = (element.getAttribute("class") ?? "").toLocaleLowerCase().split(/\s+/u);
+            if (fallback === null && (testId.includes("composer")
+              || classTokens.includes("composer-parent")
+              || classTokens.includes("group/composer"))) fallback = element;
+          }
+          current = current.parentNode;
+        }
+        if (current !== null) throw new Error("node limit exceeded");
+        return fallback;
+      };
       const composers = [...new Set(textboxes.map(textbox =>
-        textbox.closest<HTMLElement>("form")
-        ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[class*='composer' i]")
+        composerAncestor(textbox)
       ).filter((value): value is HTMLElement => value !== null))];
       if (composers.length !== 1) return { supported: false, count: 0, visibleAttachmentCount: 0 };
       const inputs = boundedQuery<HTMLInputElement>(composers[0]!, "input[type='file']")
@@ -741,7 +840,11 @@ async function readLocatorText(locator: LocatorLike): Promise<string | undefined
     const value = await locator.evaluate(element => {
       const candidate = element as HTMLElement & { value?: unknown };
       const candidateValue = candidate.value;
-      if (typeof candidateValue === "string") {
+      const tag = typeof candidate.tagName === "string" ? candidate.tagName.toLowerCase() : "";
+      // The Chrome bridge presents a synthetic empty `value` on ChatGPT's
+      // contenteditable DIV. Only native value controls use that property;
+      // contenteditable composers must be read from their bounded text tree.
+      if ((tag === "input" || tag === "textarea" || tag === "select") && typeof candidateValue === "string") {
         // Enforce the cap in the browser realm before the bridge serializes
         // the value.  A post-return check would already have crossed the
         // unbounded provider boundary.
@@ -958,19 +1061,21 @@ async function readCollectorContext(
   state: PrimitiveState
 ): Promise<OperationCollectorContext> {
   if (request.submissionActionId === undefined || !isId(request.submissionActionId)) throw new ProductionPrimitiveError("submission_witness_unwired");
+  // The service projects the authenticated causal baseline into every
+  // collect attempt. Use it for this context read as well, so a later
+  // observation can request terminal metadata for the exact assistant turn
+  // even when a previous wait:false call returned to the caller.
+  const baseline = request.baseline;
+  if (baseline === undefined) throw new ProductionPrimitiveError("target_evidence_unavailable");
   const observationTarget = makeObservationTarget(target, state);
   if (observationTarget === undefined) throw new ProductionPrimitiveError("target_evidence_unavailable");
   const observation = await observeBrowserPage(page, {
     operationId: request.operationId,
     target: observationTarget,
     evidenceDigest,
-    responseContent: "metadata"
+    responseContent: "metadata",
+    baseline
   });
-  // On restart the service projects the authenticated journal baseline into
-  // this request. Never promote the current browser snapshot to baseline
-  // authority: it may already contain the submitted user turn.
-  const baseline = request.baseline;
-  if (baseline === undefined) throw new ProductionPrimitiveError("target_evidence_unavailable");
   const binding: OwnershipBinding = {
     schemaVersion: TURN_OWNERSHIP_SCHEMA_VERSION,
     operationId: request.operationId,
@@ -985,13 +1090,31 @@ async function readCollectorContext(
     },
     replacementTabRecovery: false,
     actionId: request.submissionActionId,
-    actionKind: "send"
+    actionKind: request.submissionActionKind ?? "send"
   };
-  // The current service port does not expose a durable post-Send delta/witness
-  // to this adapter.  Returning a fabricated witness would allow a later
-  // collection to claim a human turn, so the context is deliberately
-  // witness-free and the collector will report ownership ambiguity.
-  return { binding, baseline };
+  // This cursor is only a candidate from the immediately preceding read. The
+  // service keeps the journal baseline/witness authoritative, and the
+  // collector reclassifies the next snapshot against both before using it.
+  // Never fabricate a cursor when the authenticated witness is absent or the
+  // exact delta cannot be classified.
+  let prior: OperationCollectorContext["prior"];
+  if (request.submissionWitness !== undefined) {
+    try {
+      prior = classifyTurnOwnership({
+        binding,
+        baseline,
+        snapshot: observation.snapshot,
+        submissionWitness: request.submissionWitness
+      }).cursor;
+    } catch {
+      prior = undefined;
+    }
+  }
+  return {
+    binding,
+    baseline,
+    ...(prior === undefined ? {} : { prior })
+  };
 }
 
 async function observeCollector(

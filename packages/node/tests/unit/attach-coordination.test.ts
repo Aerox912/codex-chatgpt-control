@@ -18,6 +18,42 @@ function pageFixture(id: string): PageLike {
 }
 
 describe("ChatGPT browser attachment coordination", () => {
+  it("normalizes receiver-bound browser bridge proxies before coordination", async () => {
+    const rawPage = pageFixture("private-field-tab");
+    let createCalls = 0;
+    class BridgeTabs {
+      readonly #page: PageLike;
+
+      constructor(page: PageLike) {
+        this.#page = page;
+      }
+
+      async new(): Promise<PageLike> {
+        createCalls += 1;
+        return this.#page;
+      }
+    }
+    const target = new BridgeTabs(rawPage);
+    const tabs = new Proxy(target, {
+      get(receiver, property) {
+        const value = Reflect.get(receiver, property, receiver);
+        return typeof value === "function" ? value.bind(receiver) : value;
+      }
+    });
+    const agent = {
+      browsers: {
+        list: async () => [{ id: "extension", type: "extension" }],
+        get: async () => ({ name: "chrome", tabs })
+      }
+    };
+
+    const attached = await attachChatGPTBrowser({ agent }, { preferExistingTab: false });
+
+    expect(createCalls).toBe(1);
+    expect(attached.tabId).toBe("private-field-tab");
+    expect(await attached.page.url!()).toBe("https://chatgpt.com/c/attach-test");
+  });
+
   it("wraps the selected page and browser acquisition result without leaking raw identity", async () => {
     const rawPage = pageFixture("attach-tab");
     const rawBrowser: BrowserLike = {

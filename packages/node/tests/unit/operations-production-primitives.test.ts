@@ -31,6 +31,7 @@ type RawTurn = {
   branchStableId?: string;
   ordinal: number;
   text: string;
+  contentHtml?: string;
   structure: { tag: string; childCount: number; artifactCount: number };
   state?: "generating" | "terminal";
   finishReason?: string;
@@ -110,7 +111,7 @@ function expected(primitivesRequestDigest = REQUEST_DIGEST): SubmissionExpectedE
   return {
     surface: "chat",
     targetBindingDigest: TARGET_DIGEST,
-    configurationReceiptDigest: evidenceDigest("configuration-request", { requestDigest: primitivesRequestDigest }),
+    configurationReceiptDigest: evidenceDigest("configuration-request", primitivesRequestDigest),
     composerReceiptDigest: evidenceDigest("composer-request", primitivesRequestDigest),
     attachmentManifest: { count: 0, orderPolicy: "exact", identities: [] }
   };
@@ -128,7 +129,10 @@ function composerLocator(options: Readonly<{
     count: async () => count,
     nth: childIndex => make(childIndex),
     isVisible: async () => visible[index] ?? false,
-    evaluate: async <T>(fn: (element: Element) => T) => fn({ value: options.value ?? SECRET_PROMPT } as unknown as Element),
+    evaluate: async <T>(fn: (element: Element) => T) => fn({
+      tagName: "TEXTAREA",
+      value: options.value ?? SECRET_PROMPT
+    } as unknown as Element),
     fill: async value => options.onFill?.(value)
   });
   return make(0);
@@ -154,6 +158,7 @@ function pageFixture(options: Readonly<{
           : composerLocator({ count: 0 }),
     evaluate: async (fn, arg) => {
       expect(fn.toString()).not.toContain("querySelectorAll");
+      expect(fn.toString()).not.toContain('structural.includes("composer")');
       expect(fn.toString()).not.toContain("Array.from");
       evaluateCount += 1;
       if (arg === undefined) {
@@ -285,6 +290,45 @@ describe("provider-specific production operation primitives", () => {
     expect(providerOnlyResult).toMatchObject({ status: "unavailable", blockerCode: "composer_control_unavailable" });
   });
 
+  it("reads a contenteditable composer from its text tree when the bridge exposes an empty synthetic value", async () => {
+    const root = {
+      nodeType: 1,
+      tagName: "DIV",
+      value: "",
+      firstChild: undefined as unknown,
+      nextSibling: null,
+      parentNode: null,
+      getAttribute: (name: string) => name === "contenteditable" ? "true" : null
+    };
+    const text = {
+      nodeType: 3,
+      nodeValue: SECRET_PROMPT,
+      firstChild: null,
+      nextSibling: null,
+      parentNode: root
+    };
+    root.firstChild = text;
+    const composer: LocatorLike = {
+      count: async () => 1,
+      isVisible: async () => true,
+      evaluate: async <T>(fn: (element: Element) => T) => fn(root as unknown as Element)
+    };
+    const primitives = createProductionOperationPrimitives({
+      evidenceDigest,
+      operationId: OPERATION_ID,
+      requestDigest: REQUEST_DIGEST,
+      desiredComposerText: SECRET_PROMPT
+    });
+
+    const result = await primitives.staging!.readCurrent!({
+      ...stagingRequest(),
+      page: pageFixture({ observations: [], composer }),
+      target
+    });
+
+    expect(result.status).toBe("satisfied");
+  });
+
   it("activates Send at most once and reconciles one exact post-Send user delta", async () => {
     let clicks = 0;
     const send = composerLocator();
@@ -398,6 +442,72 @@ describe("provider-specific production operation primitives", () => {
     expect(clicks).toBe(1);
   });
 
+  it("retries transient post-Send observations without repeating the Send activation", async () => {
+    let clicks = 0;
+    const send = composerLocator();
+    send.click = async () => { clicks += 1; };
+    send.evaluate = async <T>() => true as T;
+    const anchorProbe = await observeBrowserPage(pageFixture({ observations: [blankTaskObservation()] }), {
+      operationId: OPERATION_ID,
+      target: {
+        providerId: "provider-1",
+        browserId: "browser-1",
+        tabId: "tab-new",
+        coordinationScope: "process",
+        targetLifecycle: "new_pending"
+      },
+      evidenceDigest
+    });
+    const targetForTest: OperationTargetBindingV1 = {
+      ...pendingTarget,
+      newTargetAnchorDigest: anchorProbe.newTargetAnchor!.anchorDigest,
+      blankTaskEvidenceDigest: anchorProbe.newTargetAnchor!.blankTaskEvidenceDigest
+    };
+    const after = rawObservation([
+      turn("user", "user-new", 0),
+      turn("assistant", "assistant-new", 0, { parentStableId: "user-new", branchStableId: "branch-new", state: "generating" })
+    ]);
+    const page = pageFixture({
+      observations: [blankTaskObservation(), blankTaskObservation(), rawObservation([]), after],
+      composer: composerLocator(),
+      send
+    });
+    const primitives = createProductionOperationPrimitives({
+      evidenceDigest,
+      operationId: OPERATION_ID,
+      requestDigest: REQUEST_DIGEST,
+      desiredComposerText: SECRET_PROMPT,
+      target: targetForTest
+    });
+    await primitives.submission!.observeStaging!({
+      operationId: OPERATION_ID,
+      requestDigest: REQUEST_DIGEST,
+      surface: "chat",
+      targetBindingDigest: TARGET_DIGEST,
+      configurationReceiptDigest: expected().configurationReceiptDigest,
+      composerReceiptDigest: expected().composerReceiptDigest
+    }, page, targetForTest);
+    expect(primitives.submission!.sendObservers).toMatchObject({
+      maxPostconditionAttempts: 32,
+      postconditionIntervalMs: 250,
+      postconditionTimeoutMs: 15_000
+    });
+
+    const result = await runSendOnce({
+      page,
+      operationId: OPERATION_ID,
+      requestDigest: REQUEST_DIGEST,
+      surface: "chat",
+      actionId: "22222222-2222-4222-8222-222222222222",
+      mode: "mutate_once",
+      expected: expected(),
+      observers: primitives.submission!.sendObservers!
+    });
+
+    expect(result).toMatchObject({ status: "submitted", userTurnId: "user-new", assistantTurnId: "assistant-new" });
+    expect(clicks).toBe(1);
+  });
+
   it("reconstructs the blank baseline after restart and never requires a second Send", async () => {
     const anchorProbe = await observeBrowserPage(pageFixture({ observations: [blankTaskObservation()] }), {
       operationId: OPERATION_ID,
@@ -448,12 +558,56 @@ describe("provider-specific production operation primitives", () => {
     expect(page.evaluateCount()).toBe(1);
   });
 
-  it("keeps collector snapshots bounded and explicitly inventories the remaining witness gap", async () => {
+  it("derives an authenticated prior cursor so a later collect can capture the exact terminal turn", async () => {
+    const actionId = "22222222-2222-4222-8222-222222222222";
+    const terminalTurns = [
+      turn("user", "user-1", 0),
+      turn("assistant", "assistant-1", 0, {
+        parentStableId: "user-1",
+        branchStableId: "branch-1",
+        state: "terminal",
+        finishReason: "stop"
+      })
+    ];
+    const rawMetadata = rawObservation(terminalTurns);
+    const rawTerminal = rawObservation(terminalTurns.map(turnValue => turnValue.role === "assistant"
+      ? { ...turnValue, contentHtml: "<p>Stopped response</p>" }
+      : turnValue));
+    const targetProof = await observeBrowserPage(pageFixture({ observations: [rawMetadata] }), {
+      operationId: OPERATION_ID,
+      target: {
+        providerId: target.providerId,
+        browserId: target.browserId,
+        tabId: target.tabId,
+        coordinationScope: target.coordinationScope,
+        targetLifecycle: "fixed",
+        expectedConversationId: target.conversationId!
+      },
+      evidenceDigest,
+      responseContent: "metadata"
+    });
+    const baseline: OwnershipBaseline = {
+      ...collectorBaseline(),
+      target: targetProof.snapshot.target
+    };
+    const proof = await observeBrowserPage(pageFixture({ observations: [rawMetadata] }), {
+      operationId: OPERATION_ID,
+      target: {
+        providerId: target.providerId,
+        browserId: target.browserId,
+        tabId: target.tabId,
+        coordinationScope: target.coordinationScope,
+        targetLifecycle: "fixed",
+        expectedConversationId: target.conversationId!
+      },
+      evidenceDigest,
+      responseContent: "metadata",
+      baseline
+    });
+    const user = proof.snapshot.userTurns[0]!;
+    const delta = proof.snapshot.postSendDelta!;
     const page = pageFixture({
-      observations: [rawObservation([
-        turn("user", "user-1", 0),
-        turn("assistant", "assistant-1", 0, { parentStableId: "user-1", branchStableId: "branch-1", state: "generating" })
-      ])],
+      observations: [rawMetadata, rawTerminal],
       onWait: () => { throw new Error("collector must not use page waits"); }
     });
     const primitives = createProductionOperationPrimitives({
@@ -466,10 +620,25 @@ describe("provider-specific production operation primitives", () => {
       operationId: OPERATION_ID,
       requestDigest: REQUEST_DIGEST,
       targetBindingDigest: TARGET_DIGEST,
-      submissionActionId: "22222222-2222-4222-8222-222222222222",
-      baseline: collectorBaseline(),
+      submissionActionId: actionId,
+      submissionActionKind: "send",
+      submissionWitness: {
+        actionId,
+        actionKind: "send",
+        baselineSnapshotDigest: baseline.snapshotDigest,
+        postSendDeltaDigest: delta.deltaDigest,
+        operationUserEvidenceDigest: user.evidenceDigest,
+        userTurnStableId: user.stableId!
+      },
+      baseline,
       signal: new AbortController().signal
     }, page, target);
+    expect(context.prior).toMatchObject({
+      phase: "owned_assistant_terminal",
+      userTurnId: "user-1",
+      assistantTurnId: "assistant-1",
+      assistantBranchId: "branch-1"
+    });
     const observed = await primitives.collector!.observe!({
       operationId: OPERATION_ID,
       requestDigest: REQUEST_DIGEST,
@@ -479,6 +648,12 @@ describe("provider-specific production operation primitives", () => {
       deadlineAt: Date.now() + 10_000
     }, page, target, context);
     expect(observed.schemaVersion).toBe("chatgpt.browser_control.collector.v1");
+    expect(observed.terminal).toMatchObject({
+      userTurnId: "user-1",
+      assistantTurnId: "assistant-1",
+      branchStableId: "branch-1",
+      finishReason: "stop"
+    });
     expect(page.waitCount()).toBe(0);
     expect(PRODUCTION_OPERATION_PRIMITIVE_INVENTORY.wired).toContain("durable_baseline_projection");
     expect(PRODUCTION_OPERATION_PRIMITIVE_INVENTORY.wired).toContain("submission_witness_recovery");

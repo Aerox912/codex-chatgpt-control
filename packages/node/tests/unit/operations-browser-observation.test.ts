@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { runInNewContext } from "node:vm";
 import type { PageLike } from "../../src/types.js";
 import {
   BrowserObservationError,
@@ -114,7 +115,7 @@ function options(overrides: Partial<BrowserObservationOptions> = {}): BrowserObs
 
 /**
  * A deliberately tiny browser-realm DOM.  querySelectorAll throws so these
- * regressions prove the serialized probe uses its bounded TreeWalker path;
+ * regressions prove the serialized probe uses its bounded DOM-pointer path;
  * the tree is a long chain (or a text/comment-heavy sibling list) so a
  * traversal that queues a whole result set would be observable without
  * requiring jsdom in the unit-test process.
@@ -278,20 +279,71 @@ function syntheticDocument(descendantCount: number, siblingNoise = 0): Synthetic
   return document;
 }
 
+function providerConversationDocument(generating = false): SyntheticDocument {
+  const document = new SyntheticDocument();
+  const userRoot = new SyntheticElement(document, "section", {
+    "data-testid": "conversation-turn-1",
+    "data-turn-id": "user-container-1",
+    "data-conversation-id": "conversation-1",
+    "data-thread-id": "thread-1"
+  });
+  userRoot.append(new SyntheticElement(document, "div", {
+    "data-message-author-role": "user",
+    "data-message-id": "user-1"
+  }));
+  document.append(userRoot);
+
+  const assistantRoot = new SyntheticElement(document, "section", {
+    "data-testid": "conversation-turn-2",
+    "data-turn-id": "request-WEB:assistant-container-1"
+  });
+  assistantRoot.append(new SyntheticElement(document, "div", {
+    "data-message-author-role": "assistant",
+    "data-message-id": "assistant-1"
+  }));
+  document.append(assistantRoot);
+  if (generating) {
+    document.append(new SyntheticElement(document, "button", { "data-testid": "stop-button" }));
+  }
+  return document;
+}
+
+function conversationDocumentWithHiddenMessageText(): SyntheticDocument {
+  const document = new SyntheticDocument();
+  const root = new SyntheticElement(document, "section", {
+    "data-testid": "conversation-turn-1",
+    "data-conversation-id": "conversation-1",
+    "data-thread-id": "thread-1"
+  });
+  const role = new SyntheticElement(document, "div", {
+    "data-message-author-role": "user",
+    "data-message-id": "user-1"
+  });
+  role.append(new SyntheticLeaf(document, 3, "visible before "));
+  const hidden = new SyntheticElement(document, "span", { hidden: "" });
+  hidden.append(new SyntheticLeaf(document, 3, "stale hidden content"));
+  role.append(hidden);
+  role.append(new SyntheticLeaf(document, 3, "visible after"));
+  root.append(role);
+  document.append(root);
+  return document;
+}
+
 function readSynthetic(document: SyntheticDocument): ReturnType<typeof readPageObservation> {
   return readSyntheticWithOptions(document, {});
 }
 
 function readSyntheticWithOptions(
   document: SyntheticDocument,
-  overrides: Partial<{ maxTurns: number; maxTextChars: number; maxArtifactsPerTurn: number }> = {}
+  overrides: Partial<{ maxTurns: number; maxTextChars: number; maxArtifactsPerTurn: number; href: string }> = {}
 ): ReturnType<typeof readPageObservation> {
+  const { href = "https://chatgpt.com/c/conversation-1", ...readOptions } = overrides;
   const previousDocument = (globalThis as { document?: unknown }).document;
   const previousLocation = (globalThis as { location?: unknown }).location;
   Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: document });
-  Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { href: "https://chatgpt.com/c/conversation-1" } });
+  Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { href } });
   try {
-    return readPageObservation({ maxTurns: 1, maxTextChars: 512, maxArtifactsPerTurn: 1, ...overrides });
+    return readPageObservation({ maxTurns: 1, maxTextChars: 512, maxArtifactsPerTurn: 1, ...readOptions });
   } finally {
     if (previousDocument === undefined) delete (globalThis as { document?: unknown }).document;
     else Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: previousDocument });
@@ -321,7 +373,7 @@ function aggregateBudgetArtifactDocument(): { document: SyntheticDocument; senti
   // The two artifact subtrees account for five nodes including the turn root;
   // fill the remaining aggregate budget with comments. The sentinel is the
   // 4,097th node and must not be observed or dereferenced.
-  for (let index = 0; index < 4091; index += 1) root.append(new SyntheticLeaf(document, 8, ""));
+  for (let index = 0; index < 32_763; index += 1) root.append(new SyntheticLeaf(document, 8, ""));
   let sentinelTouched = false;
   const sentinel = new SyntheticLeaf(document, 3, "sentinel");
   Object.defineProperty(sentinel, "nodeValue", {
@@ -345,7 +397,7 @@ function nestedTurnRootDocument(): { document: SyntheticDocument; sentinelTouche
     "data-thread-id": "thread-1"
   });
   document.append(outer);
-  outer.append(new SyntheticElement(document, "div", { "data-message-id": "nested" }));
+  outer.append(new SyntheticElement(document, "div", { "data-testid": "conversation-turn-nested" }));
   let sentinelTouched = false;
   const sentinel = new SyntheticLeaf(document, 3, "sentinel");
   Object.defineProperty(sentinel, "nodeValue", {
@@ -360,9 +412,81 @@ function nestedTurnRootDocument(): { document: SyntheticDocument; sentinelTouche
 }
 
 describe("browser observation adapter", () => {
+  it("accepts a descriptor-safe blank-task observation returned from another realm", async () => {
+    const foreignObservation = runInNewContext(`({
+      canonicalUrl: "https://chatgpt.com/",
+      turns: [],
+      completeness: "complete",
+      terminalState: "idle"
+    })`) as unknown;
+    const page: PageLike = { evaluate: async <T>() => foreignObservation as T };
+
+    const result = await observeBrowserPage(page, options({
+      target: {
+        providerId: "provider-1",
+        browserId: "browser-1",
+        tabId: "tab-1",
+        coordinationScope: "process",
+        targetLifecycle: "new_pending"
+      }
+    }));
+
+    expect(result.snapshot).toMatchObject({
+      completeness: "complete",
+      terminalState: "idle",
+      userTurns: [],
+      assistantTurns: []
+    });
+    expect(result.newTargetAnchor).toBeDefined();
+  });
+
   it("keeps the serialized page-evaluate callback free of module-scope runtime dependencies", () => {
-    const reconstructed = Function(`"use strict"; return (${readPageObservation.toString()});`)() as typeof readPageObservation;
+    const serialized = readPageObservation.toString();
+    expect(serialized).not.toContain("globalThis.document");
+    expect(serialized).not.toContain("globalThis.location");
+    expect(serialized).not.toContain("globalThis.getComputedStyle");
+    expect(serialized).not.toContain("createTreeWalker");
+    const reconstructed = Function(`"use strict"; return (${serialized});`)() as typeof readPageObservation;
     expect(() => reconstructed({ maxTurns: 1, maxTextChars: 1, maxArtifactsPerTurn: 1 })).toThrow("document unavailable");
+  });
+
+  it("accepts the live provider shape with a structural turn container and nested message identity", () => {
+    const result = readSyntheticWithOptions(providerConversationDocument(), { maxTurns: 2 });
+
+    expect(result.turns).toEqual([
+      expect.objectContaining({ role: "user", stableId: "user-1", ordinal: 0 }),
+      expect.objectContaining({
+        role: "assistant",
+        stableId: "assistant-1",
+        parentStableId: "user-1",
+        branchStableId: "assistant-1",
+        ordinal: 0,
+        state: "terminal",
+        finishReason: "provider_terminal"
+      })
+    ]);
+    expect(result.terminalState).toBe("terminal");
+  });
+
+  it("infers only the latest assistant as generating from one visible structural Stop control", () => {
+    const result = readSyntheticWithOptions(providerConversationDocument(true), { maxTurns: 2 });
+
+    expect(result.turns[1]).toMatchObject({
+      role: "assistant",
+      stableId: "assistant-1",
+      parentStableId: "user-1",
+      branchStableId: "assistant-1",
+      state: "generating"
+    });
+    expect(result.turns[1]?.finishReason).toBeUndefined();
+    expect(result.terminalState).toBe("generating");
+  });
+
+  it("excludes hidden descendant text from an otherwise visible owned turn", () => {
+    const result = readSynthetic(conversationDocumentWithHiddenMessageText());
+
+    expect(result.turns[0]?.text).toBe("visible before visible after");
+    expect(result.turns[0]?.text).not.toContain("stale hidden content");
   });
 
   it("normalizes a text-only terminal turn in one page evaluation", async () => {
@@ -711,18 +835,38 @@ describe("browser observation adapter", () => {
   });
 
   it("traverses exactly at the DOM node bound without materializing query results", () => {
-    const result = readSynthetic(syntheticDocument(4095));
+    const result = readSynthetic(syntheticDocument(32_767));
     expect(result.turns).toHaveLength(1);
     expect(result.turns[0]?.stableId).toBe("user-1");
   });
 
+  it("does not force a layout/style read for every ordinary DOM wrapper", () => {
+    const previous = (globalThis as { getComputedStyle?: unknown }).getComputedStyle;
+    let styleReads = 0;
+    Object.defineProperty(globalThis, "getComputedStyle", {
+      configurable: true,
+      writable: true,
+      value: () => {
+        styleReads += 1;
+        return { display: "block", visibility: "visible", opacity: "1" };
+      }
+    });
+    try {
+      expect(readSynthetic(syntheticDocument(2_048)).turns).toHaveLength(1);
+      expect(styleReads).toBe(1);
+    } finally {
+      if (previous === undefined) delete (globalThis as { getComputedStyle?: unknown }).getComputedStyle;
+      else Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, writable: true, value: previous });
+    }
+  });
+
   it("fails closed as soon as the serialized DOM traversal exceeds its node bound", () => {
-    expect(() => readSynthetic(syntheticDocument(4096))).toThrow("node limit exceeded");
+    expect(() => readSynthetic(syntheticDocument(32_768))).toThrow("node limit exceeded");
   });
 
   it("counts text and comment nodes even when the element tree is small", () => {
-    expect(() => readSynthetic(syntheticDocument(0, 4095))).not.toThrow();
-    expect(() => readSynthetic(syntheticDocument(0, 4096))).toThrow("node limit exceeded");
+    expect(() => readSynthetic(syntheticDocument(0, 32_767))).not.toThrow();
+    expect(() => readSynthetic(syntheticDocument(0, 32_768))).toThrow("node limit exceeded");
   });
 
   it("enforces one aggregate budget across multiple artifact subtrees", () => {
@@ -735,5 +879,11 @@ describe("browser observation adapter", () => {
     const fixture = nestedTurnRootDocument();
     expect(() => readSynthetic(fixture.document)).toThrow("nested turn root");
     expect(fixture.sentinelTouched()).toBe(false);
+  });
+
+  it("rejects stale DOM conversation identity after navigation changes", () => {
+    expect(() => readSyntheticWithOptions(syntheticDocument(0), {
+      href: "https://chatgpt.com/c/different-conversation"
+    })).toThrow("conversation navigation mismatch");
   });
 });

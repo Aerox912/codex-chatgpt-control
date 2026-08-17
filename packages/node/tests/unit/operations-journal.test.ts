@@ -14,7 +14,7 @@ import {
   writeFile
 } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { operationRequestDigest } from "../../src/operations/canonical.js";
+import { hmacDigest, operationRequestDigest } from "../../src/operations/canonical.js";
 import {
   OperationJournal,
   OperationJournalError,
@@ -117,13 +117,7 @@ describe("operation journal", () => {
 
   it("uses deterministic clock and entropy seams for identity, lock records, and atomic temp names", async () => {
     const root = await testRoot("deterministic-seams");
-    const uuidValues = [
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-      "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-      "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-      "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
-    ];
+    const uuidValues = Array.from({ length: 12 }, (_, index) => testUuid(index + 1));
     const calls: string[] = [];
     const entropy: OperationJournalEntropy = {
       randomBytes: size => {
@@ -157,37 +151,19 @@ describe("operation journal", () => {
 
     expect(lockRecord).toMatchObject({
       schemaVersion: "chatgpt.browser_control.operation_lock.v1",
-      token: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      token: testUuid(4),
       createdAt: AT
     });
     expect(calls).toEqual([
       "bytes:32",
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-      "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-      "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-      "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+      ...Array.from({ length: 12 }, (_, index) => testUuid(index + 1))
     ]);
     expect(uuidValues).toEqual([]);
   });
 
   it("fails closed on a deterministic temporary-name collision without deleting the pre-existing file", async () => {
     const root = await testRoot("deterministic-temp-collision");
-    const uuidValues = [
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-      "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-      "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-      "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
-    ];
-    const entropy: OperationJournalEntropy = {
-      randomBytes: size => Buffer.alloc(size, 0x5a),
-      randomUUID: () => {
-        const value = uuidValues.shift();
-        if (value === undefined) throw new Error("test entropy exhausted");
-        return value;
-      }
-    };
+    const entropy = deterministicEntropy();
     const journal = await OperationJournal.open({
       stateRoot: root,
       entropy,
@@ -199,7 +175,7 @@ describe("operation journal", () => {
     const temporaryPath = join(
       root,
       "snapshots",
-      `.${stem}.snapshot.json-eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.tmp`
+      `.${stem}.snapshot.json-99999999-9999-4999-8999-999999999999.tmp`
     );
     await writeFile(temporaryPath, "pre-existing temporary state\n", { mode: 0o600 });
 
@@ -311,12 +287,11 @@ describe("operation journal", () => {
     });
 
     const malformedClockRoot = await testRoot("malformed-clock");
-    const journal = await OperationJournal.open({
+    const clockError = await OperationJournal.open({
       stateRoot: malformedClockRoot,
       entropy: deterministicEntropy(),
       clock: { now: () => Number.NaN, sleep: () => undefined }
-    });
-    const clockError = await journal.create(created()).catch(reason => reason as OperationJournalError);
+    }).catch(reason => reason as OperationJournalError);
     expect(clockError).toMatchObject({
       code: "invalid_journal_clock",
       message: "Operation journal clock returned an invalid timestamp."
@@ -490,6 +465,75 @@ describe("operation journal", () => {
     expect(await readdir(join(root, "logs"))).toHaveLength(1);
   });
 
+  it("keeps an authenticated quota counter exact across append, snapshot, compaction, prune, and purge", async () => {
+    const root = await testRoot("quota-counter-lifecycle");
+    const journal = await OperationJournal.open({ stateRoot: root });
+
+    await expectQuotaCounterMatchesState(root);
+    await writeCompleted(journal);
+    await expectQuotaCounterMatchesState(root);
+    await journal.refreshSnapshot(OPERATION_ID);
+    await expectQuotaCounterMatchesState(root);
+    await journal.compactCompleted(OPERATION_ID);
+    await expectQuotaCounterMatchesState(root);
+    await journal.pruneReceipt(OPERATION_ID);
+    await expectQuotaCounterMatchesState(root);
+    await journal.purgeTombstone(OPERATION_ID, { acknowledge: true });
+    const finalCounter = await expectQuotaCounterMatchesState(root);
+
+    expect(finalCounter.totalBytes).toBe(0);
+    expect(finalCounter.entryCount).toBe(0);
+    expect(finalCounter.dirty).toBe(false);
+    expect(finalCounter.counterDigest).toMatch(/^hmac-sha256:[0-9a-f]{64}$/);
+    if (process.platform !== "win32") {
+      expect((await stat(join(root, "quota-state.json"))).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("rejects quota-counter tampering instead of silently trusting or replacing it", async () => {
+    const root = await testRoot("quota-counter-tamper");
+    const journal = await OperationJournal.open({ stateRoot: root });
+    await journal.create(created());
+    const path = join(root, "quota-state.json");
+    const counter = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    counter.totalBytes = Number(counter.totalBytes) + 1;
+    await writeFile(path, `${JSON.stringify(counter)}\n`, { mode: 0o600 });
+
+    await expect(OperationJournal.open({ stateRoot: root })).rejects.toMatchObject({
+      code: "journal_quota_counter_corrupt"
+    });
+  });
+
+  it("rebuilds an authenticated dirty counter before the next admission", async () => {
+    const root = await testRoot("quota-counter-dirty-recovery");
+    const journal = await OperationJournal.open({ stateRoot: root });
+    await journal.create(created());
+    const path = join(root, "quota-state.json");
+    const counter = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    const material: Record<string, unknown> = {
+      ...counter,
+      revision: Number(counter.revision) + 1,
+      dirty: true
+    };
+    delete material.counterDigest;
+    const key = await readFile(join(root, "journal.key"));
+    const dirty = {
+      ...material,
+      counterDigest: hmacDigest(
+        key,
+        "codex-chatgpt-control/operation-quota-state/v1",
+        material
+      )
+    };
+    await writeFile(path, `${JSON.stringify(dirty)}\n`, { mode: 0o600 });
+
+    const resumed = await OperationJournal.open({ stateRoot: root });
+    await resumed.create(created(SECOND_OPERATION_ID, OTHER_REQUEST_DIGEST));
+    const repaired = await expectQuotaCounterMatchesState(root);
+    expect(repaired.dirty).toBe(false);
+    expect(repaired.revision).toBeGreaterThan(Number(counter.revision));
+  });
+
   it("fails closed on a quota directory entry flood without materializing it", async () => {
     const root = await testRoot("quota-entry-flood");
     try {
@@ -507,7 +551,11 @@ describe("operation journal", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, 30_000);
+  // This deliberately creates 65,537 real directory entries. It normally
+  // completes in a few seconds, but the full parallel suite runs several
+  // filesystem fault tests at once; allow contention without weakening the
+  // production entry ceiling or turning a slow host into a false failure.
+  }, 90_000);
 
   it("never persists raw prompt, response, path, or display-name data", async () => {
     const root = await testRoot("privacy");
@@ -1264,9 +1312,37 @@ async function durableStateBytes(root: string): Promise<number> {
   return total;
 }
 
+async function expectQuotaCounterMatchesState(root: string): Promise<{
+  revision: number;
+  totalBytes: number;
+  entryCount: number;
+  dirty: boolean;
+  counterDigest: string;
+}> {
+  const counter = JSON.parse(await readFile(join(root, "quota-state.json"), "utf8")) as {
+    revision: number;
+    totalBytes: number;
+    entryCount: number;
+    dirty: boolean;
+    counterDigest: string;
+  };
+  let entryCount = 0;
+  for (const directory of ["logs", "terminals", "snapshots", "tombstones"]) {
+    entryCount += (await readdir(join(root, directory))).filter(entry => entry !== ".DS_Store").length;
+  }
+  expect(counter.totalBytes).toBe(await durableStateBytes(root));
+  expect(counter.entryCount).toBe(entryCount);
+  expect(counter.dirty).toBe(false);
+  return counter;
+}
+
 function deterministicEntropy(): OperationJournalEntropy {
   return {
     randomBytes: size => Buffer.alloc(size, 0x42),
     randomUUID: () => "99999999-9999-4999-8999-999999999999"
   };
+}
+
+function testUuid(index: number): string {
+  return `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
 }

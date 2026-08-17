@@ -323,6 +323,62 @@ describe("turn ownership classifier", () => {
     expect(result.reason).toBe("baseline_target_mismatch");
   });
 
+  it("accepts one authenticated conversation establishment after a blank new-target baseline", () => {
+    const unavailable = { status: "unavailable" as const, reason: "not_observed" as const };
+    const pendingTarget = target({
+      thread: unavailable,
+      conversation: unavailable,
+      canonicalThreadUrl: unavailable,
+      authoritativeTabClaim: { status: "unavailable", reason: "not_exposed" }
+    });
+    const establishedTarget = target({
+      authoritativeTabClaim: { status: "unavailable", reason: "not_exposed" }
+    });
+    const establishedBinding = binding({
+      target: establishedTarget,
+      evidenceProfile: {
+        ...binding().evidenceProfile,
+        authoritativeTabClaim: "unavailable"
+      },
+      replacementTabRecovery: false
+    });
+    const operationUser = user("user-1");
+    const establishedSnapshot = submittedUserSnapshot(operationUser, {
+      target: establishedTarget,
+      assistantTurns: [assistant("assistant-1", "user-1")],
+      terminalState: "generating"
+    });
+    const establishedBaseline = baseline({ target: pendingTarget });
+
+    const result = classify({
+      binding: establishedBinding,
+      baseline: establishedBaseline,
+      snapshot: establishedSnapshot,
+      submissionWitness: submission()
+    });
+    expect(result.status).toBe("owned_assistant_generating");
+
+    const noWitness = classify({
+      binding: establishedBinding,
+      baseline: establishedBaseline,
+      snapshot: establishedSnapshot
+    });
+    expect(noWitness.status).toBe("target_evidence_unavailable");
+
+    const wrongTab = classify({
+      binding: establishedBinding,
+      baseline: establishedBaseline,
+      snapshot: submittedUserSnapshot(operationUser, {
+        target: target({
+          tab: { status: "available", value: "other-tab" },
+          authoritativeTabClaim: { status: "unavailable", reason: "not_exposed" }
+        })
+      }),
+      submissionWitness: submission()
+    });
+    expect(wrongTab.status).toBe("target_mismatch");
+  });
+
   it("rejects provider, conversation, thread, and tab drift", () => {
     for (const drift of [
       { provider: { status: "available", value: "other-provider" } },

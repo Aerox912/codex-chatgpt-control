@@ -422,6 +422,24 @@ describe("transactional operation-aware submission", () => {
     expect(fake.intentKinds).toEqual(["file_handoff", "send"]);
   });
 
+  it("retries only read-only post-handoff observations until provider readiness settles", async () => {
+    const fake = fakePorts({
+      attachments: [
+        { status: "absent", evidenceDigest: DIGEST_B, count: 0, orderPolicy: "exact", identityDigests: [] },
+        { status: "delayed", evidenceDigest: DIGEST_B },
+        { status: "ambiguous", evidenceDigest: DIGEST_B },
+        { status: "exact", evidenceDigest: DIGEST_B, count: 1, orderPolicy: "exact", identityDigests: [DIGEST_C] }
+      ]
+    });
+
+    const result = await runAtomicSubmission(fileSnapshot(), expectedWithFile(), fake);
+
+    expect(result.kind).toBe("submitted");
+    expect(fake.calls.filter(call => call === "handoff")).toHaveLength(1);
+    expect(fake.calls.filter(call => call === "observeAttachments")).toHaveLength(4);
+    expect(fake.sendCalls).toBe(1);
+  });
+
   it("allows a recovered handoff with an exact postcondition to persist readiness and continue", async () => {
     const fake = fakePorts({
       attachments: [{ status: "exact", evidenceDigest: DIGEST_B, count: 1, orderPolicy: "exact", identityDigests: [DIGEST_C] }]

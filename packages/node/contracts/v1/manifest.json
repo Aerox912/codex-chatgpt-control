@@ -2,14 +2,14 @@
   "contractVersion": "0.2.0",
   "fixtures": [
     {
-      "case": "backend_compatibility",
-      "file": "backend-compatibility.json",
-      "schema": "backendCompatibility"
-    },
-    {
       "case": "backend_capabilities",
       "file": "backend-capabilities.json",
       "schema": "capabilities"
+    },
+    {
+      "case": "backend_compatibility",
+      "file": "backend-compatibility.json",
+      "schema": "backendCompatibility"
     },
     {
       "case": "backend_error_event_missing_stream_input",
@@ -414,8 +414,8 @@
   ],
   "schemas": {
     "agent": "schemas/agent.schema.json",
-    "backendEvent": "schemas/backend-event.schema.json",
     "backendCompatibility": "schemas/backend-compatibility.schema.json",
+    "backendEvent": "schemas/backend-event.schema.json",
     "backendRequest": "schemas/backend-request.schema.json",
     "backendResponse": "schemas/backend-response.schema.json",
     "capabilities": "schemas/capabilities.schema.json",

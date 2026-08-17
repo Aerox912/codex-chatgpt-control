@@ -44,7 +44,10 @@ import type {
   CollectorObservation,
   CollectorObservationRequest
 } from "./collector.js";
-import { CONTROL_COORDINATOR_SCHEMA_VERSION } from "./control.js";
+import {
+  CONTROL_COORDINATOR_SCHEMA_VERSION,
+  CONTROL_POSTCONDITION_RETRY_POLICY
+} from "./control.js";
 import type {
   ControlSteerExecutePreparedRequest,
   ControlSteerPhaseResult,
@@ -1220,6 +1223,7 @@ export function createOperationBrowserAdapter(
         observeTurn,
         executeOnce: executeControlOnce,
         observePostcondition,
+        postconditionRetry: CONTROL_POSTCONDITION_RETRY_POLICY,
         prepareSteer,
         executeSteerPrepared,
         verifySteer,

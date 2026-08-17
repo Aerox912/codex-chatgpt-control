@@ -2,6 +2,7 @@ import { constants as fsConstants, type BigIntStats } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
+import { nodeErrorCode } from "../errors.js";
 
 const DEFAULT_HASH_CHUNK_BYTES = 64 * 1024;
 
@@ -199,8 +200,7 @@ function assertNotAborted(signal: AbortSignal | undefined): void {
 
 function localFileError(error: unknown, code: string, fallback: string): OperationFileIdentityError {
   if (error instanceof OperationFileIdentityError) return error;
-  const suffix = error instanceof Error && "code" in error
-    ? ` (${String((error as NodeJS.ErrnoException).code)})`
-    : "";
+  const errno = nodeErrorCode(error);
+  const suffix = errno === undefined ? "" : ` (${errno})`;
   return new OperationFileIdentityError(code, `${fallback}${suffix}`);
 }

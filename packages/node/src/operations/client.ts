@@ -326,6 +326,16 @@ export class OperationClient {
   }
 
   private async adapterForSubmit(prepared: PreparedSubmit): Promise<OperationBrowserAdapter> {
+    // A non-terminal submit result deliberately retains its request-scoped
+    // adapter so an identical same-operation retry can reconcile the durable
+    // Send boundary observation-only.  The client cannot recompute the
+    // journal's keyed request digest, so select by the already validated
+    // operation ID. OperationService authenticates the immutable request
+    // digest before it invokes any adapter method; a changed same-ID request
+    // therefore still fails browser-free with operation_request_mismatch.
+    const cached = this.cachedAdapterForOperation(prepared.request.operationId);
+    if (cached !== undefined) return cached;
+
     let adapter = this.adapter;
     if (this.adapterFactory !== undefined) {
       try {
@@ -418,6 +428,21 @@ export class OperationClient {
       const observeTurn = requiredMethod<NonNullable<OperationBrowserAdapter["control"]>["observeTurn"]>(controlObject, "observeTurn");
       const executeOnce = requiredMethod<NonNullable<OperationBrowserAdapter["control"]>["executeOnce"]>(controlObject, "executeOnce");
       const observePostcondition = requiredMethod<NonNullable<OperationBrowserAdapter["control"]>["observePostcondition"]>(controlObject, "observePostcondition");
+      const postconditionRetryInput = optionalDataProperty(controlObject, "postconditionRetry");
+      const postconditionRetry = postconditionRetryInput === undefined
+        ? undefined
+        : (() => {
+            const policy = adapterObject(postconditionRetryInput);
+            const maxAttempts = optionalDataProperty(policy, "maxAttempts");
+            const intervalMs = optionalDataProperty(policy, "intervalMs");
+            if (!Number.isSafeInteger(maxAttempts) || !Number.isSafeInteger(intervalMs)) {
+              throw new OperationClientError("adapter_unavailable", "The operation control adapter has an invalid postcondition retry policy.");
+            }
+            return Object.freeze({
+              maxAttempts: maxAttempts as number,
+              intervalMs: intervalMs as number
+            });
+          })();
       // Work-steer is an optional four-phase capability. Existing Stop-only
       // adapters remain valid, but a partially supplied phase surface is not
       // safe: allowing it through would defer an adapter contract failure
@@ -439,6 +464,7 @@ export class OperationClient {
         observePostcondition: (request: Parameters<NonNullable<OperationBrowserAdapter["control"]>["observePostcondition"]>[0]) =>
           observePostcondition(request)
       };
+      if (postconditionRetry !== undefined) guardedControl.postconditionRetry = postconditionRetry;
       if (prepareSteer !== undefined && executeSteerPrepared !== undefined && verifySteer !== undefined && recoverSteer !== undefined) {
         guardedControl.prepareSteer = (request: ControlSteerPrepareRequest) => prepareSteer(request);
         guardedControl.executeSteerPrepared = (request: ControlSteerExecutePreparedRequest) => executeSteerPrepared(request);
@@ -614,6 +640,23 @@ export class OperationClient {
       if (oldest === undefined) break;
       this.requestAdapters.delete(oldest);
     }
+  }
+
+  private cachedAdapterForOperation(operationId: string): OperationBrowserAdapter | undefined {
+    const prefix = `${operationId}\0`;
+    let matchedKey: string | undefined;
+    let matchedAdapter: OperationBrowserAdapter | undefined;
+    for (const [key, adapter] of this.requestAdapters) {
+      if (key.startsWith(prefix)) {
+        matchedKey = key;
+        matchedAdapter = adapter;
+      }
+    }
+    if (matchedKey === undefined || matchedAdapter === undefined) return undefined;
+    // Preserve the cache's LRU invariant when a submit retry hits it.
+    this.requestAdapters.delete(matchedKey);
+    this.requestAdapters.set(matchedKey, matchedAdapter);
+    return matchedAdapter;
   }
 
   private forgetAdapter(handle: OperationHandleV1): void {
@@ -1179,7 +1222,7 @@ function cloneDataGraph<T>(value: T, code: string, _freeze: boolean, depth = 0, 
   } catch {
     throw new OperationClientError(code, "The operation data could not be copied safely.");
   }
-  if (prototype !== Object.prototype && prototype !== null && prototype !== Array.prototype) {
+  if (!Array.isArray(object) && !isPlainDataPrototype(prototype)) {
     throw new OperationClientError(code, "The operation data contains an unsupported object.");
   }
   if (Reflect.ownKeys(descriptors).some(key => typeof key !== "string")) {
@@ -1235,6 +1278,22 @@ function cloneDataGraph<T>(value: T, code: string, _freeze: boolean, depth = 0, 
   }
   seen.delete(object);
   return clone as T;
+}
+
+/**
+ * Recognize ordinary records from another JavaScript realm without trusting
+ * constructors, `Symbol.toStringTag`, or inherited accessors. A realm's
+ * intrinsic `Object.prototype` is itself a direct child of `null`; custom
+ * class instances have at least one additional prototype layer. The clone
+ * remains descriptor-only and always discards the source prototype.
+ */
+function isPlainDataPrototype(prototype: object | null): boolean {
+  if (prototype === null || prototype === Object.prototype) return true;
+  try {
+    return Object.getPrototypeOf(prototype) === null;
+  } catch {
+    return false;
+  }
 }
 
 function isDigest(value: string): boolean {

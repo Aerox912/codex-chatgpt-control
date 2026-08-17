@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import type { LocatorLike, PageLike } from "../../src/types.js";
 import type { OperationTargetBindingV1 } from "../../src/operations/types.js";
@@ -51,7 +52,7 @@ function request(
 
 function menuSnapshot(
   controls: ProductionConfigurationDomSnapshot["controls"],
-  surface: "chat" | "work" = "chat"
+  surface: ProductionConfigurationDomSnapshot["surface"] = "chat"
 ): ProductionConfigurationDomSnapshot {
   return { surface, controls };
 }
@@ -95,6 +96,10 @@ function fakePage(options: FakePageOptions): PageLike & { clicks: () => number; 
       if (typeof arg === "object" && arg !== null && "maxControls" in arg) {
         expect(callback.toString()).not.toContain("querySelectorAll");
         expect(callback.toString()).not.toContain("Array.from");
+        expect(callback.toString()).not.toContain(".matches(");
+        expect(callback.toString()).not.toContain(".closest(");
+        expect(callback.toString()).not.toContain(".parentElement");
+        expect(callback.toString()).not.toContain("main form");
       }
       const value = typeof arg === "object" && arg !== null && "maxControls" in arg
         ? (menuSnapshots.shift() ?? currentMenu)
@@ -165,6 +170,58 @@ function primitive(
 }
 
 describe("production configuration staging primitive", () => {
+  it("accepts descriptor-safe options and configuration from a foreign realm", async () => {
+    const foreign = runInNewContext(`({
+      operationId: "${OPERATION_ID}",
+      requestDigest: "${REQUEST_DIGEST}",
+      surface: "chat",
+      configuration: { experience: "chat" }
+    })`) as ProductionConfigurationPrimitiveOptions;
+    Object.defineProperty(foreign, "evidenceDigest", {
+      value: evidenceDigest,
+      enumerable: true,
+      configurable: true
+    });
+    const staging = createProductionConfigurationStaging(foreign);
+    const result = await staging.readCurrent!({
+      ...request("configuration_set"),
+      page: fakePage({ menuSnapshots: [menuSnapshot([{ label: "New chat", role: "button" }], "chat")] }),
+      target
+    });
+
+    expect(result.status).toBe("satisfied");
+  });
+
+  it("distinguishes a satisfied, mismatched, and uninspectable experience surface", async () => {
+    const action = request("configuration_set");
+    const visibleControl = [{ label: "New chat", role: "button" }] as const;
+    const satisfied = await primitive({ experience: "chat" }).readCurrent!({
+      ...action,
+      page: fakePage({ menuSnapshots: [menuSnapshot(visibleControl, "chat")] }),
+      target
+    });
+    const mismatched = await primitive({ experience: "chat" }).readCurrent!({
+      ...action,
+      page: fakePage({ menuSnapshots: [menuSnapshot(visibleControl, "work")] }),
+      target
+    });
+    const unavailable = await primitive({ experience: "chat" }).readCurrent!({
+      ...action,
+      page: fakePage({ menuSnapshots: [menuSnapshot(visibleControl, "unknown")] }),
+      target
+    });
+
+    expect(satisfied.status).toBe("satisfied");
+    expect(mismatched).toMatchObject({
+      status: "unavailable",
+      blockerCode: "configuration_surface_unsupported"
+    });
+    expect(unavailable).toMatchObject({
+      status: "unavailable",
+      blockerCode: "configuration_surface_unavailable"
+    });
+  });
+
   it("uses locale-aware semantic values and one planned click without leaking requested labels", async () => {
     const before = menuSnapshot([
       { label: "Aufwand Mittel", role: "button", id: "effort-row" },

@@ -1,3 +1,4 @@
+import { types as nodeTypes } from "node:util";
 import type { FileChooserLike, LocatorLike, PageLike } from "../types.js";
 import type { BrowserObservationDigest } from "./browser-observation.js";
 import {
@@ -13,20 +14,31 @@ import type {
 } from "./submission.js";
 import type { OperationTargetBindingV1 } from "./types.js";
 import { coordinatedEventRegistrationBarrier } from "../runtime/coordinated-page.js";
+import { isPlainDataRecord } from "../runtime/value-boundaries.js";
 
 /**
- * Provider capability for finding the one visible localized attachment/upload
- * control. Discovery is intentionally injected: this module does not guess
- * labels, CSS selectors, or menu structure, and therefore cannot accidentally
- * click a similarly named control outside the active composer.
+ * Provider capability for activating the one proven attachment/upload
+ * control. Most providers return a visible locator. A browser integration may
+ * instead return one bounded activation callback when its native upload input
+ * is intentionally hidden and the provider can prove the exact active-composer
+ * target through a narrower browser capability.
  */
 export type ProductionAttachmentActivation = Readonly<{
-  locator: LocatorLike;
   /** Provider-side candidate count before this primitive is allowed to click. */
   candidateCount: number;
   /** Stable provider capability key, never a localized display string. */
   capabilityKey: string;
-}>;
+} & (
+  | {
+      locator: LocatorLike;
+      activate?: never;
+    }
+  | {
+      locator?: never;
+      /** One provider-owned gesture. The primitive starts the chooser waiter first. */
+      activate: (options: Readonly<{ timeoutMs: number }>) => Promise<void> | void;
+    }
+)>;
 
 /**
  * Optional bounded preparation for providers whose composer exposes a plus
@@ -353,29 +365,34 @@ export function createProductionAttachmentPrimitive(
       return { status: "not_satisfied", blockerCode: "selector_drift" };
     }
 
-    const locatorCount = await readLocatorCount(activation.locator, remainingBudget(deadlineAt));
-    if (locatorCount !== 1) {
-      return { status: "not_satisfied", blockerCode: "selector_drift" };
+    const locator = readData<LocatorLike>(activation, "locator");
+    const providerActivation = safeMethod(activation, "activate");
+    let activate: ((timeoutMs: number) => unknown) | undefined;
+    if (locator !== undefined) {
+      const locatorCount = await readLocatorCount(locator, remainingBudget(deadlineAt));
+      if (locatorCount !== 1) {
+        return { status: "not_satisfied", blockerCode: "selector_drift" };
+      }
+      const visible = await readLocatorVisible(locator, remainingBudget(deadlineAt));
+      if (visible !== true) {
+        return { status: "not_satisfied", blockerCode: "selector_drift" };
+      }
+      const click = safeMethod(locator, "click");
+      if (click === undefined) {
+        return { status: "not_satisfied", blockerCode: "selector_drift" };
+      }
+      activate = timeoutMs => click.call(locator, { timeout: timeoutMs, timeoutMs });
+    } else if (providerActivation !== undefined) {
+      activate = timeoutMs => providerActivation.call(activation, { timeoutMs });
     }
-    const visible = await readLocatorVisible(activation.locator, remainingBudget(deadlineAt));
-    if (visible !== true) {
-      return { status: "not_satisfied", blockerCode: "selector_drift" };
-    }
+    if (activate === undefined) return { status: "not_satisfied", blockerCode: "selector_drift" };
 
-    const click = safeMethod(activation.locator, "click");
-    if (click === undefined) {
-      return { status: "not_satisfied", blockerCode: "selector_drift" };
-    }
     const clickBudget = remainingBudget(deadlineAt);
     if (clickBudget <= 0) return { status: "not_satisfied", blockerCode: "operation_timeout" };
     const beforeClickCancellation = handoffCancellation(requestSignal, requestDeadlineAt);
     if (beforeClickCancellation !== undefined) return beforeClickCancellation;
     try {
-      const clickResult = click.call(activation.locator, {
-        timeout: clickBudget,
-        timeoutMs: clickBudget
-      });
-      await awaitMutatingCallback(clickResult);
+      await awaitMutatingCallback(activate(clickBudget));
     } catch {
       // The chooser reconciliation below is authoritative. A bridge rejection
       // may have followed a delivered browser gesture.
@@ -708,12 +725,17 @@ async function setChooserFilesOnce(
   if (timeoutMs <= 0) return { status: "uncertain", quarantine: "provider" };
   const beforeMutationCancellation = handoffCancellation(request.signal, request.deadlineAt);
   if (beforeMutationCancellation !== undefined) return beforeMutationCancellation;
-  const setFiles = safeMethod(chooser, "setFiles");
+  // Chrome exposes FileChooser as a provider proxy around an object with
+  // private fields. Descriptor-walking to the prototype and calling that raw
+  // method with the proxy as `this` loses the provider's required binding.
+  // Read this one trusted capability through the proxy and retain its exact
+  // receiver, as the normal `chooser.setFiles(...)` API does.
+  const setFiles = providerCallable(chooser, "setFiles");
   if (setFiles === undefined) return { status: "uncertain", quarantine: "provider" };
   const paths = snapshot.files.map(identity => identity.sourcePath);
   let rawResult: unknown;
   try {
-    rawResult = setFiles.call(chooser, paths, { timeout: timeoutMs, timeoutMs });
+    rawResult = setFiles(paths, { timeout: timeoutMs, timeoutMs });
   } catch {
     return { status: "uncertain", quarantine: "provider" };
   }
@@ -767,7 +789,7 @@ function startChooserWait(page: Readonly<PageLike>, timeoutMs: number, signal?: 
     wait.promise = Promise.resolve(wait.outcome);
     return wait;
   }
-  if (!(raw instanceof Promise)) {
+  if (!isNativePromise(raw)) {
     wait.outcome = { kind: "rejected" };
     wait.promise = Promise.resolve(wait.outcome);
     return wait;
@@ -877,9 +899,12 @@ async function awaitChooser(
 function validateActivation(value: ProductionAttachmentActivation, maxCandidates: number): boolean {
   if (!isPlainDataRecord(value)) return false;
   const locator = readData(value, "locator");
+  const activate = readData(value, "activate");
   const candidateCount = readData(value, "candidateCount");
   const capabilityKey = readData(value, "capabilityKey");
-  return isSafeProviderObject(locator)
+  const locatorActivation = isSafeProviderObject(locator) && activate === undefined;
+  const callbackActivation = locator === undefined && typeof activate === "function";
+  return (locatorActivation || callbackActivation)
     && Number.isSafeInteger(candidateCount)
     && candidateCount === 1
     && candidateCount <= maxCandidates
@@ -912,8 +937,8 @@ async function readLocatorVisible(locator: LocatorLike, timeoutMs: number): Prom
 async function boundedCallback<T>(value: PromiseLike<T> | T, timeoutMs: number): Promise<T> {
   // The browser contracts use native promises. Reject thenable proxies rather
   // than reading a hostile `then` accessor through Promise.resolve().
-  if (isObjectLike(value) && !(value instanceof Promise)) throw new Error("provider promise is not native");
-  if (!(value instanceof Promise)) return value as T;
+  if (isObjectLike(value) && !isNativePromise(value)) throw new Error("provider promise is not native");
+  if (!isNativePromise(value)) return value as T;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const promise = new Promise<T>((resolve, reject) => {
     timer = setTimeout(() => reject(new Error("provider callback timed out")), timeoutMs);
@@ -934,9 +959,17 @@ async function boundedCallback<T>(value: PromiseLike<T> | T, timeoutMs: number):
  * outer coordinator owns the transaction deadline/quarantine.
  */
 async function awaitMutatingCallback<T>(value: PromiseLike<T> | T): Promise<T> {
-  if (isObjectLike(value) && !(value instanceof Promise)) throw new Error("provider promise is not native");
-  if (value instanceof Promise) return await value;
+  if (isObjectLike(value) && !isNativePromise(value)) throw new Error("provider promise is not native");
+  if (isNativePromise(value)) return await value;
   return value as T;
+}
+
+function isNativePromise(value: unknown): value is Promise<unknown> {
+  try {
+    return nodeTypes.isPromise(value);
+  } catch {
+    return false;
+  }
 }
 
 function sameIdentityList(left: readonly OperationFileIdentity[], right: readonly OperationFileIdentity[]): boolean {
@@ -1115,6 +1148,16 @@ function safeMethod(value: object, key: string): SafeMethod | undefined {
   return undefined;
 }
 
+function providerCallable(value: object, key: PropertyKey): ((...args: unknown[]) => unknown) | undefined {
+  try {
+    const candidate = Reflect.get(value, key, value);
+    if (typeof candidate !== "function") return undefined;
+    return (...args: unknown[]) => Reflect.apply(candidate, value, args);
+  } catch {
+    return undefined;
+  }
+}
+
 function readDescriptor(value: object, key: PropertyKey): PropertyDescriptor | undefined {
   try {
     return Object.getOwnPropertyDescriptor(value, key);
@@ -1129,29 +1172,6 @@ function readPrototype(value: object): object | null {
   } catch {
     return null;
   }
-}
-
-function isPlainDataRecord(value: unknown): value is Record<string, unknown> {
-  if (!isObjectLike(value) || Array.isArray(value)) return false;
-  let prototype: object | null;
-  try {
-    prototype = Object.getPrototypeOf(value);
-  } catch {
-    return false;
-  }
-  if (prototype !== Object.prototype && prototype !== null) return false;
-  let descriptors: PropertyDescriptorMap;
-  try {
-    descriptors = Object.getOwnPropertyDescriptors(value);
-  } catch {
-    return false;
-  }
-  for (const key of Reflect.ownKeys(descriptors)) {
-    if (typeof key !== "string") return false;
-    const descriptor = descriptors[key];
-    if (descriptor === undefined || !("value" in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined) return false;
-  }
-  return true;
 }
 
 function isSafeProviderObject(value: unknown): value is object {

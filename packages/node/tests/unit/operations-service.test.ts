@@ -1158,9 +1158,12 @@ describe("durable operation service", () => {
     const service = new OperationService(journal, { now: () => Date.parse(AT) });
     const adapter = makeAdapter();
     await service.submit(request(OPERATION_ID), [], adapter);
-    await expect(service.submit({ ...request(OPERATION_ID), prompt: "different private intent" }, [], adapter)).rejects.toMatchObject({
+    const mismatchedResolve = vi.fn(async () => ({ target: target() }));
+    const mismatchedAdapter = makeAdapter({ resolveTarget: mismatchedResolve });
+    await expect(service.submit({ ...request(OPERATION_ID), prompt: "different private intent" }, [], mismatchedAdapter)).rejects.toMatchObject({
       code: "operation_request_mismatch"
     });
+    expect(mismatchedResolve).not.toHaveBeenCalled();
   });
 
   it("returns a durable unbound handle when read-only target resolution is blocked, then resumes", async () => {

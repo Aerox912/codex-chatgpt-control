@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path";
 import type { DownloadLike } from "../browser/downloads.js";
 import type { PageLike } from "../types.js";
 import { coordinatedEventRegistrationBarrier } from "../runtime/coordinated-page.js";
+import { isByteArrayView } from "../runtime/value-boundaries.js";
 import type { BrowserObservationDigest } from "./browser-observation.js";
 import type {
   ArtifactTransferKind,
@@ -972,7 +973,7 @@ function boundedProviderByteStream(
       throw providerError();
     }
     const value = readData<unknown>(raw, "value");
-    if (!(value instanceof Uint8Array)
+    if (!isByteArrayView(value)
       || value.byteLength > MAX_PROVIDER_CHUNK_BYTES
       || value.byteLength > maxBytes - bytes
       || chunks >= MAX_PROVIDER_CHUNKS) {

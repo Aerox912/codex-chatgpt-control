@@ -4,7 +4,7 @@ import { readSystemClipboard } from "../browser/clipboard.js";
 import { readPageState } from "../browser/page-state.js";
 import { localeLabels } from "../dom/locale-labels.js";
 import { localeCoverageSummary } from "../dom/locale/index.js";
-import { BROWSER_BRIDGE_REMEDIATION, resultOk } from "../errors.js";
+import { BROWSER_BRIDGE_REMEDIATION, nodeErrorCode, resultOk } from "../errors.js";
 import { explainCommandBlocker } from "../diagnostics/blockers.js";
 import { preflightFiles } from "./files.js";
 import type { BootstrapArgs, CommandResult, ExistingTabPolicy, RuntimeEnv } from "../types.js";
@@ -557,5 +557,5 @@ function capability(
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
+  return nodeErrorCode(error) !== undefined;
 }

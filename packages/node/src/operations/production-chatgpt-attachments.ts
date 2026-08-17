@@ -1,4 +1,6 @@
+import { types as nodeTypes } from "node:util";
 import type { LocatorLike, PageLike } from "../types.js";
+import { ACTIVE_COMPOSER_FILE_INPUT_CLICK_EXPRESSION } from "../browser/active-composer-file-input.js";
 import { localeLabels } from "../dom/locale-labels.js";
 import {
   createProductionAttachmentPrimitive,
@@ -17,6 +19,7 @@ import type {
   SubmissionHandoffResult
 } from "./submission.js";
 import type { OperationTargetBindingV1 } from "./types.js";
+import { isPlainDataRecord } from "../runtime/value-boundaries.js";
 
 /**
  * Options for the ChatGPT-specific attachment provider.
@@ -53,6 +56,12 @@ const MAX_PROBE_ITEMS = 256;
 const MAX_PROBE_TEXT = 512;
 const MAX_TIMEOUT_MS = 30_000;
 const CAPABILITY_KEY = "chatgpt.attachments.active-composer";
+
+type BoundCdpSend = (
+  method: string,
+  params?: Record<string, unknown>,
+  options?: Record<string, unknown>
+) => unknown;
 
 type CausalHandoff = Readonly<{
   operationId: string;
@@ -143,6 +152,7 @@ export function createChatGPTAttachmentProvider(
   const normalized = normalizeOptions(options);
   let causalHandoff: CausalHandoff | undefined;
   let menuOpened = false;
+  let hiddenInputActivation: ProductionAttachmentActivation["activate"] | undefined;
 
   const expectedFactsForRequest = (
     request: SubmissionAttachmentRequest | SubmissionHandoffRequest
@@ -237,19 +247,31 @@ export function createChatGPTAttachmentProvider(
     }
 
     const match = compareCausalSurface(current, causal, request);
+    const sendReady = match.status === "exact"
+      ? await readComposerSendReadiness(
+          page,
+          normalized.timeoutMs,
+          normalized.sendLabelCandidates,
+          normalized.signal
+        )
+      : undefined;
+    const observedStatus = match.status === "exact" && sendReady !== true
+      ? "delayed" as const
+      : match.status;
     const evidence = safeEvidence(normalized.evidenceDigest, "chatgpt-attachment-surface", {
       ...baseMaterial,
-      status: match.status,
+      status: observedStatus,
       count: current.facts.length,
       factsMatch: match.factsMatch,
       multiplicityMatch: match.multiplicityMatch,
       orderDeterministic: current.orderDeterministic,
-      duplicateNames: match.duplicateNames
+      duplicateNames: match.duplicateNames,
+      sendReady: sendReady === true
     });
-    if (match.status !== "exact") {
+    if (observedStatus !== "exact") {
       return evidence === undefined
-        ? { status: match.status, source: "live_surface" }
-        : { status: match.status, source: "live_surface", providerEvidenceDigest: evidence };
+        ? { status: observedStatus, source: "live_surface" }
+        : { status: observedStatus, source: "live_surface", providerEvidenceDigest: evidence };
     }
     return evidence === undefined
       ? { status: "unavailable", source: "live_surface" }
@@ -299,11 +321,32 @@ export function createChatGPTAttachmentProvider(
     const evidence = safeEvidence(normalized.evidenceDigest, "chatgpt-attachment-precondition", material);
     if (evidence === undefined) return { status: "uncertain", quarantine: "provider" };
 
-    // Some ChatGPT rollouts expose only a localized plus-menu opener. The
-    // semantic probe has already proved it is in the active composer; click it
-    // once here so the final resolver can identify the menu's file row. The
-    // core primitive still owns the chooser waiter and all file mutation.
+    // Codex Chrome intentionally keeps ChatGPT's native file input hidden.
+    // Prefer its scoped CDP user-gesture capability when present: the fixed
+    // expression re-proves one visible composer and one owned file input, then
+    // the core primitive's already-registered chooser performs setFiles.
     if (current.directActivationSelector === undefined && current.menuOpenerSelector !== undefined) {
+      const cdpSend = await resolveCdpSend(page, preparationOptions.timeoutMs);
+      if (cdpSend !== undefined) {
+        hiddenInputActivation = async ({ timeoutMs }) => {
+          const raw = cdpSend("Runtime.evaluate", {
+            expression: ACTIVE_COMPOSER_FILE_INPUT_CLICK_EXPRESSION,
+            userGesture: true,
+            awaitPromise: true,
+            returnByValue: true
+          }, { timeoutMs });
+          const evaluation = await awaitMutating(raw);
+          if (!cdpActivationAccepted(evaluation)) throw new Error("scoped file-input activation was refused");
+        };
+        if (isAnyAbortRequested(normalized.signal, request.signal, request.deadlineAt)) {
+          return { status: "uncertain", quarantine: "caller" };
+        }
+        return { status: "prepared", providerEvidenceDigest: evidence };
+      }
+
+      // Some non-CDP integrations expose only a localized plus-menu opener.
+      // The semantic probe has already proved it is in the active composer;
+      // click it once so the final resolver can identify the file row.
       const opener = locatorFor(page, current.menuOpenerSelector);
       if (opener === undefined) return { status: "not_satisfied", blockerCode: "selector_drift" };
       const click = safeMethod(opener, "click");
@@ -341,6 +384,13 @@ export function createChatGPTAttachmentProvider(
     if (isAnyAbortRequested(normalized.signal, request.signal, request.deadlineAt) || !isSafeTarget(target)) return undefined;
     const current = await probe(page, expectedFactsForRequest(request), request.signal, request.deadlineAt);
     if (current === undefined || current.status !== "ready") return undefined;
+    if (hiddenInputActivation !== undefined) {
+      return {
+        activate: hiddenInputActivation,
+        candidateCount: 1,
+        capabilityKey: CAPABILITY_KEY
+      };
+    }
     const selector = menuOpened
       ? current.menuUploadSelector
       : current.directActivationSelector;
@@ -422,6 +472,7 @@ function normalizeOptions(value: ChatGPTAttachmentProviderOptions): Readonly<{
   locale?: string;
   signal?: AbortSignal;
   labelCandidates: readonly string[];
+  sendLabelCandidates: readonly string[];
 }> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid ChatGPT attachment provider options");
   assertOwnDataKeys(value, ["evidenceDigest", "files", "identityDigest", "revalidateFile", "timeoutMs", "maxCandidates", "locale", "signal"]);
@@ -452,6 +503,9 @@ function normalizeOptions(value: ChatGPTAttachmentProviderOptions): Readonly<{
     ...localeLabels.addPhotosFilesMenuItem,
     ...localeLabels.projectSourcesUploadFiles
   ].filter(label => typeof label === "string" && label.length > 0 && label.length <= MAX_PROBE_TEXT))]);
+  const sendLabels = Object.freeze([...new Set(
+    localeLabels.sendButton.filter(label => typeof label === "string" && label.length > 0 && label.length <= MAX_PROBE_TEXT)
+  )]);
   const snapshot = snapshotFileIdentities(files);
   const identityDigestSet = new Set<string>();
   const identityDigests = Object.freeze(snapshot.map((file, ordinal) => {
@@ -486,7 +540,8 @@ function normalizeOptions(value: ChatGPTAttachmentProviderOptions): Readonly<{
     manifestFacts: Object.freeze(snapshot.map(file => Object.freeze({ ...file.manifest }))),
     ...(locale === undefined ? {} : { locale }),
     ...(signal === undefined ? {} : { signal }),
-    labelCandidates: labels
+    labelCandidates: labels,
+    sendLabelCandidates: sendLabels
   });
 }
 
@@ -519,15 +574,90 @@ async function readComposerProbe(
   return normalizeProbe(raw);
 }
 
+async function readComposerSendReadiness(
+  page: Readonly<PageLike>,
+  timeoutMs: number,
+  labelCandidates: readonly string[],
+  signal: AbortSignal | undefined
+): Promise<boolean | undefined> {
+  if (signal?.aborted) return undefined;
+  const evaluate = safeMethod(page, "evaluate");
+  if (evaluate === undefined) return undefined;
+  try {
+    const pending = evaluate.call(page, inspectChatGPTSendReadiness, {
+      labels: [...labelCandidates]
+    }, { timeout: timeoutMs });
+    const raw = await boundedNative(pending, timeoutMs);
+    if (!isDataRecord(raw) || !hasExactKeys(raw, ["status"])) return undefined;
+    const status = readOwn<string>(raw, "status");
+    return status === "ready" ? true : status === "not_ready" ? false : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function inspectChatGPTSendReadiness(argument: unknown): Readonly<{
+  status: "ready" | "not_ready" | "ambiguous";
+}> {
+  const record = argument !== null && typeof argument === "object" && !Array.isArray(argument)
+    ? argument as Record<string, unknown>
+    : {};
+  const labels = Array.isArray(record.labels)
+    ? record.labels.filter((label): label is string => typeof label === "string" && label.length <= 512)
+      .map(label => label.replace(/\s+/gu, " ").trim().toLocaleLowerCase())
+    : [];
+  const visible = (element: Element): boolean => {
+    if ((element as HTMLElement).hidden || element.closest("[hidden], [inert], [aria-hidden='true']")) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
+      && (rect.width > 0 || rect.height > 0);
+  };
+  const textboxes = [...document.querySelectorAll<HTMLElement>(
+    "textarea, [contenteditable='true'], [role='textbox']"
+  )].filter(visible);
+  const roots = [...new Set(textboxes.map(textbox =>
+    textbox.closest("form")
+      ?? textbox.closest("[data-testid*='composer' i]")
+      ?? textbox.closest("[aria-label*='composer' i]")
+      ?? textbox.closest("[class*='composer' i]")
+  ).filter((root): root is Element => root !== null))];
+  if (roots.length !== 1) return { status: "ambiguous" };
+  const controls = [...roots[0]!.querySelectorAll<HTMLElement>("button, [role='button']")];
+  if (controls.length > 256) return { status: "ambiguous" };
+  const candidates = controls.filter(control => {
+    if (!visible(control)) return false;
+    if (control.id === "composer-submit-button" || control.getAttribute("data-testid") === "send-button") return true;
+    const accessible = [
+      control.getAttribute("aria-label"),
+      control.getAttribute("title"),
+      control.textContent
+    ].filter((value): value is string => typeof value === "string")
+      .join(" ").replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+    return labels.includes(accessible);
+  });
+  if (candidates.length !== 1) return { status: "ambiguous" };
+  const control = candidates[0]! as HTMLElement & { disabled?: boolean };
+  const enabled = control.disabled !== true
+    && !control.hasAttribute("disabled")
+    && control.getAttribute("aria-disabled") !== "true"
+    && !control.hasAttribute("inert")
+    && control.getAttribute("aria-hidden") !== "true";
+  return { status: enabled ? "ready" : "not_ready" };
+}
+
 /**
  * This function is serialized into the page. It uses HTML/ARIA structure as
  * the primary semantic contract and only uses the verified locale registry as
  * a text fallback for localized menu rows. It returns no raw labels, URLs,
  * prompts, account data, or file paths.
  */
-function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
+/** @internal Exact serialized evaluator, exported only for bridge-contract tests. */
+export function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
   // Keep this evaluator self-contained. Browser bridges serialize only this
   // function; module-scope helpers would be undefined in the page realm.
+  const MAX_PROBE_ITEMS = 256;
+  const MAX_PROBE_TEXT = 512;
   const record = argument !== null && typeof argument === "object" && !Array.isArray(argument)
     ? argument as Record<string, unknown>
     : {};
@@ -553,24 +683,86 @@ function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     maxMatched = MAX_PROBE_ITEMS,
     maxVisited = 4096
   ): T[] => {
-    const ownerDocument = root.nodeType === 9 ? root as Document : root.ownerDocument;
-    if (ownerDocument === null || typeof ownerDocument.createTreeWalker !== "function") {
-      throw new Error("DOM traversal unavailable");
-    }
-    // Count text/comment nodes as well as elements; only elements can match.
-    const walker = ownerDocument.createTreeWalker(root, 0xffffffff);
-    const matches: T[] = [];
+    const simpleMatch = (element: Element, token: string): boolean => {
+      let offset = 0;
+      const tag = /^[A-Za-z][A-Za-z0-9-]*/u.exec(token);
+      if (tag !== null) {
+        if (element.tagName.toLocaleLowerCase() !== tag[0].toLocaleLowerCase()) return false;
+        offset = tag[0].length;
+      }
+      while (offset < token.length) {
+        if (token[offset] !== "[") return false;
+        const close = token.indexOf("]", offset + 1);
+        if (close < 0) return false;
+        const expression = token.slice(offset + 1, close).trim();
+        const attribute = /^([A-Za-z0-9_:-]+)(?:(\*=|=)'([^']*)'(?:\s+(i))?)?$/u.exec(expression);
+        if (attribute === null) return false;
+        const actual = element.getAttribute(attribute[1]!);
+        if (attribute[2] === undefined) {
+          if (actual === null) return false;
+        } else {
+          if (actual === null) return false;
+          const insensitive = attribute[4] === "i";
+          const left = insensitive ? actual.toLocaleLowerCase() : actual;
+          const rightValue = attribute[3] ?? "";
+          const right = insensitive ? rightValue.toLocaleLowerCase() : rightValue;
+          if (attribute[2] === "=" ? left !== right : !left.includes(right)) return false;
+        }
+        offset = close + 1;
+      }
+      return true;
+    };
+    const tokensFor = (branch: string): string[] => {
+      const tokens: string[] = [];
+      let depth = 0;
+      let start = 0;
+      for (let index = 0; index <= branch.length; index += 1) {
+        const character = branch[index];
+        if (character === "[") depth += 1;
+        if (character === "]") depth -= 1;
+        if ((character === undefined || /\s/u.test(character)) && depth === 0) {
+          const token = branch.slice(start, index).trim();
+          if (token.length > 0) tokens.push(token);
+          start = index + 1;
+        }
+      }
+      return tokens;
+    };
+    const selectorMatch = (element: Element): boolean => {
+      for (const rawBranch of selector.split(",")) {
+        const tokens = tokensFor(rawBranch.trim());
+        if (tokens.length === 0 || !simpleMatch(element, tokens[tokens.length - 1]!)) continue;
+        let ancestor: Node | null = element.parentNode;
+        let tokenIndex = tokens.length - 2;
+        while (tokenIndex >= 0) {
+          while (ancestor !== null
+            && (ancestor.nodeType !== 1 || !simpleMatch(ancestor as Element, tokens[tokenIndex]!))) {
+            ancestor = ancestor.parentNode;
+          }
+          if (ancestor === null) break;
+          tokenIndex -= 1;
+          ancestor = ancestor.parentNode;
+        }
+        if (tokenIndex < 0) return true;
+      }
+      return false;
+    };
     let visited = 0;
-    let current = walker.nextNode();
+    const matches: T[] = [];
+    let current: Node | null = root.firstChild;
     while (current !== null) {
       visited += 1;
       if (visited > maxVisited) throw new Error("probe limit exceeded");
-      const element = current.nodeType === 1 ? current as Element : undefined;
-      if (element !== undefined && element.matches(selector)) {
-        matches.push(element as T);
+      if (current.nodeType === 1 && selectorMatch(current as Element)) {
+        matches.push(current as T);
         if (matches.length > maxMatched) throw new Error("probe limit exceeded");
       }
-      current = walker.nextNode();
+      if (current.firstChild !== null) {
+        current = current.firstChild;
+        continue;
+      }
+      while (current !== null && current !== root && current.nextSibling === null) current = current.parentNode;
+      current = current === null || current === root ? null : current.nextSibling;
     }
     return matches;
   };
@@ -610,11 +802,19 @@ function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
   const unique = (values: readonly Element[]): Element[] => [...new Set(values)];
   const visible = (element: Element): boolean => {
     const html = element as HTMLElement;
-    if (html.hidden || html.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+    let ancestor: Node | null = html;
+    for (let depth = 0; ancestor !== null && depth < 4096; depth += 1) {
+      if (ancestor.nodeType === 1) {
+        const candidate = ancestor as Element;
+        if (candidate.hasAttribute("hidden") || candidate.hasAttribute("inert") || candidate.getAttribute("aria-hidden") === "true") return false;
+      }
+      ancestor = ancestor.parentNode;
+    }
+    if (ancestor !== null) throw new Error("probe limit exceeded");
     const style = window.getComputedStyle(html);
     if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
-    const rect = html.getBoundingClientRect();
-    return rect.width > 0 || rect.height > 0;
+    const rect = typeof html.getBoundingClientRect === "function" ? html.getBoundingClientRect() : undefined;
+    return rect === undefined || rect.width > 0 || rect.height > 0;
   };
   const semanticControl = (element: Element): boolean => {
     const structural = [
@@ -641,19 +841,20 @@ function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
         segments.unshift(`#${id}`);
         break;
       }
-      const parent: Element | null = current.parentElement;
+      const parentNode: ParentNode | null = current.parentNode;
+      const parent: Element | null = parentNode?.nodeType === 1 ? parentNode as Element : null;
       if (parent === null) {
         segments.unshift(current.tagName.toLocaleLowerCase());
         break;
       }
       let ordinal = 0;
-      let sibling: Element | null = parent.firstElementChild;
+      let sibling: Node | null = parent.firstChild;
       while (sibling !== null) {
-        if (sibling.tagName === current.tagName) {
+        if (sibling.nodeType === 1 && (sibling as Element).tagName === current.tagName) {
           ordinal += 1;
           if (sibling === current) break;
         }
-        sibling = sibling.nextElementSibling;
+        sibling = sibling.nextSibling;
       }
       if (ordinal === 0 || ordinal > MAX_PROBE_ITEMS) throw new Error("probe limit exceeded");
       segments.unshift(`${current.tagName.toLocaleLowerCase()}:nth-of-type(${ordinal})`);
@@ -714,8 +915,20 @@ function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     };
   };
   const inputFacts = (input: HTMLInputElement): Readonly<{ readable: boolean; facts: readonly RawAttachmentFact[] }> => {
-    const files = input.files;
-    if (files === null) return { readable: false, facts: [] };
+    const files: FileList | null | undefined = input.files;
+    if (files === null || files === undefined) {
+      // The Codex Chrome bridge deliberately omits FileList objects but keeps
+      // the standard path-redacted value surface. An exact empty string plus
+      // zero composer metadata is sufficient to prove the pre-handoff empty
+      // state; a non-empty or unreadable value remains ambiguous.
+      let value: unknown;
+      try {
+        value = input.value;
+      } catch {
+        return { readable: false, facts: [] };
+      }
+      return { readable: typeof value === "string" && value.length === 0, facts: [] };
+    }
     if (files.length > MAX_PROBE_ITEMS) throw new Error("probe limit exceeded");
     const facts: RawAttachmentFact[] = [];
     for (let index = 0; index < files.length; index += 1) {
@@ -748,7 +961,8 @@ function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     const rawSet = new Set(raw);
     const nestedContainers = new Set<Element>();
     for (const other of raw) {
-      let ancestor = other.parentElement;
+      let ancestorNode = other.parentNode;
+      let ancestor: Element | null = ancestorNode?.nodeType === 1 ? ancestorNode as Element : null;
       let depth = 0;
       while (ancestor !== null && depth < 4096) {
         if (rawSet.has(ancestor)
@@ -756,7 +970,8 @@ function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
           && ancestor.getAttribute("data-filename") === null) {
           nestedContainers.add(ancestor);
         }
-        ancestor = ancestor.parentElement;
+        ancestorNode = ancestor.parentNode;
+        ancestor = ancestorNode?.nodeType === 1 ? ancestorNode as Element : null;
         depth += 1;
       }
       if (ancestor !== null) throw new Error("probe limit exceeded");
@@ -773,13 +988,26 @@ function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
   };
   const textboxes = boundedQuery<HTMLElement>(document,
     "textarea, [contenteditable='true'], [role='textbox']").filter(visible);
+  const composerAncestor = (textbox: Element): HTMLElement | null => {
+    let fallback: HTMLElement | null = null;
+    let current: Node | null = textbox;
+    for (let depth = 0; current !== null && depth < 4096; depth += 1) {
+      if (current.nodeType === 1) {
+        const element = current as HTMLElement;
+        if (element.tagName === "FORM") return element;
+        const testId = (element.getAttribute("data-testid") ?? "").toLocaleLowerCase();
+        const classTokens = (element.getAttribute("class") ?? "").toLocaleLowerCase().split(/\s+/u);
+        if (fallback === null && (testId.includes("composer")
+          || classTokens.includes("composer-parent")
+          || classTokens.includes("group/composer"))) fallback = element;
+      }
+      current = current.parentNode;
+    }
+    if (current !== null) throw new Error("probe limit exceeded");
+    return fallback;
+  };
   const roots = [...new Set(
-    textboxes.map(textbox =>
-      textbox.closest<HTMLElement>("form")
-        ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[class*='composer' i]")
-    ).filter((root): root is HTMLElement => root !== null && visible(root))
+    textboxes.map(composerAncestor).filter((root): root is HTMLElement => root !== null && visible(root))
   )];
   if (roots.length !== 1) {
     return {
@@ -798,7 +1026,7 @@ function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
   const root = roots[0]!;
   const allInputs = boundedQuery<HTMLInputElement>(root, "input[type='file']")
     .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
-  const preferred = allInputs.filter(input => input.id === "upload-files");
+  const preferred = allInputs.filter(input => input.getAttribute("id") === "upload-files");
   const nonImage = allInputs.filter(input => input.getAttribute("accept") !== "image/*");
   const inputs = preferred.length === 1 ? preferred : allInputs.length === 1 ? allInputs : nonImage.length === 1 ? nonImage : [];
   if (inputs.length !== 1) {
@@ -829,17 +1057,30 @@ function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
   const attachmentRegionCount = Math.max(metadataResult.regionCount, inputResult.facts.length);
   const controls = boundedQuery<HTMLElement>(root,
     "label, button, [role='button'], [role='menuitem']").filter(visible);
+  const contains = (container: Node, candidate: Node): boolean => {
+    let current: Node | null = candidate;
+    for (let depth = 0; current !== null && depth < 4096; depth += 1) {
+      if (current === container) return true;
+      current = current.parentNode;
+    }
+    if (current !== null) throw new Error("probe limit exceeded");
+    return false;
+  };
   const directCandidates = unique(controls.filter(control => {
-    if (control.getAttribute("aria-haspopup") === "menu" && !control.contains(input)) return false;
-    if (control === input || control.contains(input)) return true;
-    if (input.id.length > 0 && (control.getAttribute("for") === input.id || control.getAttribute("aria-controls") === input.id)) return true;
+    const inputId = input.getAttribute("id") ?? "";
+    if (control.getAttribute("aria-haspopup") === "menu" && !contains(control, input)) return false;
+    if (control === input || contains(control, input)) return true;
+    if (inputId.length > 0 && (control.getAttribute("for") === inputId || control.getAttribute("aria-controls") === inputId)) return true;
     const inputRef = control.getAttribute("data-input-id") ?? control.getAttribute("data-file-input");
-    return input.id.length > 0 && inputRef === input.id || semanticControl(control);
+    return inputId.length > 0 && inputRef === inputId || semanticControl(control);
   }));
   const menuRootItems = boundedQuery<HTMLElement>(document, "[role='menu'] [role='menuitem']").filter(visible);
-  const menuItems = (menuRootItems.length > 0 ? menuRootItems : boundedQuery<HTMLElement>(document,
-    "[role='menu'] div[tabindex='0']").filter(visible)).filter(item => {
-    if (input.id.length > 0 && item.getAttribute("aria-controls") === input.id) return true;
+  const menuFallbackItems = unique(boundedQuery<HTMLElement>(document,
+    "[role='menu'] div[tabindex='0'], [role='group'] div[tabindex='0'], [class*='popover' i] div[tabindex='0']")
+    .filter(visible));
+  const menuItems = (menuRootItems.length > 0 ? menuRootItems : menuFallbackItems).filter(item => {
+    const inputId = input.getAttribute("id") ?? "";
+    if (inputId.length > 0 && item.getAttribute("aria-controls") === inputId) return true;
     return semanticControl(item);
   });
   const menuOpeners = unique(boundedQuery<HTMLElement>(root, "button, [role='button']")
@@ -855,7 +1096,11 @@ function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     : menuOpenerSelector !== undefined ? 1
     : 0;
   return {
-    status: candidateCount === 1 ? "ready" : "ambiguous",
+    // Composer/input identity and activation identity are separate contracts.
+    // Once a file is attached ChatGPT legitimately adds tile/remove controls,
+    // so candidateCount can exceed one while the attachment surface remains
+    // exact. Mutation paths validate activationCandidateCount independently.
+    status: "ready",
     composerCount: 1,
     fileInputCount: allInputs.length,
     inputFilesReadable: inputResult.readable,
@@ -1137,6 +1382,42 @@ function locatorFor(page: Readonly<PageLike>, selector: string): LocatorLike | u
   }
 }
 
+async function resolveCdpSend(page: Readonly<PageLike>, timeoutMs: number): Promise<BoundCdpSend | undefined> {
+  const capabilities = readOwn<object>(page, "capabilities");
+  if (!isSafeProviderObject(capabilities)) return undefined;
+  const get = providerCallable(capabilities, "get");
+  if (get === undefined) return undefined;
+  try {
+    const pending = get("cdp");
+    const capability = isNativePromise(pending) ? await boundedNative(pending, timeoutMs) : pending;
+    if (!isSafeProviderObject(capability)) return undefined;
+    return providerCallable(capability, "send") as BoundCdpSend | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function cdpActivationAccepted(evaluation: unknown): boolean {
+  if (!isPlainDataRecord(evaluation)) return false;
+  const result = readOwn<object>(evaluation, "result");
+  const wrapped = isPlainDataRecord(result) ? readOwn<unknown>(result, "value") : undefined;
+  const value = wrapped ?? evaluation;
+  return isPlainDataRecord(value) && readOwn(value, "ok") === true;
+}
+
+function providerCallable(
+  value: object,
+  key: PropertyKey
+): ((...args: unknown[]) => unknown) | undefined {
+  try {
+    const candidate = Reflect.get(value, key, value);
+    if (typeof candidate !== "function") return undefined;
+    return (...args: unknown[]) => Reflect.apply(candidate, value, args);
+  } catch {
+    return undefined;
+  }
+}
+
 function safeEvidence(
   evidenceDigest: BrowserObservationDigest,
   domain: string,
@@ -1151,7 +1432,7 @@ function safeEvidence(
 }
 
 async function boundedNative(value: unknown, timeoutMs: number): Promise<unknown> {
-  if (!(value instanceof Promise)) {
+  if (!isNativePromise(value)) {
     if (value !== null && typeof value === "object") throw new Error("provider callback promise is not native");
     return value;
   }
@@ -1168,9 +1449,17 @@ async function boundedNative(value: unknown, timeoutMs: number): Promise<unknown
 }
 
 async function awaitMutating(value: unknown): Promise<unknown> {
-  if (value instanceof Promise) return await value;
+  if (isNativePromise(value)) return await value;
   if (value !== null && typeof value === "object") throw new Error("provider mutation promise is not native");
   return value;
+}
+
+function isNativePromise(value: unknown): value is Promise<unknown> {
+  try {
+    return nodeTypes.isPromise(value);
+  } catch {
+    return false;
+  }
 }
 
 function safeMethod(value: object, key: string): ((this: object, ...args: unknown[]) => unknown) | undefined {
@@ -1212,17 +1501,9 @@ function isSafeProviderObject(value: unknown): value is object {
 }
 
 function isDataRecord(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!isPlainDataRecord(value)) return false;
   try {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return false;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    for (const key of Reflect.ownKeys(descriptors)) {
-      if (typeof key !== "string") return false;
-      const descriptor = descriptors[key];
-      if (descriptor === undefined || !("value" in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined) return false;
-    }
-    return true;
+    return Reflect.ownKeys(Object.getOwnPropertyDescriptors(value)).every(key => typeof key === "string");
   } catch {
     return false;
   }

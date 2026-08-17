@@ -271,7 +271,7 @@ export function classifyTurnOwnership(input: TurnOwnershipInput): OwnershipClass
   validateInput(input);
 
   const { binding, baseline, snapshot, submissionWitness, prior } = input;
-  const target = compareBindingToTarget(binding, baseline.target);
+  const target = compareBindingToBaselineTarget(binding, baseline, submissionWitness);
   if (target.status === "mismatch" || target.status === "replacement") {
     return result(input, "target_mismatch", "baseline_target_mismatch", target, undefined, undefined, undefined, 0, 0);
   }
@@ -691,6 +691,49 @@ function compareBindingToTarget(binding: OwnershipBinding, target: OwnershipTarg
     return { status: "mismatch", replacedTab: false };
   }
   return { status: "match", replacedTab: false };
+}
+
+/**
+ * A genuine new target has no provider conversation identity in its durable
+ * pre-Send baseline. After the journal accepts the one-way establishment and
+ * exact post-Send witness, collection may compare the established binding to
+ * the live snapshot without pretending that identity existed before Send.
+ */
+function compareBindingToBaselineTarget(
+  binding: OwnershipBinding,
+  baseline: OwnershipBaseline,
+  submissionWitness: OwnershipSubmissionWitness | undefined
+): TargetCheck {
+  const direct = compareBindingToTarget(binding, baseline.target);
+  if (direct.status !== "unavailable") return direct;
+  const pending = baseline.target;
+  const established = binding.target;
+  const pendingConversationIdentity = pending.thread.status === "unavailable"
+    && pending.conversation.status === "unavailable"
+    && pending.canonicalThreadUrl.status === "unavailable";
+  const establishedConversationIdentity = established.thread.status === "available"
+    && established.conversation.status === "available"
+    && established.canonicalThreadUrl.status === "available";
+  const exactWitness = submissionWitness !== undefined
+    && submissionWitness.actionId === binding.actionId
+    && submissionWitness.actionKind === "send"
+    && binding.actionKind === "send"
+    && submissionWitness.baselineSnapshotDigest === baseline.snapshotDigest;
+  if (
+    !pendingConversationIdentity
+    || !establishedConversationIdentity
+    || baseline.userTurns.length !== 0
+    || baseline.assistantTurns.length !== 0
+    || binding.evidenceProfile.stableConversationId !== "required"
+    || binding.evidenceProfile.stableUserTurnId !== "required"
+    || !exactWitness
+  ) return direct;
+  return compareBindingToTarget(binding, Object.freeze({
+    ...pending,
+    thread: established.thread,
+    conversation: established.conversation,
+    canonicalThreadUrl: established.canonicalThreadUrl
+  }));
 }
 
 function hasStableConversationAndClaim(binding: OwnershipBinding, snapshot: OwnershipSnapshot): boolean {

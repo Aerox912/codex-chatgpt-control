@@ -45,6 +45,8 @@ const MAX_RECEIPT_ARTIFACTS = 32;
 // Keep the absolute deadline in the representable, unambiguous ISO date
 // range while rejecting numeric sentinels such as MAX_SAFE_INTEGER.
 const MAX_DEADLINE_AT = Date.UTC(2100, 0, 1);
+const POST_HANDOFF_OBSERVATION_ATTEMPTS = 20;
+const POST_HANDOFF_OBSERVATION_INTERVAL_MS = 150;
 // The fail-closed blocker branch still has to carry the public operation
 // identity shape.  These markers are deliberately not UUIDs/digests, so
 // malformed or absent evidence cannot masquerade as authenticated identity.
@@ -942,7 +944,12 @@ async function ensureAttachments(
     }
     // A success acknowledgment is not proof that the provider rendered the
     // requested manifest; every handoff outcome is reconciled exactly once.
-    observed = await observeAttachmentsSafely(ports, request, expected.attachmentManifest);
+    observed = await observeAttachmentsAfterHandoff(
+      ports,
+      request,
+      expected.attachmentManifest,
+      options
+    );
   }
   if (observed.status === "exact") {
     return { kind: "ok", evidenceDigest: observed.evidenceDigest, mutationBoundary: "handoff_may_have_occurred", actionId: handoff.actionId };
@@ -1222,6 +1229,48 @@ async function observeAttachmentsSafely(
   } catch {
     return { status: "ambiguous" };
   }
+}
+
+async function observeAttachmentsAfterHandoff(
+  ports: SubmissionPorts,
+  request: SubmissionAttachmentRequest,
+  manifest: SubmissionExpectedEnvelope["attachmentManifest"],
+  options: Readonly<{ signal?: AbortSignal; deadlineAt?: number }>
+): Promise<SubmissionAttachmentObservation> {
+  let observed: SubmissionAttachmentObservation = { status: "ambiguous" };
+  for (let attempt = 0; attempt < POST_HANDOFF_OBSERVATION_ATTEMPTS; attempt += 1) {
+    observed = await observeAttachmentsSafely(ports, request, manifest);
+    if (observed.status === "exact" || observed.status === "mismatch") return observed;
+    if (attempt + 1 >= POST_HANDOFF_OBSERVATION_ATTEMPTS || cancellationCode(options) !== undefined) {
+      return observed;
+    }
+    const budget = options.deadlineAt === undefined
+      ? POST_HANDOFF_OBSERVATION_INTERVAL_MS
+      : Math.max(0, options.deadlineAt - Date.now());
+    if (budget <= 0) return observed;
+    await waitForPostHandoffObservation(
+      Math.min(POST_HANDOFF_OBSERVATION_INTERVAL_MS, budget),
+      options.signal
+    );
+  }
+  return observed;
+}
+
+async function waitForPostHandoffObservation(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (milliseconds <= 0 || signal?.aborted) return;
+  await new Promise<void>(resolve => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    signal?.addEventListener("abort", finish, { once: true });
+    if (signal?.aborted) finish();
+  });
 }
 
 function validateInput(

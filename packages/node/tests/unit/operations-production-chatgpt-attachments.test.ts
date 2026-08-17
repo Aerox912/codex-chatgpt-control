@@ -107,6 +107,8 @@ type ProbeState = {
   mismatchBytes?: boolean;
   reordered?: boolean;
   deferSetFiles?: boolean;
+  activationCandidateCount?: number;
+  sendReady?: boolean;
 };
 
 type FakePage = PageLike & {
@@ -180,10 +182,18 @@ function makePage(initial: Partial<ProbeState> = {}): FakePage {
   ): Promise<T> => {
     page.evaluateCalls += 1;
     const state = page.state;
+    if (fn.toString().includes("composer-submit-button")) {
+      return { status: state.sendReady === false ? "not_ready" : "ready" } as T;
+    }
     expect(fn.toString()).not.toContain("querySelectorAll");
     expect(fn.toString()).not.toContain("Array.from");
+    expect(fn.toString()).not.toContain('structural.includes("composer")');
+    expect(fn.toString()).toContain("files === undefined");
+    expect(fn.toString()).toContain("input.value");
     if (fn.toString().includes("[role='menu'] div[tabindex='0']")) {
       expect(fn.toString()).not.toContain("document.querySelectorAll(\"[tabindex='0']\")");
+      expect(fn.toString()).toContain("[role='group'] div[tabindex='0']");
+      expect(fn.toString()).toContain("[class*='popover' i] div[tabindex='0']");
     }
     if (state.malformed) return { malformed: true } as T;
     if (state.leaky) {
@@ -257,7 +267,10 @@ function makePage(initial: Partial<ProbeState> = {}): FakePage {
             ...(state.menu && state.menuRow ? { menuUploadSelector: "main > form > div.menu-upload" } : {}),
             activationCandidateCount: state.menu && state.menuRow ? 1 : 1
           }
-        : { directActivationSelector: "main > form > label.attach-label", activationCandidateCount: 1 })
+        : {
+            directActivationSelector: "main > form > label.attach-label",
+            activationCandidateCount: state.activationCandidateCount ?? 1
+          })
     } as T;
   };
   return page;
@@ -354,6 +367,33 @@ describe("ChatGPT production attachment provider", () => {
     expect(JSON.stringify(evidenceMaterials)).not.toContain(SECRET_NAME);
   });
 
+  it("keeps exact attachment observation independent from extra post-upload controls", async () => {
+    const page = makePage();
+    const { provider } = providerFor(page);
+    expect((await provider.handoffFiles(handoffRequest(), page, target)).status).toBe("satisfied");
+    page.state = {
+      files: [fileA],
+      clearedInput: true,
+      direct: true,
+      activationCandidateCount: 2
+    };
+
+    const observed = await provider.observeAttachments(attachmentRequest(), page, target);
+
+    expect(observed.status).toBe("exact");
+  });
+
+  it("reports a causal attachment as delayed until the unique Send control is ready", async () => {
+    const page = makePage();
+    const { provider } = providerFor(page);
+    expect((await provider.handoffFiles(handoffRequest(), page, target)).status).toBe("satisfied");
+    page.state = { files: [fileA], clearedInput: true, direct: true, sendReady: false };
+
+    expect((await provider.observeAttachments(attachmentRequest(), page, target)).status).toBe("delayed");
+    page.state.sendReady = true;
+    expect((await provider.observeAttachments(attachmentRequest(), page, target)).status).toBe("exact");
+  });
+
   it("requires both input and chip observations to match when the composer exposes both", async () => {
     const page = makePage();
     const { provider } = providerFor(page);
@@ -387,13 +427,90 @@ describe("ChatGPT production attachment provider", () => {
     expect(observed.status).toBe("mismatch");
   });
 
-  it("uses a unique semantic menu row, including the bounded localized div tabindex fallback", async () => {
+  it("falls back to a unique semantic menu row when scoped CDP is unavailable", async () => {
     const page = makePage({ direct: false, menuRow: true });
+    let capabilityReads = 0;
+    page.capabilities = {
+      get: async () => {
+        capabilityReads += 1;
+        throw new Error("scoped CDP is unavailable");
+      }
+    };
     const { provider } = providerFor(page);
     const result = await provider.handoffFiles(handoffRequest(), page, target);
     expect(result.status).toBe("satisfied");
     expect(page.clickCalls).toBe(2);
     expect(page.setFilesCalls).toBe(1);
+    expect(capabilityReads).toBe(1);
+  });
+
+  it("uses one fixed scoped CDP gesture for ChatGPT's hidden input and the native chooser for files", async () => {
+    const page = makePage({ direct: false, menuRow: true });
+    let sentMethod: string | undefined;
+    let sentParams: Record<string, unknown> | undefined;
+    let sentOptions: Record<string, unknown> | undefined;
+    class PrivateCdpCapability {
+      #calls = 0;
+
+      get calls(): number {
+        return this.#calls;
+      }
+
+      async send(
+        method: string,
+        params?: Record<string, unknown>,
+        options?: Record<string, unknown>
+      ): Promise<unknown> {
+        this.#calls += 1;
+        sentMethod = method;
+        sentParams = params;
+        sentOptions = options;
+        queueMicrotask(() => page.resolveChooser?.());
+        return { result: { value: { ok: true } } };
+      }
+    }
+    const capability = new PrivateCdpCapability();
+    page.capabilities = { get: async id => id === "cdp" ? capability : undefined };
+    const { provider } = providerFor(page);
+
+    const result = await provider.handoffFiles(handoffRequest(), page, target);
+
+    expect(result.status).toBe("satisfied");
+    expect(capability.calls).toBe(1);
+    expect(sentMethod).toBe("Runtime.evaluate");
+    expect(sentParams).toMatchObject({
+      userGesture: true,
+      awaitPromise: true,
+      returnByValue: true
+    });
+    expect(sentParams?.expression).toContain('input.id === "upload-files"');
+    expect(sentParams?.expression).toContain("active composer file input was not unique");
+    expect(sentParams?.expression).not.toContain(SECRET_PATH);
+    expect(sentOptions?.timeoutMs).toEqual(expect.any(Number));
+    expect(page.clickCalls).toBe(0);
+    expect(page.chooserCalls).toBe(1);
+    expect(page.setFilesCalls).toBe(1);
+  });
+
+  it("fails closed when scoped CDP does not prove the exact hidden input", async () => {
+    const page = makePage({ direct: false, menuRow: true });
+    let sends = 0;
+    page.capabilities = {
+      get: async () => ({
+        send: async () => {
+          sends += 1;
+          return { result: { value: { ok: false, reason: "active composer file input was not unique" } } };
+        }
+      })
+    };
+    const { provider } = providerFor(page, { timeoutMs: 20 });
+
+    const result = await provider.handoffFiles(handoffRequest(), page, target);
+
+    expect(result).toEqual({ status: "uncertain", quarantine: "provider" });
+    expect(sends).toBe(1);
+    expect(page.clickCalls).toBe(0);
+    expect(page.setFilesCalls).toBe(0);
   });
 
   it("snapshots the complete caller identity graph before callbacks can mutate it", async () => {

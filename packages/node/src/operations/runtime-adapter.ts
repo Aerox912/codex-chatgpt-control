@@ -54,6 +54,7 @@ import type {
 import type { OwnershipTargetEvidence } from "./turn-ownership.js";
 import type { OperationFileIdentity } from "./file-identity.js";
 import type { OperationSurface, OperationTargetBindingV1, OperationTargetRequestV1 } from "./types.js";
+import { CONTROL_POSTCONDITION_RETRY_POLICY } from "./control.js";
 import type {
   ControlSteerExecutePreparedRequest,
   ControlSteerPhaseResult,
@@ -477,6 +478,7 @@ export function createRuntimeOperationBrowserAdapter(
   });
 
   const control: OperationControlAdapter = Object.freeze({
+    postconditionRetry: CONTROL_POSTCONDITION_RETRY_POLICY,
     observeTurn: request => delegateRecoveredControl(
       request.operationId,
       request.parentRequestDigest,
