@@ -2,10 +2,6 @@
 import { mkdir as mkdir7 } from "node:fs/promises";
 import { join as join8, resolve as resolve8 } from "node:path";
 
-// src/scripts/capture-surface-profile.ts
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-
 // src/errors.ts
 var BROWSER_BRIDGE_UNAVAILABLE_MESSAGE = "Codex cannot access the ChatGPT browser bridge from this backend process. In an ordinary shell this is expected; for a live Codex Chrome run, assign the Chrome plugin runtime returned by setupBrowserRuntime() to globalThis.agent before using it.";
 var BROWSER_BRIDGE_REMEDIATION = [
@@ -30,6 +26,18 @@ var BROWSER_BRIDGE_REMEDIATION = [
     userActionRequired: true
   }
 ];
+function nodeErrorCode(error) {
+  if (error === null || typeof error !== "object" && typeof error !== "function") return void 0;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(error, "code");
+    if (descriptor === void 0 || !("value" in descriptor) || typeof descriptor.value !== "string") {
+      return void 0;
+    }
+    return descriptor.value;
+  } catch {
+    return void 0;
+  }
+}
 var ChatGPTControlError = class extends Error {
   constructor(message, kind, recoverable, visibleText, blockerDetails = {}) {
     super(message);
@@ -3999,9 +4007,16 @@ var BrowserGate = class {
   resourceKey;
   maxQueueSize;
   maxConsecutiveExclusives;
-  queue = [];
+  /** Reserved but not yet acquired waiters; Set gives O(1) removal. */
+  queued = /* @__PURE__ */ new Set();
+  /** Started shared waiters are the only shared entries a drain may grant. */
+  startedShared = /* @__PURE__ */ new Set();
+  /** Min-heap by reservation sequence; stale cancelled entries are removed lazily. */
+  startedExclusiveHeap = [];
   activeShared = /* @__PURE__ */ new Set();
   activeExclusive;
+  queuedExclusiveCount = 0;
+  queuedSharedCount = 0;
   sequence = 0;
   drainScheduled = false;
   rejectedCount = 0;
@@ -4092,17 +4107,17 @@ var BrowserGate = class {
     };
   }
   isIdle() {
-    return this.queue.length === 0 && this.activeExclusive === void 0 && this.activeShared.size === 0 && this.acceptedSharedReservations === 0;
+    return this.queued.size === 0 && this.activeExclusive === void 0 && this.activeShared.size === 0 && this.acceptedSharedReservations === 0;
   }
   snapshot() {
     return {
       resourceKind: "browser",
       resourceKey: this.resourceKey,
-      queueDepth: this.queue.length + this.pendingSharedReservations,
+      queueDepth: this.queued.size + this.pendingSharedReservations,
       active: this.activeExclusive !== void 0 || this.activeShared.size > 0,
       activeSharedCount: this.activeShared.size,
-      queuedExclusiveCount: this.queue.filter((waiter) => waiter.kind === "exclusive").length,
-      queuedSharedCount: this.queue.filter((waiter) => waiter.kind === "shared").length + this.pendingSharedReservations,
+      queuedExclusiveCount: this.queuedExclusiveCount,
+      queuedSharedCount: this.queuedSharedCount + this.pendingSharedReservations,
       rejectedCount: this.rejectedCount,
       ...this.activeExclusive === void 0 ? {} : {
         activeExclusiveRequestId: this.activeExclusive.requestId,
@@ -4116,7 +4131,7 @@ var BrowserGate = class {
     return {
       resourceKind: "browser",
       resourceKey: this.resourceKey,
-      queueDepth: this.queue.length + this.pendingSharedReservations,
+      queueDepth: this.queued.size + this.pendingSharedReservations,
       active: this.activeExclusive !== void 0 || this.activeShared.size > 0,
       ...this.activeExclusive === void 0 ? {} : { activeRequestId: this.activeExclusive.requestId },
       completedCount: 0,
@@ -4133,11 +4148,13 @@ var BrowserGate = class {
       acquired: false,
       settled: false
     };
-    this.queue.push(waiter);
+    this.queued.add(waiter);
+    if (kind === "exclusive") this.queuedExclusiveCount += 1;
+    else this.queuedSharedCount += 1;
     return waiter;
   }
   assertReservationCapacity() {
-    if (this.queue.length + this.pendingSharedReservations < this.maxQueueSize) return;
+    if (this.queued.size + this.pendingSharedReservations < this.maxQueueSize) return;
     this.rejectedCount += 1;
     throw new CoordinatorQueueFullError(this.queueSnapshot());
   }
@@ -4150,6 +4167,8 @@ var BrowserGate = class {
     }
     waiter.started = true;
     waiter.context = context;
+    if (waiter.kind === "exclusive") this.pushStartedExclusive(waiter);
+    else this.startedShared.add(waiter);
     waiter.promise = new Promise((resolve9, reject) => {
       waiter.resolve = resolve9;
       waiter.reject = reject;
@@ -4167,7 +4186,7 @@ var BrowserGate = class {
     return waiter.promise;
   }
   hasExclusiveWaiter() {
-    return this.queue.some((waiter) => waiter.kind === "exclusive");
+    return this.queuedExclusiveCount > 0;
   }
   scheduleDrain() {
     if (this.drainScheduled) return;
@@ -4180,10 +4199,9 @@ var BrowserGate = class {
   drain() {
     if (this.activeExclusive !== void 0) return;
     if (this.activeShared.size > 0 && this.hasExclusiveWaiter()) return;
-    const exclusive = this.queue.filter((waiter) => waiter.kind === "exclusive" && waiter.started).sort((left, right) => left.sequence - right.sequence)[0];
-    const shared = this.queue.filter((waiter) => waiter.kind === "shared" && waiter.started);
-    if (shared.length > 0 && this.consecutiveExclusive >= this.maxConsecutiveExclusives) {
-      for (const waiter of shared) this.grant(waiter);
+    const exclusive = this.nextStartedExclusive();
+    if (this.startedShared.size > 0 && this.consecutiveExclusive >= this.maxConsecutiveExclusives) {
+      for (const waiter of [...this.startedShared]) this.grant(waiter);
       this.consecutiveExclusive = 0;
       return;
     }
@@ -4193,14 +4211,11 @@ var BrowserGate = class {
       return;
     }
     if (this.hasExclusiveWaiter()) return;
-    for (const waiter of [...this.queue]) {
-      if (waiter.kind === "shared" && waiter.started) this.grant(waiter);
-    }
+    for (const waiter of [...this.startedShared]) this.grant(waiter);
   }
   grant(waiter) {
-    const index = this.queue.indexOf(waiter);
-    if (index < 0 || waiter.settled || !waiter.started) return;
-    this.queue.splice(index, 1);
+    if (!this.queued.has(waiter) || waiter.settled || !waiter.started) return;
+    this.removeQueued(waiter);
     waiter.acquired = true;
     if (waiter.kind === "exclusive") this.activeExclusive = waiter;
     else this.activeShared.add(waiter);
@@ -4233,14 +4248,56 @@ var BrowserGate = class {
   }
   cancel(waiter, reason) {
     if (waiter.settled || waiter.acquired) return;
-    const index = this.queue.indexOf(waiter);
-    if (index >= 0) this.queue.splice(index, 1);
+    this.removeQueued(waiter);
     waiter.settled = true;
     this.detachAbortListener(waiter);
     if (waiter.started) {
       waiter.reject?.(reason ?? new CoordinatorAbortedError("in_flight", waiter.context.timing));
     }
     this.scheduleDrain();
+  }
+  removeQueued(waiter) {
+    if (!this.queued.delete(waiter)) return;
+    if (waiter.kind === "exclusive") this.queuedExclusiveCount -= 1;
+    else {
+      this.queuedSharedCount -= 1;
+      this.startedShared.delete(waiter);
+    }
+  }
+  pushStartedExclusive(waiter) {
+    const heap = this.startedExclusiveHeap;
+    heap.push(waiter);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (heap[parent].sequence <= waiter.sequence) break;
+      heap[index] = heap[parent];
+      index = parent;
+    }
+    heap[index] = waiter;
+  }
+  nextStartedExclusive() {
+    const heap = this.startedExclusiveHeap;
+    while (heap.length > 0 && !this.queued.has(heap[0])) this.popStartedExclusive();
+    return heap[0];
+  }
+  popStartedExclusive() {
+    const heap = this.startedExclusiveHeap;
+    const first = heap[0];
+    const last = heap.pop();
+    if (first === void 0 || last === void 0 || heap.length === 0) return first;
+    let index = 0;
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      if (left >= heap.length) break;
+      const child = right < heap.length && heap[right].sequence < heap[left].sequence ? right : left;
+      if (heap[child].sequence >= last.sequence) break;
+      heap[index] = heap[child];
+      index = child;
+    }
+    heap[index] = last;
+    return first;
   }
   detachAbortListener(waiter) {
     if (waiter.abortListener !== void 0 && waiter.context !== void 0) {
@@ -4824,6 +4881,14 @@ function readDataMember(value, key, label) {
     if (descriptor !== void 0) {
       if (!("value" in descriptor)) {
         return invalid(`Cannot use ${label}: accessor-backed provider members are not supported`);
+      }
+      if (current !== value && typeof descriptor.value === "function") {
+        try {
+          const receiverSafe = Reflect.get(value, key, value);
+          if (typeof receiverSafe === "function") return receiverSafe;
+        } catch (error) {
+          return invalid(`Cannot use ${label}: provider method binding failed`, error);
+        }
       }
       return descriptor.value;
     }
@@ -6234,7 +6299,65 @@ function normalizeBrowser(browser) {
   if (browser === void 0 || browser === null || typeof browser !== "object") {
     return void 0;
   }
-  return browser;
+  const rawBrowser = browser;
+  const normalized = {};
+  const name = providerValue(rawBrowser, "name");
+  if (typeof name === "string") normalized.name = name;
+  const rawUser = providerValue(rawBrowser, "user");
+  if (isProviderRecord(rawUser)) {
+    const openTabs = providerCallable(rawUser, "openTabs");
+    const claimTab = providerCallable(rawUser, "claimTab");
+    normalized.user = {
+      ...openTabs === void 0 ? {} : {
+        openTabs: async () => await openTabs()
+      },
+      ...claimTab === void 0 ? {} : {
+        claimTab: async (tab) => normalizePage(await claimTab(tab))
+      }
+    };
+  }
+  const rawTabs = providerValue(rawBrowser, "tabs");
+  if (isProviderRecord(rawTabs)) {
+    const create = providerCallable(rawTabs, "create");
+    const newer = providerCallable(rawTabs, "new");
+    const selected = providerCallable(rawTabs, "selected");
+    const list = providerCallable(rawTabs, "list");
+    const get = providerCallable(rawTabs, "get");
+    const finalize = providerCallable(rawTabs, "finalize");
+    normalized.tabs = {
+      ...create === void 0 ? {} : {
+        create: async (url) => normalizePage(await create(url))
+      },
+      ...newer === void 0 ? {} : {
+        new: async (url) => normalizePage(await newer(...url === void 0 ? [] : [url]))
+      },
+      ...selected === void 0 ? {} : {
+        selected: async () => {
+          const page = await selected();
+          return page === void 0 ? void 0 : normalizePage(page);
+        }
+      },
+      ...list === void 0 ? {} : {
+        list: async () => {
+          const pages = await list();
+          return Array.isArray(pages) ? pages.map(normalizePage) : pages;
+        }
+      },
+      ...get === void 0 ? {} : {
+        get: async (id2) => normalizePage(await get(id2))
+      },
+      ...finalize === void 0 ? {} : {
+        finalize: async (options) => {
+          await finalize(options);
+        }
+      }
+    };
+  }
+  const newPage = providerCallable(rawBrowser, "newPage");
+  if (newPage !== void 0) {
+    normalized.newPage = async () => normalizePage(await newPage());
+  }
+  return normalized;
 }
 async function hydrateTab(browser, pageOrTab) {
   const maybe = pageOrTab;
@@ -6249,28 +6372,61 @@ async function hydrateTab(browser, pageOrTab) {
 }
 function normalizePage(pageOrTab) {
   if (isPageWrapper(pageOrTab)) return pageOrTab;
+  if (!isProviderRecord(pageOrTab)) return pageOrTab;
   const maybe = pageOrTab;
-  const playwright = maybe.playwright ?? maybe.page;
-  if (playwright !== void 0 && typeof playwright === "object") {
-    return new Proxy(playwright, {
-      get(target, prop) {
-        if (prop in target) {
-          const value2 = target[prop];
-          return typeof value2 === "function" ? value2.bind(target) : value2;
-        }
-        const value = maybe[prop];
-        return typeof value === "function" ? value.bind(maybe) : value;
-      }
-    });
+  const embedded = providerValue(maybe, "playwright") ?? providerValue(maybe, "page");
+  const primary = isProviderRecord(embedded) ? embedded : maybe;
+  const normalized = {};
+  for (const property of ["id", "tabId"]) {
+    const value = providerValue(maybe, property) ?? providerValue(primary, property);
+    if (typeof value === "string") normalized[property] = value;
   }
-  if (typeof maybe.url === "string") {
-    return {
-      ...maybe,
-      url: () => maybe.url,
-      title: async () => typeof maybe.title === "string" ? maybe.title : ""
-    };
+  for (const property of ["keyboard", "mouse", "cua", "capabilities"]) {
+    const value = providerValue(primary, property) ?? providerValue(maybe, property);
+    if (isProviderRecord(value)) normalized[property] = value;
   }
-  return pageOrTab;
+  if (isProviderRecord(embedded)) normalized.playwright = embedded;
+  for (const method of [
+    "url",
+    "goto",
+    "title",
+    "locator",
+    "getByRole",
+    "getByPlaceholder",
+    "getByText",
+    "waitForTimeout",
+    "waitForEvent",
+    "evaluate",
+    "content",
+    "close"
+  ]) {
+    const callable = providerCallable(primary, method) ?? providerCallable(maybe, method);
+    if (callable !== void 0) normalized[method] = (...args) => callable(...args);
+  }
+  const stringUrl = providerValue(maybe, "url");
+  if (normalized.url === void 0 && typeof stringUrl === "string") {
+    normalized.url = () => stringUrl;
+  }
+  const stringTitle = providerValue(maybe, "title");
+  if (normalized.title === void 0 && typeof stringTitle === "string") {
+    normalized.title = async () => stringTitle;
+  }
+  return normalized;
+}
+function isProviderRecord(value) {
+  return typeof value === "object" && value !== null || typeof value === "function";
+}
+function providerValue(value, key) {
+  try {
+    return Reflect.get(value, key, value);
+  } catch {
+    return void 0;
+  }
+}
+function providerCallable(value, key) {
+  const candidate = providerValue(value, key);
+  if (typeof candidate !== "function") return void 0;
+  return (...args) => Reflect.apply(candidate, value, args);
 }
 function isPageWrapper(value) {
   if (value === null || typeof value !== "object" && typeof value !== "function") return false;
@@ -6281,6 +6437,10 @@ function tabIdFromPage(page) {
   const id2 = maybe.id ?? maybe.tabId;
   return typeof id2 === "string" ? id2 : void 0;
 }
+
+// src/scripts/capture-surface-profile.ts
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 
 // src/dom/visible-text.ts
 function normalizeWhitespace(text) {
@@ -7228,6 +7388,8 @@ async function openExperience(env, args) {
   const page = env.page;
   try {
     const before = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
+    const initialBlocker = await experiencePageBlocker(page, before);
+    if (initialBlocker !== void 0) return initialBlocker;
     if (before.experience === args.experience) {
       return resultOk({
         experience: args.experience,
@@ -7249,6 +7411,8 @@ async function openExperience(env, args) {
     let controlClicked = await clickUniqueExperienceControl(page, labels);
     if (!controlClicked && await navigateConversationToSurfaceHome(page, args.timeoutMs)) {
       observed = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
+      const navigationBlocker = await experiencePageBlocker(page, observed);
+      if (navigationBlocker !== void 0) return navigationBlocker;
       if (observed.experience === args.experience) {
         return resultOk({
           experience: args.experience,
@@ -7279,6 +7443,8 @@ async function openExperience(env, args) {
       controlClicked = await clickUniqueExperienceControl(page, labels);
     }
     if (!controlClicked) {
+      const discoveryBlocker = await experiencePageBlocker(page, observed);
+      if (discoveryBlocker !== void 0) return discoveryBlocker;
       return experienceSelectorDrift(
         page,
         `No unique visible ChatGPT ${args.experience === "work" ? "Work" : "Chat"} surface control was found.`,
@@ -7301,6 +7467,8 @@ async function openExperience(env, args) {
         }));
       }
     }
+    const postconditionBlocker = await experiencePageBlocker(page, after);
+    if (postconditionBlocker !== void 0) return postconditionBlocker;
     return {
       ok: false,
       status: "blocked",
@@ -7321,6 +7489,27 @@ async function openExperience(env, args) {
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
   }
+}
+async function experiencePageBlocker(page, observed) {
+  const state = await readPageState(page);
+  if (state.blocker === void 0) return void 0;
+  return {
+    ok: false,
+    status: "blocked",
+    warnings: [],
+    blocker: {
+      kind: state.blocker.kind,
+      code: `experience_blocked_${state.blocker.kind}`,
+      fieldPath: "experience",
+      message: state.blocker.message,
+      ...state.blocker.visibleText === void 0 ? {} : { visibleText: state.blocker.visibleText },
+      resumable: true
+    },
+    context: await contextFromPage(page, {
+      experience: observed.experience,
+      selectorProfile: observed.selectorProfile
+    })
+  };
 }
 function pollAttempts(timeoutMs, pollMs) {
   return Math.max(1, Math.ceil(Math.max(0, timeoutMs) / pollMs));
@@ -8803,6 +8992,8 @@ async function visibleModeButtonLabelList(page) {
 var WORK_AXES = ["model", "effort", "speed"];
 var CONFIGURATION_CONTROL_DISCOVERY_TIMEOUT_MS = 5e3;
 var CONFIGURATION_CONTROL_POLL_MS = 250;
+var CONFIGURATION_SELECTION_MAX_ATTEMPTS = 6;
+var CONFIGURATION_SELECTION_RETRY_MS = 400;
 var CONFIGURATION_AXIS_ORDER = [
   "model",
   "intelligence",
@@ -8962,7 +9153,7 @@ async function applyConfiguration(env, args) {
         selected.push({ axis, requested, selected: active });
         continue;
       }
-      const selection = before.experience === "work" ? await selectWorkAxis(env, axis, requested) : await selectChatAxis(env, axis, requested, args.timeoutMs);
+      const selection = before.experience === "work" ? await selectWorkAxis(env, axis, requested, args.timeoutMs) : await selectChatAxis(env, axis, requested, args.timeoutMs);
       if (selection === void 0) {
         return configurationFailure(
           page,
@@ -9063,21 +9254,29 @@ async function inspectWorkAxisOptions(env, axis) {
   await closeConfigurationSubmenu(page);
   return dedupeOptions(options);
 }
-async function selectWorkAxis(env, axis, requested) {
+async function selectWorkAxis(env, axis, requested, timeoutMs) {
   const page = env.page;
   if (!WORK_AXES.includes(axis)) {
     return void 0;
   }
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const retryWindowMs = Math.min(
+    timeoutMs ?? CONFIGURATION_CONTROL_DISCOVERY_TIMEOUT_MS,
+    CONFIGURATION_CONTROL_DISCOVERY_TIMEOUT_MS
+  );
+  const attempts = Math.max(2, Math.min(
+    CONFIGURATION_SELECTION_MAX_ATTEMPTS,
+    Math.ceil(Math.max(0, retryWindowMs) / CONFIGURATION_SELECTION_RETRY_MS) + 1
+  ));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const candidates = await openWorkAxisOptions(env, axis);
     const match = findConfigurationOption(candidates, requested);
     if (match !== void 0 && await clickVisibleMenuItem(page, match)) {
       await page.waitForTimeout?.(150);
       return match.label;
     }
-    if (attempt === 0) {
+    if (attempt + 1 < attempts) {
       await closeConfigurationMenus(page);
-      await page.waitForTimeout?.(200);
+      await page.waitForTimeout?.(CONFIGURATION_SELECTION_RETRY_MS);
     }
   }
   return void 0;
@@ -10057,6 +10256,7 @@ function readEnv(name) {
 async function runScenario(scenario2, context) {
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   const startedMs = Date.now();
+  const tabBaseline = await snapshotBrowserTabIds(context.browser);
   let result3;
   if (!scenario2.enabled(context)) {
     result3 = {
@@ -10086,7 +10286,11 @@ async function runScenario(scenario2, context) {
       };
     }
   }
-  const cleanup = await finalizeBrowserTabs(context.browser);
+  const cleanup = await finalizeBrowserTabs(
+    context.cleanupBrowser ?? context.browser,
+    context.browser,
+    tabBaseline
+  );
   return { ...result3, cleanup };
 }
 async function runLiveSmoke(context, scenarios) {
@@ -10140,23 +10344,95 @@ function filterScenarios(scenarios, namesCsv) {
   );
   return scenarios.filter((scenario2) => wanted.has(scenario2.name));
 }
-async function finalizeBrowserTabs(browser) {
-  const tabs = browser?.tabs;
-  const finalize = tabs?.finalize;
+async function finalizeBrowserTabs(finalizerBrowser, behaviorBrowser, baseline) {
+  const finalizerTabs = finalizerBrowser?.tabs;
+  const finalize = finalizerTabs?.finalize;
   if (typeof finalize !== "function") {
-    return {
-      attempted: false,
-      ok: false,
-      reason: "browser.tabs.finalize unavailable"
-    };
+    return closeNewExactTabs(behaviorBrowser, baseline);
   }
   try {
     await withTimeout2(
-      finalize.call(tabs, { keep: [] }),
+      finalize.call(finalizerTabs, { keep: [] }),
       CLEANUP_TIMEOUT_MS,
       `browser.tabs.finalize timed out after ${CLEANUP_TIMEOUT_MS}ms`
     );
     return { attempted: true, ok: true };
+  } catch (error) {
+    return {
+      attempted: true,
+      ok: false,
+      error: {
+        name: error instanceof Error ? error.name : "Error",
+        message: error instanceof Error ? error.message : String(error)
+      }
+    };
+  }
+}
+async function snapshotBrowserTabIds(browser) {
+  const tabs = browser?.tabs;
+  const list = tabs?.list;
+  if (tabs === void 0 || typeof list !== "function") {
+    return { ok: false, reason: "browser.tabs.list unavailable" };
+  }
+  try {
+    const pages = await list.call(tabs);
+    const ids = /* @__PURE__ */ new Set();
+    for (const page of pages) {
+      const id2 = tabIdFromPage(page);
+      if (id2 === void 0) {
+        return { ok: false, reason: "browser.tabs.list returned a tab without an exact id" };
+      }
+      ids.add(id2);
+    }
+    return { ok: true, ids };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `browser.tabs.list failed: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+async function closeNewExactTabs(browser, baseline) {
+  if (!baseline.ok) {
+    return { attempted: false, ok: false, reason: baseline.reason };
+  }
+  const tabs = browser?.tabs;
+  const list = tabs?.list;
+  const get = tabs?.get;
+  if (tabs === void 0 || typeof list !== "function" || typeof get !== "function") {
+    return {
+      attempted: false,
+      ok: false,
+      reason: "browser.tabs.finalize unavailable and exact tabs.list/get cleanup is unavailable"
+    };
+  }
+  try {
+    const pages = await list.call(tabs);
+    const newTabIds = [];
+    for (const page of pages) {
+      const id2 = tabIdFromPage(page);
+      if (id2 === void 0) {
+        throw new Error("browser.tabs.list returned a tab without an exact id");
+      }
+      if (!baseline.ids.has(id2) && !newTabIds.includes(id2)) {
+        newTabIds.push(id2);
+      }
+    }
+    for (const id2 of newTabIds) {
+      const page = await get.call(tabs, id2);
+      if (tabIdFromPage(page) !== id2) {
+        throw new Error(`browser.tabs.get did not preserve exact cleanup affinity for tab ${id2}`);
+      }
+      if (typeof page.close !== "function") {
+        throw new Error(`browser tab ${id2} does not expose close()`);
+      }
+      await withTimeout2(
+        Promise.resolve(page.close()),
+        CLEANUP_TIMEOUT_MS,
+        `browser tab ${id2} close timed out after ${CLEANUP_TIMEOUT_MS}ms`
+      );
+    }
+    return { attempted: true, ok: true, closedTabCount: newTabIds.length };
   } catch (error) {
     return {
       attempted: true,
@@ -10973,7 +11249,7 @@ function isNotFoundError(error) {
   return isNodeError(error) && error.code === "ENOENT";
 }
 function isNodeError(error) {
-  return error instanceof Error && "code" in error;
+  return nodeErrorCode(error) !== void 0;
 }
 
 // src/commands/conversation.ts
@@ -13626,6 +13902,33 @@ import { constants } from "node:fs";
 import { createHash as createHash3 } from "node:crypto";
 import path2 from "node:path";
 
+// src/browser/active-composer-file-input.ts
+var ACTIVE_COMPOSER_FILE_INPUT_CLICK_EXPRESSION = `(() => {
+  const visible = element => {
+    if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']")) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
+      && (rect.width > 0 || rect.height > 0);
+  };
+  const textboxes = [...document.querySelectorAll("textarea, [contenteditable='true'], [role='textbox']")].filter(visible);
+  const composers = [...new Set(textboxes.map(textbox =>
+    textbox.closest("form")
+      ?? textbox.closest("[data-testid*='composer' i]")
+      ?? textbox.closest("[aria-label*='composer' i]")
+      ?? textbox.closest("[class*='composer' i]")
+  ).filter(Boolean))];
+  if (composers.length !== 1) return { ok: false, reason: "active composer was not unique" };
+  const all = [...composers[0].querySelectorAll("input[type='file']")]
+    .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+  const preferred = all.filter(input => input.id === "upload-files");
+  const nonImage = all.filter(input => input.getAttribute("accept") !== "image/*");
+  const candidates = preferred.length ? preferred : nonImage.length ? nonImage : all;
+  if (candidates.length !== 1) return { ok: false, reason: "active composer file input was not unique" };
+  candidates[0].click();
+  return { ok: true };
+})()`;
+
 // src/platform/local-paths.ts
 import path from "node:path";
 import { platform as readHostPlatform } from "node:os";
@@ -14052,7 +14355,7 @@ function guessFileType(extension) {
   }
 }
 function isNodeError2(error) {
-  return error instanceof Error && "code" in error;
+  return nodeErrorCode(error) !== void 0;
 }
 async function readAttachmentEvidenceBaseline(page, timeoutMs) {
   if (typeof page.evaluate !== "function") {
@@ -14402,31 +14705,7 @@ async function clickHiddenFileInputWithCdp(page, paths, deadline, mutationState)
   );
   try {
     const evaluation = await withinNativeAttachmentDeadline(deadline, (timeoutMs) => Promise.resolve(cdp.send("Runtime.evaluate", {
-      expression: `(() => {
-        const visible = element => {
-          if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']")) return false;
-          const style = getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
-            && (rect.width > 0 || rect.height > 0);
-        };
-        const textboxes = [...document.querySelectorAll("textarea, [contenteditable='true'], [role='textbox']")].filter(visible);
-        const composers = [...new Set(textboxes.map(textbox =>
-          textbox.closest("form")
-            ?? textbox.closest("[data-testid*='composer' i]")
-            ?? textbox.closest("[aria-label*='composer' i]")
-            ?? textbox.closest("[class*='composer' i]")
-        ).filter(Boolean))];
-        if (composers.length !== 1) return { ok: false, reason: "active composer was not unique" };
-        const all = [...composers[0].querySelectorAll("input[type='file']")]
-          .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
-        const preferred = all.filter(input => input.id === "upload-files");
-        const nonImage = all.filter(input => input.getAttribute("accept") !== "image/*");
-        const candidates = preferred.length ? preferred : nonImage.length ? nonImage : all;
-        if (candidates.length !== 1) return { ok: false, reason: "active composer file input was not unique" };
-        candidates[0].click();
-        return { ok: true };
-      })()`,
+      expression: ACTIVE_COMPOSER_FILE_INPUT_CLICK_EXPRESSION,
       userGesture: true,
       awaitPromise: true,
       returnByValue: true
@@ -17049,7 +17328,7 @@ function capability(status, message, remediation, details, nextCommand, blockerK
   return check;
 }
 function isNodeError3(error) {
-  return error instanceof Error && "code" in error;
+  return nodeErrorCode(error) !== void 0;
 }
 
 // src/commands/reports.ts
@@ -18431,7 +18710,8 @@ function assertNotAborted(signal) {
 }
 function localFileError(error, code, fallback) {
   if (error instanceof OperationFileIdentityError) return error;
-  const suffix = error instanceof Error && "code" in error ? ` (${String(error.code)})` : "";
+  const errno = nodeErrorCode(error);
+  const suffix = errno === void 0 ? "" : ` (${errno})`;
   return new OperationFileIdentityError(code, `${fallback}${suffix}`);
 }
 
@@ -20990,6 +21270,8 @@ var OperationClient = class {
     });
   }
   async adapterForSubmit(prepared) {
+    const cached = this.cachedAdapterForOperation(prepared.request.operationId);
+    if (cached !== void 0) return cached;
     let adapter = this.adapter;
     if (this.adapterFactory !== void 0) {
       try {
@@ -21057,6 +21339,19 @@ var OperationClient = class {
       const observeTurn = requiredMethod(controlObject, "observeTurn");
       const executeOnce = requiredMethod(controlObject, "executeOnce");
       const observePostcondition = requiredMethod(controlObject, "observePostcondition");
+      const postconditionRetryInput = optionalDataProperty(controlObject, "postconditionRetry");
+      const postconditionRetry = postconditionRetryInput === void 0 ? void 0 : (() => {
+        const policy = adapterObject(postconditionRetryInput);
+        const maxAttempts = optionalDataProperty(policy, "maxAttempts");
+        const intervalMs = optionalDataProperty(policy, "intervalMs");
+        if (!Number.isSafeInteger(maxAttempts) || !Number.isSafeInteger(intervalMs)) {
+          throw new OperationClientError("adapter_unavailable", "The operation control adapter has an invalid postcondition retry policy.");
+        }
+        return Object.freeze({
+          maxAttempts,
+          intervalMs
+        });
+      })();
       const prepareSteer = optionalMethod(controlObject, "prepareSteer");
       const executeSteerPrepared = optionalMethod(controlObject, "executeSteerPrepared");
       const verifySteer = optionalMethod(controlObject, "verifySteer");
@@ -21071,6 +21366,7 @@ var OperationClient = class {
         executeOnce: (request) => executeOnce(request),
         observePostcondition: (request) => observePostcondition(request)
       };
+      if (postconditionRetry !== void 0) guardedControl.postconditionRetry = postconditionRetry;
       if (prepareSteer !== void 0 && executeSteerPrepared !== void 0 && verifySteer !== void 0 && recoverSteer !== void 0) {
         guardedControl.prepareSteer = (request) => prepareSteer(request);
         guardedControl.executeSteerPrepared = (request) => executeSteerPrepared(request);
@@ -21202,6 +21498,21 @@ var OperationClient = class {
       if (oldest === void 0) break;
       this.requestAdapters.delete(oldest);
     }
+  }
+  cachedAdapterForOperation(operationId) {
+    const prefix = `${operationId}\0`;
+    let matchedKey;
+    let matchedAdapter;
+    for (const [key, adapter] of this.requestAdapters) {
+      if (key.startsWith(prefix)) {
+        matchedKey = key;
+        matchedAdapter = adapter;
+      }
+    }
+    if (matchedKey === void 0 || matchedAdapter === void 0) return void 0;
+    this.requestAdapters.delete(matchedKey);
+    this.requestAdapters.set(matchedKey, matchedAdapter);
+    return matchedAdapter;
   }
   forgetAdapter(handle) {
     this.requestAdapters.delete(adapterKey(handle.operationId, handle.requestDigest));
@@ -21621,7 +21932,7 @@ function cloneDataGraph(value, code, _freeze, depth = 0, seen = /* @__PURE__ */ 
   } catch {
     throw new OperationClientError(code, "The operation data could not be copied safely.");
   }
-  if (prototype !== Object.prototype && prototype !== null && prototype !== Array.prototype) {
+  if (!Array.isArray(object) && !isPlainDataPrototype(prototype)) {
     throw new OperationClientError(code, "The operation data contains an unsupported object.");
   }
   if (Reflect.ownKeys(descriptors2).some((key) => typeof key !== "string")) {
@@ -21675,6 +21986,14 @@ function cloneDataGraph(value, code, _freeze, depth = 0, seen = /* @__PURE__ */ 
   }
   seen.delete(object);
   return clone;
+}
+function isPlainDataPrototype(prototype) {
+  if (prototype === null || prototype === Object.prototype) return true;
+  try {
+    return Object.getPrototypeOf(prototype) === null;
+  } catch {
+    return false;
+  }
 }
 function isDigest(value) {
   return DIGEST_PATTERN2.test(value);
@@ -21826,6 +22145,32 @@ import {
 import { homedir, hostname, platform } from "node:os";
 import { dirname as dirname3, isAbsolute, join as join5, resolve as resolve5, sep } from "node:path";
 import { randomBytes, randomUUID as randomUUID3 } from "node:crypto";
+
+// src/runtime/value-boundaries.ts
+function isByteArrayView(value) {
+  if (!ArrayBuffer.isView(value)) return false;
+  try {
+    const view = value;
+    return view.BYTES_PER_ELEMENT === 1 && Number.isSafeInteger(view.length) && view.length === view.byteLength;
+  } catch {
+    return false;
+  }
+}
+function isPlainDataRecord(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== null && prototype !== Object.prototype && Object.getPrototypeOf(prototype) !== null) {
+      return false;
+    }
+    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+      if (!("value" in descriptor) || descriptor.get !== void 0 || descriptor.set !== void 0) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // src/operations/handle.ts
 import { basename as basename4 } from "node:path";
@@ -22527,10 +22872,18 @@ var LOCK_DIRECTORY = "locks";
 var TERMINAL_DIRECTORY = "terminals";
 var SNAPSHOT_DIRECTORY = "snapshots";
 var TOMBSTONE_DIRECTORY = "tombstones";
+var TRACKED_STATE_DIRECTORIES = [
+  LOG_DIRECTORY,
+  TERMINAL_DIRECTORY,
+  SNAPSHOT_DIRECTORY,
+  TOMBSTONE_DIRECTORY
+];
 var QUOTA_LOCK_FILE = "quota-admission.lock";
+var QUOTA_COUNTER_FILE = "quota-state.json";
 var LOCK_RECOVERY_SUFFIX = ".reclaim";
 var TERMINAL_SCHEMA_VERSION = "chatgpt.browser_control.operation_terminal.v1";
 var TOMBSTONE_SCHEMA_VERSION = "chatgpt.browser_control.operation_tombstone.v1";
+var QUOTA_COUNTER_SCHEMA_VERSION = "chatgpt.browser_control.operation_quota_state.v1";
 var GENESIS_EVENT_DIGEST = `hmac-sha256:${"0".repeat(64)}`;
 var DEFAULT_MAX_STATE_BYTES = 64 * 1024 * 1024;
 var MAX_SINGLE_RECORD_FILE_BYTES = 64 * 1024 * 1024;
@@ -22630,7 +22983,9 @@ var OperationJournal = class _OperationJournal {
     await ensureSecureDirectory(join5(canonicalRoot, SNAPSHOT_DIRECTORY));
     await ensureSecureDirectory(join5(canonicalRoot, TOMBSTONE_DIRECTORY));
     const key = await loadOrCreateKey(canonicalRoot, entropy);
-    return new _OperationJournal(canonicalRoot, key, clock, entropy, options);
+    const journal = new _OperationJournal(canonicalRoot, key, clock, entropy, options);
+    await journal.ensureQuotaCounter();
+    return journal;
   }
   async create(event) {
     try {
@@ -22701,20 +23056,18 @@ var OperationJournal = class _OperationJournal {
           syncParent: expectedRevision === 0,
           inject: (point) => this.inject(point)
         });
-        if (expectedRevision === 0) {
-          const quotaLockPath = this.quotaLockPath();
-          await serializeInProcess(quotaLockPath, async () => {
-            const quotaLock = await acquireLock(quotaLockPath, this.lockTimeoutMs, this.clock, this.entropy);
-            try {
-              await this.assertQuotaForNewOperation(encoded.byteLength);
-              await persist();
-            } finally {
-              await releaseLock(quotaLock);
-            }
-          });
-        } else {
-          await persist();
-        }
+        const byteDelta = encoded.byteLength - parsed.partialTailBytes;
+        await this.mutateQuotaTrackedState(
+          async () => {
+            await persist();
+            return {
+              value: void 0,
+              byteDelta,
+              entryDelta: parsed.exists ? 0 : 1
+            };
+          },
+          expectedRevision === 0 ? (counter) => this.assertQuotaForNewOperation(counter, Math.max(0, byteDelta)) : void 0
+        );
         return {
           state: nextState,
           envelopes: [...parsed.envelopes, envelope],
@@ -22762,16 +23115,26 @@ var OperationJournal = class _OperationJournal {
           lastEventDigest,
           state: jsonRoundTrip(loaded.state)
         };
-        await writeAuthenticatedAtomic(
-          this.snapshotPath(operationId),
-          snapshot,
-          this.key,
-          "codex-chatgpt-control/operation-snapshot/v1",
-          "snapshotDigest",
-          this.entropy,
-          (point) => this.inject(point),
-          true
-        );
+        const snapshotPath = this.snapshotPath(operationId);
+        await this.mutateQuotaTrackedState(async () => {
+          const beforeBytes = await optionalFileSize(snapshotPath);
+          await writeAuthenticatedAtomic(
+            snapshotPath,
+            snapshot,
+            this.key,
+            "codex-chatgpt-control/operation-snapshot/v1",
+            "snapshotDigest",
+            this.entropy,
+            (point) => this.inject(point),
+            true
+          );
+          const afterBytes = await fileSize(snapshotPath);
+          return {
+            value: void 0,
+            byteDelta: afterBytes - (beforeBytes ?? 0),
+            entryDelta: beforeBytes === void 0 ? 1 : 0
+          };
+        });
         return snapshot;
       } finally {
         await releaseLock(lock);
@@ -22842,10 +23205,10 @@ var OperationJournal = class _OperationJournal {
           if (await pathExists(terminalPath)) {
             const terminal2 = await readTerminal(terminalPath, this.key);
             assertSameIdentity(tombstone2.operationId, tombstone2.requestDigest, terminal2.operationId, terminal2.requestDigest);
-            deletedTerminalBytes = await removeFileAndSync(terminalPath, dirname3(terminalPath));
+            deletedTerminalBytes = await this.removeQuotaTrackedFile(terminalPath);
           }
           const snapshotPath2 = this.snapshotPath(operationId);
-          const deletedSnapshotBytes = await removeFileAndSync(snapshotPath2, dirname3(snapshotPath2));
+          const deletedSnapshotBytes = await this.removeQuotaTrackedFile(snapshotPath2);
           return {
             status: "already_pruned",
             operationId: tombstone2.operationId,
@@ -22866,18 +23229,25 @@ var OperationJournal = class _OperationJournal {
           "codex-chatgpt-control/operation-tombstone/v1",
           withoutField(tombstone, "tombstoneDigest")
         );
-        await writeAtomicJson(
-          tombstonePath,
-          tombstone,
-          this.entropy,
-          (point) => this.inject(point),
-          false
-        );
-        const terminalBytes = await fileSize(terminalPath);
-        await unlink2(terminalPath);
-        await syncDirectory(dirname3(terminalPath));
+        await this.mutateQuotaTrackedState(async () => {
+          const beforeBytes = await optionalFileSize(tombstonePath);
+          await writeAtomicJson(
+            tombstonePath,
+            tombstone,
+            this.entropy,
+            (point) => this.inject(point),
+            false
+          );
+          const afterBytes = await fileSize(tombstonePath);
+          return {
+            value: void 0,
+            byteDelta: afterBytes - (beforeBytes ?? 0),
+            entryDelta: beforeBytes === void 0 ? 1 : 0
+          };
+        });
+        const terminalBytes = await this.removeQuotaTrackedFile(terminalPath);
         const snapshotPath = this.snapshotPath(operationId);
-        const snapshotBytes = await removeFileAndSync(snapshotPath, dirname3(snapshotPath));
+        const snapshotBytes = await this.removeQuotaTrackedFile(snapshotPath);
         return {
           status: "pruned",
           operationId: terminal.operationId,
@@ -22932,7 +23302,7 @@ var OperationJournal = class _OperationJournal {
         const deleted = [];
         let deletedBytes = 0;
         for (const [kind, path3] of paths) {
-          const bytes = await removeFileAndSync(path3, dirname3(path3));
+          const bytes = await this.removeQuotaTrackedFile(path3);
           if (bytes > 0) {
             deleted.push(kind);
             deletedBytes += bytes;
@@ -22954,6 +23324,9 @@ var OperationJournal = class _OperationJournal {
   }
   quotaLockPath() {
     return childPath(this.stateRoot, LOCK_DIRECTORY, QUOTA_LOCK_FILE);
+  }
+  quotaCounterPath() {
+    return childPath(this.stateRoot, QUOTA_COUNTER_FILE);
   }
   terminalPath(operationId) {
     const stem = this.operationStem(operationId);
@@ -23067,10 +23440,10 @@ var OperationJournal = class _OperationJournal {
       if (await pathExists(logPath)) {
         const parsed2 = await readLog(logPath, this.key, false);
         reconcileTerminalWithLog(terminal2, parsed2, operationId);
-        const deletedLogBytes2 = await fileSize(logPath);
-        await unlink2(logPath);
-        await syncDirectory(dirname3(logPath));
-        await this.inject("after_log_deleted");
+        const deletedLogBytes2 = await this.removeQuotaTrackedFile(
+          logPath,
+          () => this.inject("after_log_deleted")
+        );
         return {
           status: "already_compacted",
           operationId: terminal2.operationId,
@@ -23097,22 +23470,31 @@ var OperationJournal = class _OperationJournal {
     const lastEventDigest = parsed.envelopes.at(-1)?.eventDigest;
     if (lastEventDigest === void 0) throw corrupt("Completed operation has no final event digest.");
     const terminal = makeTerminalRecord(this.key, state, lastEventDigest);
-    await writeAuthenticatedAtomic(
-      terminalPath,
-      terminal,
-      this.key,
-      "codex-chatgpt-control/operation-terminal/v1",
-      "terminalDigest",
-      this.entropy,
-      (point) => this.inject(point),
-      false
-    );
+    await this.mutateQuotaTrackedState(async () => {
+      const beforeBytes = await optionalFileSize(terminalPath);
+      await writeAuthenticatedAtomic(
+        terminalPath,
+        terminal,
+        this.key,
+        "codex-chatgpt-control/operation-terminal/v1",
+        "terminalDigest",
+        this.entropy,
+        (point) => this.inject(point),
+        false
+      );
+      const afterBytes = await fileSize(terminalPath);
+      return {
+        value: void 0,
+        byteDelta: afterBytes - (beforeBytes ?? 0),
+        entryDelta: beforeBytes === void 0 ? 1 : 0
+      };
+    });
     const durableTerminal = await readTerminal(terminalPath, this.key);
     reconcileTerminalWithLog(durableTerminal, parsed, operationId);
-    const deletedLogBytes = await fileSize(logPath);
-    await unlink2(logPath);
-    await syncDirectory(dirname3(logPath));
-    await this.inject("after_log_deleted");
+    const deletedLogBytes = await this.removeQuotaTrackedFile(
+      logPath,
+      () => this.inject("after_log_deleted")
+    );
     return {
       status: "compacted",
       operationId: durableTerminal.operationId,
@@ -23122,9 +23504,123 @@ var OperationJournal = class _OperationJournal {
       deletedLogBytes
     };
   }
-  async assertQuotaForNewOperation(additionalBytes) {
-    const total = await scanStateBytes(this.stateRoot);
-    if (!Number.isSafeInteger(additionalBytes) || additionalBytes < 0 || additionalBytes > MAX_QUOTA_SCAN_BYTES - total) {
+  async ensureQuotaCounter() {
+    const quotaLockPath = this.quotaLockPath();
+    await serializeInProcess(quotaLockPath, async () => {
+      const quotaLock = await acquireLock(quotaLockPath, this.lockTimeoutMs, this.clock, this.entropy);
+      try {
+        await this.loadCurrentQuotaCounter();
+      } finally {
+        await releaseLock(quotaLock);
+      }
+    });
+  }
+  async mutateQuotaTrackedState(mutation, preflight) {
+    const quotaLockPath = this.quotaLockPath();
+    return await serializeInProcess(quotaLockPath, async () => {
+      const quotaLock = await acquireLock(quotaLockPath, this.lockTimeoutMs, this.clock, this.entropy);
+      try {
+        const counter = await this.loadCurrentQuotaCounter();
+        preflight?.(counter);
+        const dirty = await writeQuotaCounter(
+          this.quotaCounterPath(),
+          {
+            ...counter,
+            revision: nextQuotaRevision(counter.revision),
+            dirty: true,
+            counterDigest: ""
+          },
+          this.key,
+          this.entropy
+        );
+        try {
+          const result3 = await mutation();
+          assertQuotaDelta(result3.byteDelta, "byteDelta");
+          assertQuotaDelta(result3.entryDelta, "entryDelta");
+          const totalBytes = dirty.totalBytes + result3.byteDelta;
+          const entryCount = dirty.entryCount + result3.entryDelta;
+          if (!Number.isSafeInteger(totalBytes) || totalBytes < 0 || !Number.isSafeInteger(entryCount) || entryCount < 0) {
+            throw new OperationJournalError("journal_quota_counter_corrupt", "Operation quota accounting produced an invalid total.");
+          }
+          await writeQuotaCounter(
+            this.quotaCounterPath(),
+            {
+              schemaVersion: QUOTA_COUNTER_SCHEMA_VERSION,
+              revision: nextQuotaRevision(dirty.revision),
+              totalBytes,
+              entryCount,
+              dirty: false,
+              directories: await readQuotaDirectoryFingerprints(this.stateRoot),
+              counterDigest: ""
+            },
+            this.key,
+            this.entropy
+          );
+          return result3.value;
+        } catch (error) {
+          try {
+            await this.rebuildQuotaCounter(nextQuotaRevision(dirty.revision));
+          } catch {
+          }
+          throw error;
+        }
+      } finally {
+        await releaseLock(quotaLock);
+      }
+    });
+  }
+  async removeQuotaTrackedFile(path3, afterDelete) {
+    return await this.mutateQuotaTrackedState(async () => {
+      const beforeBytes = await optionalFileSize(path3);
+      if (beforeBytes === void 0) {
+        return { value: 0, byteDelta: 0, entryDelta: 0 };
+      }
+      await unlink2(path3);
+      await syncDirectory(dirname3(path3));
+      await afterDelete?.();
+      return { value: beforeBytes, byteDelta: -beforeBytes, entryDelta: -1 };
+    });
+  }
+  async loadCurrentQuotaCounter() {
+    const path3 = this.quotaCounterPath();
+    if (!await pathExists(path3)) return await this.rebuildQuotaCounter(1);
+    const counter = await readQuotaCounter(path3, this.key);
+    if (counter.dirty) return await this.rebuildQuotaCounter(nextQuotaRevision(counter.revision));
+    const currentDirectories = await readQuotaDirectoryFingerprints(this.stateRoot);
+    if (!sameQuotaDirectoryFingerprints(counter.directories, currentDirectories)) {
+      return await this.rebuildQuotaCounter(nextQuotaRevision(counter.revision));
+    }
+    return counter;
+  }
+  async rebuildQuotaCounter(revision) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const before = await readQuotaDirectoryFingerprints(this.stateRoot);
+      const usage = await scanStateUsage(this.stateRoot);
+      const after = await readQuotaDirectoryFingerprints(this.stateRoot);
+      if (!sameQuotaDirectoryFingerprints(before, after)) continue;
+      return await writeQuotaCounter(
+        this.quotaCounterPath(),
+        {
+          schemaVersion: QUOTA_COUNTER_SCHEMA_VERSION,
+          revision,
+          totalBytes: usage.totalBytes,
+          entryCount: usage.entryCount,
+          dirty: false,
+          directories: after,
+          counterDigest: ""
+        },
+        this.key,
+        this.entropy
+      );
+    }
+    throw new OperationJournalError(
+      "journal_quota_state_changed",
+      "Operation state changed while rebuilding its quota counter."
+    );
+  }
+  assertQuotaForNewOperation(counter, additionalBytes) {
+    const total = counter.totalBytes;
+    if (counter.entryCount > MAX_QUOTA_SCAN_ENTRIES || total > MAX_QUOTA_SCAN_BYTES || !Number.isSafeInteger(additionalBytes) || additionalBytes < 0 || additionalBytes > MAX_QUOTA_SCAN_BYTES - total) {
       throw new OperationJournalError("journal_scan_limit", "Operation journal quota scan exceeded its hard byte limit.");
     }
     if (total + additionalBytes > this.maxStateBytes) {
@@ -23360,6 +23856,86 @@ async function readAuthenticatedFile(path3, key, domain, digestField, errorCode4
   }
   return value;
 }
+async function readQuotaCounter(path3, key) {
+  const value = await readAuthenticatedFile(
+    path3,
+    key,
+    "codex-chatgpt-control/operation-quota-state/v1",
+    "counterDigest",
+    "journal_quota_counter_corrupt"
+  );
+  if (!hasExactKeys(value, [
+    "schemaVersion",
+    "revision",
+    "totalBytes",
+    "entryCount",
+    "dirty",
+    "directories",
+    "counterDigest"
+  ]) || value.schemaVersion !== QUOTA_COUNTER_SCHEMA_VERSION || !Number.isSafeInteger(value.revision) || value.revision < 1 || !Number.isSafeInteger(value.totalBytes) || value.totalBytes < 0 || !Number.isSafeInteger(value.entryCount) || value.entryCount < 0 || typeof value.dirty !== "boolean" || !isDigest2(value.counterDigest) || !isQuotaDirectoryFingerprintRecord(value.directories)) {
+    throw new OperationJournalError(
+      "journal_quota_counter_corrupt",
+      "Authenticated operation quota state has an invalid shape."
+    );
+  }
+  return value;
+}
+async function writeQuotaCounter(path3, material, key, entropy) {
+  const withoutDigest = withoutField(material, "counterDigest");
+  const value = {
+    ...withoutDigest,
+    counterDigest: hmacDigest(
+      key,
+      "codex-chatgpt-control/operation-quota-state/v1",
+      withoutDigest
+    )
+  };
+  await writeAtomicJson(path3, value, entropy, async () => void 0, true);
+  return value;
+}
+async function readQuotaDirectoryFingerprints(stateRoot) {
+  const entries = await Promise.all(TRACKED_STATE_DIRECTORIES.map(async (directoryName) => {
+    const path3 = childPath(stateRoot, directoryName);
+    const metadata = await lstat2(path3, { bigint: true });
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new OperationJournalError("unsafe_state_root", "Operation state path is not a secure directory.");
+    }
+    assertOwnerAndMode(metadata, path3, POSIX_DIRECTORY_MODE);
+    const fingerprint = {
+      device: String(metadata.dev),
+      inode: String(metadata.ino),
+      modifiedNs: String(metadata.mtimeNs),
+      changedNs: String(metadata.ctimeNs)
+    };
+    return [directoryName, fingerprint];
+  }));
+  return Object.fromEntries(entries);
+}
+function sameQuotaDirectoryFingerprints(left, right) {
+  return TRACKED_STATE_DIRECTORIES.every((directoryName) => {
+    const a = left[directoryName];
+    const b = right[directoryName];
+    return a.device === b.device && a.inode === b.inode && a.modifiedNs === b.modifiedNs && a.changedNs === b.changedNs;
+  });
+}
+function isQuotaDirectoryFingerprintRecord(value) {
+  if (!isRecord6(value) || !hasExactKeys(value, [...TRACKED_STATE_DIRECTORIES])) return false;
+  return TRACKED_STATE_DIRECTORIES.every((directoryName) => {
+    const fingerprint = value[directoryName];
+    return isRecord6(fingerprint) && hasExactKeys(fingerprint, ["device", "inode", "modifiedNs", "changedNs"]) && [fingerprint.device, fingerprint.inode, fingerprint.modifiedNs, fingerprint.changedNs].every((item) => typeof item === "string" && /^\d+$/u.test(item));
+  });
+}
+function nextQuotaRevision(revision) {
+  if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) {
+    throw new OperationJournalError("journal_quota_counter_corrupt", "Operation quota revision is invalid.");
+  }
+  return revision + 1;
+}
+function assertQuotaDelta(value, label) {
+  if (!Number.isSafeInteger(value)) {
+    throw new OperationJournalError("journal_quota_counter_corrupt", `Operation quota ${label} is invalid.`);
+  }
+}
 function withoutField(value, field) {
   const copy = { ...value };
   delete copy[field];
@@ -23448,21 +24024,18 @@ async function fileSize(path3) {
   }
   return metadata.size;
 }
-async function removeFileAndSync(path3, directory) {
-  let bytes;
+async function optionalFileSize(path3) {
   try {
-    bytes = await fileSize(path3);
+    return await fileSize(path3);
   } catch (error) {
-    if (isNodeError4(error, "ENOENT")) return 0;
+    if (isNodeError4(error, "ENOENT")) return void 0;
     throw error;
   }
-  await unlink2(path3);
-  await syncDirectory(directory);
-  return bytes;
 }
 async function hasDurableState(stateRoot) {
+  if (await pathExists(childPath(stateRoot, QUOTA_COUNTER_FILE))) return true;
   let scannedEntries = 0;
-  for (const directoryName of [LOG_DIRECTORY, TERMINAL_DIRECTORY, SNAPSHOT_DIRECTORY, TOMBSTONE_DIRECTORY]) {
+  for (const directoryName of TRACKED_STATE_DIRECTORIES) {
     const directory = childPath(stateRoot, directoryName);
     const handle = await opendir(directory);
     try {
@@ -23477,8 +24050,9 @@ async function hasDurableState(stateRoot) {
   }
   return false;
 }
-async function scanStateBytes(stateRoot) {
+async function scanStateUsage(stateRoot) {
   let total = 0;
+  let entryCount = 0;
   let scannedEntries = 0;
   const directories = [
     [LOG_DIRECTORY, /^[0-9a-f]{64}\.jsonl$/],
@@ -23495,6 +24069,7 @@ async function scanStateBytes(stateRoot) {
         scannedEntries += 1;
         assertQuotaScanEntryLimit(scannedEntries);
         if (entry.name === ".DS_Store") continue;
+        entryCount += 1;
         if (!canonicalPattern.test(entry.name) && !temporaryPattern.test(entry.name)) {
           throw new OperationJournalError("unsafe_journal_entry", "Unexpected journal entry in operation state.");
         }
@@ -23513,7 +24088,7 @@ async function scanStateBytes(stateRoot) {
       await closeDirectory(handle);
     }
   }
-  return total;
+  return { totalBytes: total, entryCount };
 }
 function assertQuotaScanEntryLimit(scannedEntries) {
   if (scannedEntries > MAX_QUOTA_SCAN_ENTRIES) {
@@ -23732,7 +24307,7 @@ async function assertSecureFileHandle(handle, path3) {
 function assertOwnerAndMode(metadata, path3, expectedMode) {
   if (platform() === "win32") return;
   const getuid = process.getuid;
-  if (typeof getuid === "function" && metadata.uid !== getuid()) {
+  if (typeof getuid === "function" && Number(metadata.uid) !== getuid()) {
     throw new OperationJournalError("unsafe_state_owner", "Operation state path is not owned by the current user.");
   }
   if ((Number(metadata.mode) & 63) !== 0) {
@@ -24031,7 +24606,7 @@ function isRecord6(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function isNodeError4(error, code) {
-  return error instanceof Error && "code" in error && error.code === code;
+  return nodeErrorCode(error) === code;
 }
 function validatePositiveInteger2(value, label) {
   if (value !== void 0 && (!Number.isSafeInteger(value) || value <= 0)) {
@@ -24098,13 +24673,13 @@ function entropyBytes(entropy, size) {
   } catch {
     throw new OperationJournalError("invalid_journal_entropy", "Operation journal entropy failed to provide key bytes.");
   }
-  if (!(value instanceof Uint8Array) || value.byteLength !== size) {
+  if (!isByteArrayView(value) || value.byteLength !== size) {
     throw new OperationJournalError(
       "invalid_journal_entropy",
       "Operation journal entropy returned key bytes with an invalid length."
     );
   }
-  const key = Buffer.from(value);
+  const key = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
   if (key.every((byte) => byte === 0)) {
     throw new OperationJournalError("invalid_journal_entropy", "Operation journal entropy returned an invalid key.");
   }
@@ -24309,7 +24884,7 @@ var IDENTIFIER_PATTERN = /^[A-Za-z0-9._:-]{1,512}$/;
 function classifyTurnOwnership(input) {
   validateInput(input);
   const { binding, baseline, snapshot, submissionWitness, prior } = input;
-  const target = compareBindingToTarget(binding, baseline.target);
+  const target = compareBindingToBaselineTarget(binding, baseline, submissionWitness);
   if (target.status === "mismatch" || target.status === "replacement") {
     return result(input, "target_mismatch", "baseline_target_mismatch", target, void 0, void 0, void 0, 0, 0);
   }
@@ -24635,6 +25210,22 @@ function compareBindingToTarget(binding, target) {
     return { status: "mismatch", replacedTab: false };
   }
   return { status: "match", replacedTab: false };
+}
+function compareBindingToBaselineTarget(binding, baseline, submissionWitness) {
+  const direct = compareBindingToTarget(binding, baseline.target);
+  if (direct.status !== "unavailable") return direct;
+  const pending2 = baseline.target;
+  const established = binding.target;
+  const pendingConversationIdentity = pending2.thread.status === "unavailable" && pending2.conversation.status === "unavailable" && pending2.canonicalThreadUrl.status === "unavailable";
+  const establishedConversationIdentity = established.thread.status === "available" && established.conversation.status === "available" && established.canonicalThreadUrl.status === "available";
+  const exactWitness = submissionWitness !== void 0 && submissionWitness.actionId === binding.actionId && submissionWitness.actionKind === "send" && binding.actionKind === "send" && submissionWitness.baselineSnapshotDigest === baseline.snapshotDigest;
+  if (!pendingConversationIdentity || !establishedConversationIdentity || baseline.userTurns.length !== 0 || baseline.assistantTurns.length !== 0 || binding.evidenceProfile.stableConversationId !== "required" || binding.evidenceProfile.stableUserTurnId !== "required" || !exactWitness) return direct;
+  return compareBindingToTarget(binding, Object.freeze({
+    ...pending2,
+    thread: established.thread,
+    conversation: established.conversation,
+    canonicalThreadUrl: established.canonicalThreadUrl
+  }));
 }
 function hasStableConversationAndClaim(binding, snapshot) {
   return binding.evidenceProfile.stableConversationId === "required" && snapshot.target.conversation.status === "available" && snapshot.target.thread.status === "available" && snapshot.target.authoritativeTabClaim.status === "available";
@@ -25679,6 +26270,8 @@ var INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 var MAX_ATTACHMENTS = 256;
 var MAX_RECEIPT_ARTIFACTS = 32;
 var MAX_DEADLINE_AT = Date.UTC(2100, 0, 1);
+var POST_HANDOFF_OBSERVATION_ATTEMPTS = 20;
+var POST_HANDOFF_OBSERVATION_INTERVAL_MS = 150;
 var INVALID_OPERATION_ID = "invalid-operation";
 var INVALID_DIGEST = "invalid-digest";
 var PHASES2 = /* @__PURE__ */ new Set([
@@ -26040,7 +26633,12 @@ async function ensureAttachments(base, expected, operation, existingHandoff, por
     } catch {
       handoffResult = { status: "uncertain", quarantine: "caller" };
     }
-    observed = await observeAttachmentsSafely(ports, request, expected.attachmentManifest);
+    observed = await observeAttachmentsAfterHandoff(
+      ports,
+      request,
+      expected.attachmentManifest,
+      options
+    );
   }
   if (observed.status === "exact") {
     return { kind: "ok", evidenceDigest: observed.evidenceDigest, mutationBoundary: "handoff_may_have_occurred", actionId: handoff.actionId };
@@ -26263,6 +26861,39 @@ async function observeAttachmentsSafely(ports, request, manifest) {
   } catch {
     return { status: "ambiguous" };
   }
+}
+async function observeAttachmentsAfterHandoff(ports, request, manifest, options) {
+  let observed = { status: "ambiguous" };
+  for (let attempt = 0; attempt < POST_HANDOFF_OBSERVATION_ATTEMPTS; attempt += 1) {
+    observed = await observeAttachmentsSafely(ports, request, manifest);
+    if (observed.status === "exact" || observed.status === "mismatch") return observed;
+    if (attempt + 1 >= POST_HANDOFF_OBSERVATION_ATTEMPTS || cancellationCode(options) !== void 0) {
+      return observed;
+    }
+    const budget = options.deadlineAt === void 0 ? POST_HANDOFF_OBSERVATION_INTERVAL_MS : Math.max(0, options.deadlineAt - Date.now());
+    if (budget <= 0) return observed;
+    await waitForPostHandoffObservation(
+      Math.min(POST_HANDOFF_OBSERVATION_INTERVAL_MS, budget),
+      options.signal
+    );
+  }
+  return observed;
+}
+async function waitForPostHandoffObservation(milliseconds, signal) {
+  if (milliseconds <= 0 || signal?.aborted) return;
+  await new Promise((resolve9) => {
+    let settled = false;
+    const finish2 = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish2);
+      resolve9();
+    };
+    const timer = setTimeout(finish2, milliseconds);
+    signal?.addEventListener("abort", finish2, { once: true });
+    if (signal?.aborted) finish2();
+  });
 }
 function validateInput2(operation, expected, ports, options) {
   if (hasAccessorInPlainData(operation)) {
@@ -27049,6 +27680,9 @@ var BASELINE_EPOCH = "1970-01-01T00:00:00.000Z";
 var MAX_STEER_PROMPT_BYTES = 8 * 1024 * 1024;
 var MAX_TIMEOUT_MS = 864e5;
 var MAX_DEADLINE_AT2 = Date.UTC(2100, 0, 1);
+var MAX_POSTCONDITION_RETRY_ATTEMPTS = 64;
+var MAX_POSTCONDITION_RETRY_INTERVAL_MS = 1e3;
+var MAX_POSTCONDITION_RETRY_WINDOW_MS = 15e3;
 var INVALID_OPERATION_ID2 = "invalid-operation";
 var INVALID_ACTION_ID = "invalid-control";
 var INVALID_DIGEST2 = "invalid-digest";
@@ -27109,6 +27743,10 @@ function controlSteerPreparedDigestMaterial(value) {
     throw new ControlInputError("operation_state_corrupt", "Prepared steer digest material is invalid.");
   }
 }
+var CONTROL_POSTCONDITION_RETRY_POLICY = Object.freeze({
+  maxAttempts: 32,
+  intervalMs: 250
+});
 var ControlInputError = class extends Error {
   constructor(code, message) {
     super(message);
@@ -27672,12 +28310,12 @@ function validateSteerPreparedTarget(prepared, state) {
   }
 }
 async function reconcileExisting(normalized, boundary) {
-  const observation = await observePostconditionSafely(normalized);
+  const observation = await observePostconditionUntilSettled(normalized);
   return await settleObservation(normalized, boundary, observation, "send_control_unavailable");
 }
 async function settleAfterIntent(normalized, boundary, cancellation) {
   if (canAttemptObservation(normalized)) {
-    const observation = await observePostconditionSafely(normalized);
+    const observation = await observePostconditionUntilSettled(normalized);
     return await settleObservation(normalized, boundary, observation, cancellation);
   }
   return await persistOutcome(normalized, boundary, {
@@ -27687,7 +28325,7 @@ async function settleAfterIntent(normalized, boundary, cancellation) {
 }
 async function reconcileAfterIntent(normalized, boundary, execution) {
   if (canAttemptObservation(normalized)) {
-    const observation = await observePostconditionSafely(normalized);
+    const observation = await observePostconditionUntilSettled(normalized);
     return await settleObservation(
       normalized,
       boundary,
@@ -27839,6 +28477,50 @@ async function observePostconditionSafely(normalized) {
     };
   }
 }
+async function observePostconditionUntilSettled(normalized) {
+  let observation = await observePostconditionSafely(normalized);
+  const policy = normalized.ports.postconditionRetry;
+  if (policy === void 0) return observation;
+  for (let attempt = 1; attempt < policy.maxAttempts && retryablePostcondition(observation); attempt += 1) {
+    if (!await waitForPostconditionRetry(normalized, policy.intervalMs)) {
+      const code = cancellationCode2(normalized);
+      return code === void 0 ? observation : {
+        status: "uncertain",
+        blockerCode: code,
+        ...observation.evidenceDigest === void 0 ? {} : { evidenceDigest: observation.evidenceDigest }
+      };
+    }
+    observation = await observePostconditionSafely(normalized);
+  }
+  return observation;
+}
+function retryablePostcondition(observation) {
+  return observation.status !== "satisfied" && (observation.blockerCode === "send_control_unavailable" || observation.blockerCode === "target_evidence_unavailable");
+}
+async function waitForPostconditionRetry(normalized, milliseconds) {
+  if (normalized.signal.aborted) return false;
+  let remaining;
+  try {
+    remaining = normalized.deadlineAt - normalized.now();
+  } catch {
+    return false;
+  }
+  if (remaining <= 0) return false;
+  const delay2 = Math.min(milliseconds, remaining);
+  if (delay2 === 0) return true;
+  return await new Promise((resolve9) => {
+    const timer = setTimeout(() => {
+      normalized.signal.removeEventListener("abort", onAbort);
+      resolve9(true);
+    }, delay2);
+    const onAbort = () => {
+      clearTimeout(timer);
+      normalized.signal.removeEventListener("abort", onAbort);
+      resolve9(false);
+    };
+    normalized.signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 function normalizeInput(request, requestDigest, ports, options) {
   validateRequest(request);
   assertDigest5(requestDigest, "requestDigest");
@@ -27847,6 +28529,12 @@ function normalizeInput(request, requestDigest, ports, options) {
   }
   if (request.action === "stop" && (typeof ports.observeTurn !== "function" || typeof ports.persistActionIntent !== "function" || typeof ports.executeOnce !== "function" || typeof ports.observePostcondition !== "function")) {
     throw new ControlInputError("operation_state_corrupt", "Stop control ports are incomplete.");
+  }
+  if (ports.postconditionRetry !== void 0) {
+    const policy = ports.postconditionRetry;
+    if (!isRecord9(policy) || !Number.isSafeInteger(policy.maxAttempts) || policy.maxAttempts < 1 || policy.maxAttempts > MAX_POSTCONDITION_RETRY_ATTEMPTS || !Number.isSafeInteger(policy.intervalMs) || policy.intervalMs < 0 || policy.intervalMs > MAX_POSTCONDITION_RETRY_INTERVAL_MS || (policy.maxAttempts - 1) * policy.intervalMs > MAX_POSTCONDITION_RETRY_WINDOW_MS) {
+      throw new ControlInputError("operation_state_corrupt", "Control postcondition retry policy is invalid.");
+    }
   }
   if (request.action === "steer" && (typeof ports.prepareSteer !== "function" || typeof ports.persistSteerIntentAndBaseline !== "function" || typeof ports.executeSteerPrepared !== "function" || typeof ports.verifySteer !== "function" || typeof ports.recoverSteer !== "function")) {
     throw new ControlInputError("operation_state_corrupt", "Work-steer phase ports are incomplete.");
@@ -29239,6 +29927,7 @@ var OperationService = class {
       persistActionIntent: (action) => this.persistControlIntent(action),
       executeOnce: (execution) => adapter.control.executeOnce(execution),
       observePostcondition: (postcondition) => adapter.control.observePostcondition(postcondition),
+      ...adapter.control.postconditionRetry === void 0 ? {} : { postconditionRetry: adapter.control.postconditionRetry },
       persistReceipt: (receipt) => this.persistControlReceipt(receipt)
     };
     if (typeof adapter.control.prepareSteer === "function") {
@@ -32017,7 +32706,7 @@ function evaluateMenuState(snapshot, kind, needed, surface) {
   }
   const selectedValues = snapshot.controls.filter((control) => control.visible && control.selected).map((control) => control.label).filter((label) => !isToolLabel(label));
   const unknown2 = [...needed].some((requested) => {
-    if (requested.key === "experience") return snapshot.surface === requested.value;
+    if (requested.key === "experience") return snapshot.surface === "unknown";
     const axes = axesForDesired(requested.value, requested.axes, configurationForKind(kind));
     const hasAxisValue = axes.some((axis) => (values.get(axis)?.length ?? 0) > 0);
     const hasSelectedValue = selectedValues.some((value) => labelsMatchAny(value, valueAliases("configuration", requested.value)));
@@ -32143,24 +32832,94 @@ async function discoverMenuSnapshot(page, surface) {
   }
   const value = await page.evaluate((config) => {
     const normalize2 = (input) => input.replace(/\s+/g, " ").trim().slice(0, 512);
-    const boundedQuery = (root, selector, maxMatched, maxVisited = 4096) => {
-      const ownerDocument = root.nodeType === 9 ? root : root.ownerDocument;
-      if (ownerDocument === null || typeof ownerDocument.createTreeWalker !== "function") {
-        throw new Error("DOM traversal unavailable");
+    const elementParent = (node) => {
+      const parent = node.parentNode;
+      return parent?.nodeType === 1 ? parent : null;
+    };
+    const simpleMatch = (element, rawToken) => {
+      const checked = rawToken.endsWith(":checked");
+      const token = checked ? rawToken.slice(0, -":checked".length) : rawToken;
+      let offset = 0;
+      const tag = /^[A-Za-z][A-Za-z0-9-]*/u.exec(token);
+      if (tag !== null) {
+        if (element.tagName.toLocaleLowerCase() !== tag[0].toLocaleLowerCase()) return false;
+        offset = tag[0].length;
       }
-      const walker = ownerDocument.createTreeWalker(root, 4294967295);
+      while (offset < token.length) {
+        if (token[offset] !== "[") return false;
+        const close = token.indexOf("]", offset + 1);
+        if (close < 0) return false;
+        const expression = token.slice(offset + 1, close).trim();
+        const attribute = /^([A-Za-z0-9_:-]+)(?:(\*=|=)'([^']*)'(?:\s+(i))?)?$/u.exec(expression);
+        if (attribute === null) return false;
+        const actual = element.getAttribute(attribute[1]);
+        if (attribute[2] === void 0) {
+          if (actual === null) return false;
+        } else {
+          if (actual === null) return false;
+          const insensitive = attribute[4] === "i";
+          const left = insensitive ? actual.toLocaleLowerCase() : actual;
+          const rightValue = attribute[3] ?? "";
+          const right = insensitive ? rightValue.toLocaleLowerCase() : rightValue;
+          if (attribute[2] === "=" ? left !== right : !left.includes(right)) return false;
+        }
+        offset = close + 1;
+      }
+      if (checked && element.checked !== true && !element.hasAttribute("checked")) return false;
+      return true;
+    };
+    const selectorTokens = (branch) => {
+      const tokens = [];
+      let depth = 0;
+      let start = 0;
+      for (let index = 0; index <= branch.length; index += 1) {
+        const character = branch[index];
+        if (character === "[") depth += 1;
+        if (character === "]") depth -= 1;
+        if ((character === void 0 || /\s/u.test(character)) && depth === 0) {
+          const token = branch.slice(start, index).trim();
+          if (token.length > 0) tokens.push(token);
+          start = index + 1;
+        }
+      }
+      return tokens;
+    };
+    const selectorMatch = (element, selector) => {
+      for (const rawBranch of selector.split(",")) {
+        const tokens = selectorTokens(rawBranch.trim());
+        if (tokens.length === 0 || !simpleMatch(element, tokens[tokens.length - 1])) continue;
+        let ancestor = elementParent(element);
+        let tokenIndex = tokens.length - 2;
+        while (tokenIndex >= 0) {
+          while (ancestor !== null && !simpleMatch(ancestor, tokens[tokenIndex])) {
+            ancestor = elementParent(ancestor);
+          }
+          if (ancestor === null) break;
+          tokenIndex -= 1;
+          ancestor = elementParent(ancestor);
+        }
+        if (tokenIndex < 0) return true;
+      }
+      return false;
+    };
+    const boundedQuery = (root, selector, maxMatched, maxVisited = 4096) => {
       const matches = [];
       let visited = 0;
-      let current = walker.nextNode();
+      let current = root.firstChild;
       while (current !== null) {
         visited += 1;
         if (visited > maxVisited) throw new Error("node limit exceeded");
         const element = current.nodeType === 1 ? current : void 0;
-        if (element !== void 0 && element.matches(selector)) {
+        if (element !== void 0 && selectorMatch(element, selector)) {
           matches.push(element);
           if (matches.length > maxMatched) throw new Error("node limit exceeded");
         }
-        current = walker.nextNode();
+        if (current.firstChild !== null) {
+          current = current.firstChild;
+          continue;
+        }
+        while (current !== null && current !== root && current.nextSibling === null) current = current.parentNode;
+        current = current === null || current === root ? null : current.nextSibling;
       }
       return matches;
     };
@@ -32197,14 +32956,15 @@ async function discoverMenuSnapshot(page, surface) {
     const visible = (node) => {
       let current = node;
       let depth = 0;
-      while (current !== null && depth < 16) {
+      while (current !== null && depth < 4096) {
         const html = current;
-        if (html.hidden || current.getAttribute("aria-hidden") === "true" || current.hasAttribute("inert")) return false;
+        if (current.hasAttribute("hidden") || current.getAttribute("aria-hidden") === "true" || current.hasAttribute("inert")) return false;
         const style = typeof window !== "undefined" ? window.getComputedStyle?.(html) : void 0;
         if (style?.display === "none" || style?.visibility === "hidden" || style?.opacity === "0") return false;
-        current = current.parentElement ?? null;
+        current = elementParent(current);
         depth += 1;
       }
+      if (current !== null) throw new Error("node limit exceeded");
       const rect = node.getBoundingClientRect?.();
       return rect === void 0 || rect.width > 0 && rect.height > 0;
     };
@@ -32225,7 +32985,7 @@ async function discoverMenuSnapshot(page, surface) {
       };
       const composerNodes = boundedQuery(
         document,
-        "main form, main [data-testid*='composer' i], main [class*='composer' i], main textarea, main [contenteditable='true'], main [role='textbox']",
+        "main textarea, main [contenteditable='true'], main [role='textbox']",
         32
       ).filter(visible);
       for (const node of composerNodes) {
@@ -32237,7 +32997,7 @@ async function discoverMenuSnapshot(page, surface) {
             const value2 = current.getAttribute(attribute);
             if (value2 !== null) addMarker(value2);
           }
-          current = current.parentElement;
+          current = elementParent(current);
           depth += 1;
         }
       }
@@ -32267,8 +33027,14 @@ async function discoverMenuSnapshot(page, surface) {
     const menuIndices = /* @__PURE__ */ new Map();
     for (let index = 0; index < menus.length; index += 1) menuIndices.set(menus[index], index);
     const menuIndex = (node) => {
-      const owner = node.closest("[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper], [data-radix-menu-content]");
-      return owner === null ? -1 : menuIndices.get(owner) ?? -1;
+      const menuSelector = "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper], [data-radix-menu-content]";
+      let owner = node;
+      for (let depth = 0; owner !== null && depth < 4096; depth += 1) {
+        if (selectorMatch(owner, menuSelector)) return menuIndices.get(owner) ?? -1;
+        owner = elementParent(owner);
+      }
+      if (owner !== null) throw new Error("node limit exceeded");
+      return -1;
     };
     for (const node of all) {
       if (!visible(node)) continue;
@@ -32693,7 +33459,7 @@ function snapshotProductionOptions(value) {
   };
 }
 function snapshotDataRecord(value, code) {
-  if (!isPlainRecord3(value)) throw new ProductionConfigurationPrimitiveError(code);
+  if (!isPlainDataRecord(value)) throw new ProductionConfigurationPrimitiveError(code);
   let descriptors2;
   try {
     descriptors2 = Object.getOwnPropertyDescriptors(value);
@@ -32750,15 +33516,6 @@ function readOwnDataProperty(value, key) {
     return void 0;
   }
 }
-function isPlainRecord3(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  try {
-    const prototype = Object.getPrototypeOf(value);
-    return prototype === Object.prototype || prototype === null;
-  } catch {
-    return false;
-  }
-}
 function escapeRegExp6(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -32766,7 +33523,11 @@ function escapeAttribute(value) {
   return value.replace(/[\\"\u0000-\u001f\u007f]/g, "\\$&");
 }
 
+// src/operations/production-chatgpt-attachments.ts
+import { types as nodeTypes2 } from "node:util";
+
 // src/operations/production-attachments.ts
+import { types as nodeTypes } from "node:util";
 var DIGEST_PATTERN10 = /^hmac-sha256:[0-9a-f]{64}$/u;
 var ID_PATTERN4 = /^[A-Za-z0-9._:-]{1,512}$/u;
 var CAPABILITY_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u;
@@ -32896,28 +33657,33 @@ function createProductionAttachmentPrimitive(options) {
     if (activation === void 0 || !validateActivation(activation, normalized.maxCandidates)) {
       return { status: "not_satisfied", blockerCode: "selector_drift" };
     }
-    const locatorCount3 = await readLocatorCount(activation.locator, remainingBudget(deadlineAt));
-    if (locatorCount3 !== 1) {
-      return { status: "not_satisfied", blockerCode: "selector_drift" };
+    const locator = readData2(activation, "locator");
+    const providerActivation = safeMethod(activation, "activate");
+    let activate;
+    if (locator !== void 0) {
+      const locatorCount3 = await readLocatorCount(locator, remainingBudget(deadlineAt));
+      if (locatorCount3 !== 1) {
+        return { status: "not_satisfied", blockerCode: "selector_drift" };
+      }
+      const visible = await readLocatorVisible(locator, remainingBudget(deadlineAt));
+      if (visible !== true) {
+        return { status: "not_satisfied", blockerCode: "selector_drift" };
+      }
+      const click = safeMethod(locator, "click");
+      if (click === void 0) {
+        return { status: "not_satisfied", blockerCode: "selector_drift" };
+      }
+      activate = (timeoutMs) => click.call(locator, { timeout: timeoutMs, timeoutMs });
+    } else if (providerActivation !== void 0) {
+      activate = (timeoutMs) => providerActivation.call(activation, { timeoutMs });
     }
-    const visible = await readLocatorVisible(activation.locator, remainingBudget(deadlineAt));
-    if (visible !== true) {
-      return { status: "not_satisfied", blockerCode: "selector_drift" };
-    }
-    const click = safeMethod(activation.locator, "click");
-    if (click === void 0) {
-      return { status: "not_satisfied", blockerCode: "selector_drift" };
-    }
+    if (activate === void 0) return { status: "not_satisfied", blockerCode: "selector_drift" };
     const clickBudget = remainingBudget(deadlineAt);
     if (clickBudget <= 0) return { status: "not_satisfied", blockerCode: "operation_timeout" };
     const beforeClickCancellation = handoffCancellation(requestSignal, requestDeadlineAt);
     if (beforeClickCancellation !== void 0) return beforeClickCancellation;
     try {
-      const clickResult = click.call(activation.locator, {
-        timeout: clickBudget,
-        timeoutMs: clickBudget
-      });
-      await awaitMutatingCallback(clickResult);
+      await awaitMutatingCallback(activate(clickBudget));
     } catch {
     }
     const afterClickCancellation = handoffCancellation(requestSignal, requestDeadlineAt);
@@ -33139,12 +33905,12 @@ async function setChooserFilesOnce(chooser, snapshot, request, options, timeoutM
   if (timeoutMs <= 0) return { status: "uncertain", quarantine: "provider" };
   const beforeMutationCancellation = handoffCancellation(request.signal, request.deadlineAt);
   if (beforeMutationCancellation !== void 0) return beforeMutationCancellation;
-  const setFiles = safeMethod(chooser, "setFiles");
+  const setFiles = providerCallable2(chooser, "setFiles");
   if (setFiles === void 0) return { status: "uncertain", quarantine: "provider" };
   const paths = snapshot.files.map((identity) => identity.sourcePath);
   let rawResult;
   try {
-    rawResult = setFiles.call(chooser, paths, { timeout: timeoutMs, timeoutMs });
+    rawResult = setFiles(paths, { timeout: timeoutMs, timeoutMs });
   } catch {
     return { status: "uncertain", quarantine: "provider" };
   }
@@ -33190,7 +33956,7 @@ function startChooserWait(page, timeoutMs, signal) {
     wait.promise = Promise.resolve(wait.outcome);
     return wait;
   }
-  if (!(raw instanceof Promise)) {
+  if (!isNativePromise(raw)) {
     wait.outcome = { kind: "rejected" };
     wait.promise = Promise.resolve(wait.outcome);
     return wait;
@@ -33274,9 +34040,12 @@ async function awaitChooser(waiter, timeoutMs, signal) {
 function validateActivation(value, maxCandidates) {
   if (!isPlainDataRecord(value)) return false;
   const locator = readData2(value, "locator");
+  const activate = readData2(value, "activate");
   const candidateCount = readData2(value, "candidateCount");
   const capabilityKey = readData2(value, "capabilityKey");
-  return isSafeProviderObject(locator) && Number.isSafeInteger(candidateCount) && candidateCount === 1 && candidateCount <= maxCandidates && typeof capabilityKey === "string" && CAPABILITY_KEY_PATTERN.test(capabilityKey);
+  const locatorActivation = isSafeProviderObject(locator) && activate === void 0;
+  const callbackActivation = locator === void 0 && typeof activate === "function";
+  return (locatorActivation || callbackActivation) && Number.isSafeInteger(candidateCount) && candidateCount === 1 && candidateCount <= maxCandidates && typeof capabilityKey === "string" && CAPABILITY_KEY_PATTERN.test(capabilityKey);
 }
 async function readLocatorCount(locator, timeoutMs) {
   const count = safeMethod(locator, "count");
@@ -33299,8 +34068,8 @@ async function readLocatorVisible(locator, timeoutMs) {
   }
 }
 async function boundedCallback(value, timeoutMs) {
-  if (isObjectLike3(value) && !(value instanceof Promise)) throw new Error("provider promise is not native");
-  if (!(value instanceof Promise)) return value;
+  if (isObjectLike3(value) && !isNativePromise(value)) throw new Error("provider promise is not native");
+  if (!isNativePromise(value)) return value;
   let timer;
   const promise = new Promise((resolve9, reject) => {
     timer = setTimeout(() => reject(new Error("provider callback timed out")), timeoutMs);
@@ -33313,9 +34082,16 @@ async function boundedCallback(value, timeoutMs) {
   }
 }
 async function awaitMutatingCallback(value) {
-  if (isObjectLike3(value) && !(value instanceof Promise)) throw new Error("provider promise is not native");
-  if (value instanceof Promise) return await value;
+  if (isObjectLike3(value) && !isNativePromise(value)) throw new Error("provider promise is not native");
+  if (isNativePromise(value)) return await value;
   return value;
+}
+function isNativePromise(value) {
+  try {
+    return nodeTypes.isPromise(value);
+  } catch {
+    return false;
+  }
 }
 function sameIdentityList(left, right) {
   let normalized;
@@ -33451,6 +34227,15 @@ function safeMethod(value, key) {
   }
   return void 0;
 }
+function providerCallable2(value, key) {
+  try {
+    const candidate = Reflect.get(value, key, value);
+    if (typeof candidate !== "function") return void 0;
+    return (...args) => Reflect.apply(candidate, value, args);
+  } catch {
+    return void 0;
+  }
+}
 function readDescriptor(value, key) {
   try {
     return Object.getOwnPropertyDescriptor(value, key);
@@ -33464,28 +34249,6 @@ function readPrototype(value) {
   } catch {
     return null;
   }
-}
-function isPlainDataRecord(value) {
-  if (!isObjectLike3(value) || Array.isArray(value)) return false;
-  let prototype;
-  try {
-    prototype = Object.getPrototypeOf(value);
-  } catch {
-    return false;
-  }
-  if (prototype !== Object.prototype && prototype !== null) return false;
-  let descriptors2;
-  try {
-    descriptors2 = Object.getOwnPropertyDescriptors(value);
-  } catch {
-    return false;
-  }
-  for (const key of Reflect.ownKeys(descriptors2)) {
-    if (typeof key !== "string") return false;
-    const descriptor = descriptors2[key];
-    if (descriptor === void 0 || !("value" in descriptor) || descriptor.get !== void 0 || descriptor.set !== void 0) return false;
-  }
-  return true;
 }
 function isSafeProviderObject(value) {
   if (!isObjectLike3(value)) return false;
@@ -33562,6 +34325,7 @@ function createChatGPTAttachmentProvider(options) {
   const normalized = normalizeOptions6(options);
   let causalHandoff;
   let menuOpened = false;
+  let hiddenInputActivation;
   const expectedFactsForRequest = (request) => {
     const facts = [];
     for (const entry of request.manifest.identities) {
@@ -33632,17 +34396,25 @@ function createChatGPTAttachmentProvider(options) {
       return evidenceStatus(normalized.evidenceDigest, baseMaterial, "ambiguous", current.facts.length);
     }
     const match = compareCausalSurface(current, causal, request);
+    const sendReady = match.status === "exact" ? await readComposerSendReadiness(
+      page,
+      normalized.timeoutMs,
+      normalized.sendLabelCandidates,
+      normalized.signal
+    ) : void 0;
+    const observedStatus = match.status === "exact" && sendReady !== true ? "delayed" : match.status;
     const evidence = safeEvidence2(normalized.evidenceDigest, "chatgpt-attachment-surface", {
       ...baseMaterial,
-      status: match.status,
+      status: observedStatus,
       count: current.facts.length,
       factsMatch: match.factsMatch,
       multiplicityMatch: match.multiplicityMatch,
       orderDeterministic: current.orderDeterministic,
-      duplicateNames: match.duplicateNames
+      duplicateNames: match.duplicateNames,
+      sendReady: sendReady === true
     });
-    if (match.status !== "exact") {
-      return evidence === void 0 ? { status: match.status, source: "live_surface" } : { status: match.status, source: "live_surface", providerEvidenceDigest: evidence };
+    if (observedStatus !== "exact") {
+      return evidence === void 0 ? { status: observedStatus, source: "live_surface" } : { status: observedStatus, source: "live_surface", providerEvidenceDigest: evidence };
     }
     return evidence === void 0 ? { status: "unavailable", source: "live_surface" } : {
       status: "exact",
@@ -33678,6 +34450,23 @@ function createChatGPTAttachmentProvider(options) {
     const evidence = safeEvidence2(normalized.evidenceDigest, "chatgpt-attachment-precondition", material);
     if (evidence === void 0) return { status: "uncertain", quarantine: "provider" };
     if (current.directActivationSelector === void 0 && current.menuOpenerSelector !== void 0) {
+      const cdpSend = await resolveCdpSend(page, preparationOptions.timeoutMs);
+      if (cdpSend !== void 0) {
+        hiddenInputActivation = async ({ timeoutMs }) => {
+          const raw = cdpSend("Runtime.evaluate", {
+            expression: ACTIVE_COMPOSER_FILE_INPUT_CLICK_EXPRESSION,
+            userGesture: true,
+            awaitPromise: true,
+            returnByValue: true
+          }, { timeoutMs });
+          const evaluation = await awaitMutating(raw);
+          if (!cdpActivationAccepted(evaluation)) throw new Error("scoped file-input activation was refused");
+        };
+        if (isAnyAbortRequested(normalized.signal, request.signal, request.deadlineAt)) {
+          return { status: "uncertain", quarantine: "caller" };
+        }
+        return { status: "prepared", providerEvidenceDigest: evidence };
+      }
       const opener = locatorFor(page, current.menuOpenerSelector);
       if (opener === void 0) return { status: "not_satisfied", blockerCode: "selector_drift" };
       const click = safeMethod2(opener, "click");
@@ -33707,6 +34496,13 @@ function createChatGPTAttachmentProvider(options) {
     if (isAnyAbortRequested(normalized.signal, request.signal, request.deadlineAt) || !isSafeTarget(target)) return void 0;
     const current = await probe(page, expectedFactsForRequest(request), request.signal, request.deadlineAt);
     if (current === void 0 || current.status !== "ready") return void 0;
+    if (hiddenInputActivation !== void 0) {
+      return {
+        activate: hiddenInputActivation,
+        candidateCount: 1,
+        capabilityKey: CAPABILITY_KEY
+      };
+    }
     const selector = menuOpened ? current.menuUploadSelector : current.directActivationSelector;
     if (selector === void 0 || current.activationCandidateCount !== 1) return void 0;
     const locator = locatorFor(page, selector);
@@ -33779,6 +34575,9 @@ function normalizeOptions6(value) {
     ...localeLabels.addPhotosFilesMenuItem,
     ...localeLabels.projectSourcesUploadFiles
   ].filter((label) => typeof label === "string" && label.length > 0 && label.length <= MAX_PROBE_TEXT))]);
+  const sendLabels = Object.freeze([...new Set(
+    localeLabels.sendButton.filter((label) => typeof label === "string" && label.length > 0 && label.length <= MAX_PROBE_TEXT)
+  )]);
   const snapshot = snapshotFileIdentities(files);
   const identityDigestSet = /* @__PURE__ */ new Set();
   const identityDigests = Object.freeze(snapshot.map((file, ordinal) => {
@@ -33813,7 +34612,8 @@ function normalizeOptions6(value) {
     manifestFacts: Object.freeze(snapshot.map((file) => Object.freeze({ ...file.manifest }))),
     ...locale === void 0 ? {} : { locale },
     ...signal === void 0 ? {} : { signal },
-    labelCandidates: labels
+    labelCandidates: labels,
+    sendLabelCandidates: sendLabels
   });
 }
 async function readComposerProbe(page, timeoutMs, labelCandidates, signal, expected) {
@@ -33838,12 +34638,63 @@ async function readComposerProbe(page, timeoutMs, labelCandidates, signal, expec
   }
   return normalizeProbe(raw);
 }
+async function readComposerSendReadiness(page, timeoutMs, labelCandidates, signal) {
+  if (signal?.aborted) return void 0;
+  const evaluate = safeMethod2(page, "evaluate");
+  if (evaluate === void 0) return void 0;
+  try {
+    const pending2 = evaluate.call(page, inspectChatGPTSendReadiness, {
+      labels: [...labelCandidates]
+    }, { timeout: timeoutMs });
+    const raw = await boundedNative(pending2, timeoutMs);
+    if (!isDataRecord(raw) || !hasExactKeys2(raw, ["status"])) return void 0;
+    const status = readOwn(raw, "status");
+    return status === "ready" ? true : status === "not_ready" ? false : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function inspectChatGPTSendReadiness(argument) {
+  const record = argument !== null && typeof argument === "object" && !Array.isArray(argument) ? argument : {};
+  const labels = Array.isArray(record.labels) ? record.labels.filter((label) => typeof label === "string" && label.length <= 512).map((label) => label.replace(/\s+/gu, " ").trim().toLocaleLowerCase()) : [];
+  const visible = (element) => {
+    if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']")) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && (rect.width > 0 || rect.height > 0);
+  };
+  const textboxes = [...document.querySelectorAll(
+    "textarea, [contenteditable='true'], [role='textbox']"
+  )].filter(visible);
+  const roots = [...new Set(textboxes.map(
+    (textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")
+  ).filter((root) => root !== null))];
+  if (roots.length !== 1) return { status: "ambiguous" };
+  const controls = [...roots[0].querySelectorAll("button, [role='button']")];
+  if (controls.length > 256) return { status: "ambiguous" };
+  const candidates = controls.filter((control2) => {
+    if (!visible(control2)) return false;
+    if (control2.id === "composer-submit-button" || control2.getAttribute("data-testid") === "send-button") return true;
+    const accessible = [
+      control2.getAttribute("aria-label"),
+      control2.getAttribute("title"),
+      control2.textContent
+    ].filter((value) => typeof value === "string").join(" ").replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+    return labels.includes(accessible);
+  });
+  if (candidates.length !== 1) return { status: "ambiguous" };
+  const control = candidates[0];
+  const enabled = control.disabled !== true && !control.hasAttribute("disabled") && control.getAttribute("aria-disabled") !== "true" && !control.hasAttribute("inert") && control.getAttribute("aria-hidden") !== "true";
+  return { status: enabled ? "ready" : "not_ready" };
+}
 function inspectChatGPTComposer(argument) {
+  const MAX_PROBE_ITEMS2 = 256;
+  const MAX_PROBE_TEXT2 = 512;
   const record = argument !== null && typeof argument === "object" && !Array.isArray(argument) ? argument : {};
   const labels = Array.isArray(record.labels) ? record.labels.filter((label) => typeof label === "string" && label.length <= 512) : [];
   const expected = [];
   if (Array.isArray(record.expected)) {
-    if (record.expected.length > MAX_PROBE_ITEMS) throw new Error("probe limit exceeded");
+    if (record.expected.length > MAX_PROBE_ITEMS2) throw new Error("probe limit exceeded");
     for (const item of record.expected) {
       if (item === null || typeof item !== "object" || Array.isArray(item)) continue;
       const entry = item;
@@ -33852,24 +34703,86 @@ function inspectChatGPTComposer(argument) {
     }
     expected.sort((left, right) => left.ordinal - right.ordinal);
   }
-  const boundedQuery = (root2, selector, maxMatched = MAX_PROBE_ITEMS, maxVisited = 4096) => {
-    const ownerDocument = root2.nodeType === 9 ? root2 : root2.ownerDocument;
-    if (ownerDocument === null || typeof ownerDocument.createTreeWalker !== "function") {
-      throw new Error("DOM traversal unavailable");
-    }
-    const walker = ownerDocument.createTreeWalker(root2, 4294967295);
-    const matches = [];
+  const boundedQuery = (root2, selector, maxMatched = MAX_PROBE_ITEMS2, maxVisited = 4096) => {
+    const simpleMatch = (element, token) => {
+      let offset = 0;
+      const tag = /^[A-Za-z][A-Za-z0-9-]*/u.exec(token);
+      if (tag !== null) {
+        if (element.tagName.toLocaleLowerCase() !== tag[0].toLocaleLowerCase()) return false;
+        offset = tag[0].length;
+      }
+      while (offset < token.length) {
+        if (token[offset] !== "[") return false;
+        const close = token.indexOf("]", offset + 1);
+        if (close < 0) return false;
+        const expression = token.slice(offset + 1, close).trim();
+        const attribute = /^([A-Za-z0-9_:-]+)(?:(\*=|=)'([^']*)'(?:\s+(i))?)?$/u.exec(expression);
+        if (attribute === null) return false;
+        const actual = element.getAttribute(attribute[1]);
+        if (attribute[2] === void 0) {
+          if (actual === null) return false;
+        } else {
+          if (actual === null) return false;
+          const insensitive = attribute[4] === "i";
+          const left = insensitive ? actual.toLocaleLowerCase() : actual;
+          const rightValue = attribute[3] ?? "";
+          const right = insensitive ? rightValue.toLocaleLowerCase() : rightValue;
+          if (attribute[2] === "=" ? left !== right : !left.includes(right)) return false;
+        }
+        offset = close + 1;
+      }
+      return true;
+    };
+    const tokensFor = (branch) => {
+      const tokens = [];
+      let depth = 0;
+      let start = 0;
+      for (let index = 0; index <= branch.length; index += 1) {
+        const character = branch[index];
+        if (character === "[") depth += 1;
+        if (character === "]") depth -= 1;
+        if ((character === void 0 || /\s/u.test(character)) && depth === 0) {
+          const token = branch.slice(start, index).trim();
+          if (token.length > 0) tokens.push(token);
+          start = index + 1;
+        }
+      }
+      return tokens;
+    };
+    const selectorMatch = (element) => {
+      for (const rawBranch of selector.split(",")) {
+        const tokens = tokensFor(rawBranch.trim());
+        if (tokens.length === 0 || !simpleMatch(element, tokens[tokens.length - 1])) continue;
+        let ancestor = element.parentNode;
+        let tokenIndex = tokens.length - 2;
+        while (tokenIndex >= 0) {
+          while (ancestor !== null && (ancestor.nodeType !== 1 || !simpleMatch(ancestor, tokens[tokenIndex]))) {
+            ancestor = ancestor.parentNode;
+          }
+          if (ancestor === null) break;
+          tokenIndex -= 1;
+          ancestor = ancestor.parentNode;
+        }
+        if (tokenIndex < 0) return true;
+      }
+      return false;
+    };
     let visited = 0;
-    let current = walker.nextNode();
+    const matches = [];
+    let current = root2.firstChild;
     while (current !== null) {
       visited += 1;
       if (visited > maxVisited) throw new Error("probe limit exceeded");
-      const element = current.nodeType === 1 ? current : void 0;
-      if (element !== void 0 && element.matches(selector)) {
-        matches.push(element);
+      if (current.nodeType === 1 && selectorMatch(current)) {
+        matches.push(current);
         if (matches.length > maxMatched) throw new Error("probe limit exceeded");
       }
-      current = walker.nextNode();
+      if (current.firstChild !== null) {
+        current = current.firstChild;
+        continue;
+      }
+      while (current !== null && current !== root2 && current.nextSibling === null) current = current.parentNode;
+      current = current === null || current === root2 ? null : current.nextSibling;
     }
     return matches;
   };
@@ -33885,7 +34798,7 @@ function inspectChatGPTComposer(argument) {
       if (current.nodeType === 3) {
         const value = current.nodeValue ?? "";
         total += value.length;
-        if (total > MAX_PROBE_TEXT) throw new Error("probe text limit exceeded");
+        if (total > MAX_PROBE_TEXT2) throw new Error("probe text limit exceeded");
         if (value.length > 0) chunks.push(value);
       }
       const child = current.firstChild;
@@ -33903,17 +34816,25 @@ function inspectChatGPTComposer(argument) {
   };
   const boundedAttribute = (element, name) => {
     const value = element.getAttribute(name) ?? "";
-    if (value.length > MAX_PROBE_TEXT) throw new Error("probe text limit exceeded");
+    if (value.length > MAX_PROBE_TEXT2) throw new Error("probe text limit exceeded");
     return value;
   };
   const unique = (values) => [...new Set(values)];
   const visible = (element) => {
     const html = element;
-    if (html.hidden || html.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+    let ancestor = html;
+    for (let depth = 0; ancestor !== null && depth < 4096; depth += 1) {
+      if (ancestor.nodeType === 1) {
+        const candidate = ancestor;
+        if (candidate.hasAttribute("hidden") || candidate.hasAttribute("inert") || candidate.getAttribute("aria-hidden") === "true") return false;
+      }
+      ancestor = ancestor.parentNode;
+    }
+    if (ancestor !== null) throw new Error("probe limit exceeded");
     const style = window.getComputedStyle(html);
     if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
-    const rect = html.getBoundingClientRect();
-    return rect.width > 0 || rect.height > 0;
+    const rect = typeof html.getBoundingClientRect === "function" ? html.getBoundingClientRect() : void 0;
+    return rect === void 0 || rect.width > 0 || rect.height > 0;
   };
   const semanticControl = (element) => {
     const structural = [
@@ -33940,21 +34861,22 @@ function inspectChatGPTComposer(argument) {
         segments.unshift(`#${id2}`);
         break;
       }
-      const parent = current.parentElement;
+      const parentNode = current.parentNode;
+      const parent = parentNode?.nodeType === 1 ? parentNode : null;
       if (parent === null) {
         segments.unshift(current.tagName.toLocaleLowerCase());
         break;
       }
       let ordinal = 0;
-      let sibling = parent.firstElementChild;
+      let sibling = parent.firstChild;
       while (sibling !== null) {
-        if (sibling.tagName === current.tagName) {
+        if (sibling.nodeType === 1 && sibling.tagName === current.tagName) {
           ordinal += 1;
           if (sibling === current) break;
         }
-        sibling = sibling.nextElementSibling;
+        sibling = sibling.nextSibling;
       }
-      if (ordinal === 0 || ordinal > MAX_PROBE_ITEMS) throw new Error("probe limit exceeded");
+      if (ordinal === 0 || ordinal > MAX_PROBE_ITEMS2) throw new Error("probe limit exceeded");
       segments.unshift(`${current.tagName.toLocaleLowerCase()}:nth-of-type(${ordinal})`);
       current = parent;
     }
@@ -34005,8 +34927,16 @@ function inspectChatGPTComposer(argument) {
   };
   const inputFacts = (input2) => {
     const files = input2.files;
-    if (files === null) return { readable: false, facts: [] };
-    if (files.length > MAX_PROBE_ITEMS) throw new Error("probe limit exceeded");
+    if (files === null || files === void 0) {
+      let value;
+      try {
+        value = input2.value;
+      } catch {
+        return { readable: false, facts: [] };
+      }
+      return { readable: typeof value === "string" && value.length === 0, facts: [] };
+    }
+    if (files.length > MAX_PROBE_ITEMS2) throw new Error("probe limit exceeded");
     const facts2 = [];
     for (let index = 0; index < files.length; index += 1) {
       const file = files.item(index);
@@ -34038,13 +34968,15 @@ function inspectChatGPTComposer(argument) {
     const rawSet = new Set(raw);
     const nestedContainers = /* @__PURE__ */ new Set();
     for (const other of raw) {
-      let ancestor = other.parentElement;
+      let ancestorNode = other.parentNode;
+      let ancestor = ancestorNode?.nodeType === 1 ? ancestorNode : null;
       let depth = 0;
       while (ancestor !== null && depth < 4096) {
         if (rawSet.has(ancestor) && ancestor.getAttribute("data-file-name") === null && ancestor.getAttribute("data-filename") === null) {
           nestedContainers.add(ancestor);
         }
-        ancestor = ancestor.parentElement;
+        ancestorNode = ancestor.parentNode;
+        ancestor = ancestorNode?.nodeType === 1 ? ancestorNode : null;
         depth += 1;
       }
       if (ancestor !== null) throw new Error("probe limit exceeded");
@@ -34063,10 +34995,24 @@ function inspectChatGPTComposer(argument) {
     document,
     "textarea, [contenteditable='true'], [role='textbox']"
   ).filter(visible);
+  const composerAncestor = (textbox) => {
+    let fallback = null;
+    let current = textbox;
+    for (let depth = 0; current !== null && depth < 4096; depth += 1) {
+      if (current.nodeType === 1) {
+        const element = current;
+        if (element.tagName === "FORM") return element;
+        const testId = (element.getAttribute("data-testid") ?? "").toLocaleLowerCase();
+        const classTokens = (element.getAttribute("class") ?? "").toLocaleLowerCase().split(/\s+/u);
+        if (fallback === null && (testId.includes("composer") || classTokens.includes("composer-parent") || classTokens.includes("group/composer"))) fallback = element;
+      }
+      current = current.parentNode;
+    }
+    if (current !== null) throw new Error("probe limit exceeded");
+    return fallback;
+  };
   const roots = [...new Set(
-    textboxes.map(
-      (textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")
-    ).filter((root2) => root2 !== null && visible(root2))
+    textboxes.map(composerAncestor).filter((root2) => root2 !== null && visible(root2))
   )];
   if (roots.length !== 1) {
     return {
@@ -34084,7 +35030,7 @@ function inspectChatGPTComposer(argument) {
   }
   const root = roots[0];
   const allInputs = boundedQuery(root, "input[type='file']").filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
-  const preferred = allInputs.filter((input2) => input2.id === "upload-files");
+  const preferred = allInputs.filter((input2) => input2.getAttribute("id") === "upload-files");
   const nonImage = allInputs.filter((input2) => input2.getAttribute("accept") !== "image/*");
   const inputs = preferred.length === 1 ? preferred : allInputs.length === 1 ? allInputs : nonImage.length === 1 ? nonImage : [];
   if (inputs.length !== 1) {
@@ -34113,19 +35059,31 @@ function inspectChatGPTComposer(argument) {
     root,
     "label, button, [role='button'], [role='menuitem']"
   ).filter(visible);
+  const contains = (container, candidate) => {
+    let current = candidate;
+    for (let depth = 0; current !== null && depth < 4096; depth += 1) {
+      if (current === container) return true;
+      current = current.parentNode;
+    }
+    if (current !== null) throw new Error("probe limit exceeded");
+    return false;
+  };
   const directCandidates = unique(controls.filter((control) => {
-    if (control.getAttribute("aria-haspopup") === "menu" && !control.contains(input)) return false;
-    if (control === input || control.contains(input)) return true;
-    if (input.id.length > 0 && (control.getAttribute("for") === input.id || control.getAttribute("aria-controls") === input.id)) return true;
+    const inputId = input.getAttribute("id") ?? "";
+    if (control.getAttribute("aria-haspopup") === "menu" && !contains(control, input)) return false;
+    if (control === input || contains(control, input)) return true;
+    if (inputId.length > 0 && (control.getAttribute("for") === inputId || control.getAttribute("aria-controls") === inputId)) return true;
     const inputRef = control.getAttribute("data-input-id") ?? control.getAttribute("data-file-input");
-    return input.id.length > 0 && inputRef === input.id || semanticControl(control);
+    return inputId.length > 0 && inputRef === inputId || semanticControl(control);
   }));
   const menuRootItems = boundedQuery(document, "[role='menu'] [role='menuitem']").filter(visible);
-  const menuItems = (menuRootItems.length > 0 ? menuRootItems : boundedQuery(
+  const menuFallbackItems = unique(boundedQuery(
     document,
-    "[role='menu'] div[tabindex='0']"
-  ).filter(visible)).filter((item) => {
-    if (input.id.length > 0 && item.getAttribute("aria-controls") === input.id) return true;
+    "[role='menu'] div[tabindex='0'], [role='group'] div[tabindex='0'], [class*='popover' i] div[tabindex='0']"
+  ).filter(visible));
+  const menuItems = (menuRootItems.length > 0 ? menuRootItems : menuFallbackItems).filter((item) => {
+    const inputId = input.getAttribute("id") ?? "";
+    if (inputId.length > 0 && item.getAttribute("aria-controls") === inputId) return true;
     return semanticControl(item);
   });
   const menuOpeners = unique(boundedQuery(root, "button, [role='button']").filter(visible).filter((control) => control.getAttribute("aria-haspopup") === "menu" && (semanticControl(control) || control.getAttribute("data-testid") !== null)));
@@ -34134,7 +35092,11 @@ function inspectChatGPTComposer(argument) {
   const menuOpenerSelector = menuOpeners.length === 1 ? cssPath(menuOpeners[0]) : void 0;
   const candidateCount = directCandidates.length > 0 ? directCandidates.length : menuItems.length > 0 ? menuItems.length : menuOpenerSelector !== void 0 ? 1 : 0;
   return {
-    status: candidateCount === 1 ? "ready" : "ambiguous",
+    // Composer/input identity and activation identity are separate contracts.
+    // Once a file is attached ChatGPT legitimately adds tile/remove controls,
+    // so candidateCount can exceed one while the attachment surface remains
+    // exact. Mutation paths validate activationCandidateCount independently.
+    status: "ready",
     composerCount: 1,
     fileInputCount: allInputs.length,
     inputFilesReadable: inputResult.readable,
@@ -34343,6 +35305,36 @@ function locatorFor(page, selector) {
     return void 0;
   }
 }
+async function resolveCdpSend(page, timeoutMs) {
+  const capabilities = readOwn(page, "capabilities");
+  if (!isSafeProviderObject2(capabilities)) return void 0;
+  const get = providerCallable3(capabilities, "get");
+  if (get === void 0) return void 0;
+  try {
+    const pending2 = get("cdp");
+    const capability2 = isNativePromise2(pending2) ? await boundedNative(pending2, timeoutMs) : pending2;
+    if (!isSafeProviderObject2(capability2)) return void 0;
+    return providerCallable3(capability2, "send");
+  } catch {
+    return void 0;
+  }
+}
+function cdpActivationAccepted(evaluation) {
+  if (!isPlainDataRecord(evaluation)) return false;
+  const result3 = readOwn(evaluation, "result");
+  const wrapped = isPlainDataRecord(result3) ? readOwn(result3, "value") : void 0;
+  const value = wrapped ?? evaluation;
+  return isPlainDataRecord(value) && readOwn(value, "ok") === true;
+}
+function providerCallable3(value, key) {
+  try {
+    const candidate = Reflect.get(value, key, value);
+    if (typeof candidate !== "function") return void 0;
+    return (...args) => Reflect.apply(candidate, value, args);
+  } catch {
+    return void 0;
+  }
+}
 function safeEvidence2(evidenceDigest, domain, material) {
   try {
     const value = evidenceDigest(domain, material);
@@ -34352,7 +35344,7 @@ function safeEvidence2(evidenceDigest, domain, material) {
   }
 }
 async function boundedNative(value, timeoutMs) {
-  if (!(value instanceof Promise)) {
+  if (!isNativePromise2(value)) {
     if (value !== null && typeof value === "object") throw new Error("provider callback promise is not native");
     return value;
   }
@@ -34368,9 +35360,16 @@ async function boundedNative(value, timeoutMs) {
   });
 }
 async function awaitMutating(value) {
-  if (value instanceof Promise) return await value;
+  if (isNativePromise2(value)) return await value;
   if (value !== null && typeof value === "object") throw new Error("provider mutation promise is not native");
   return value;
+}
+function isNativePromise2(value) {
+  try {
+    return nodeTypes2.isPromise(value);
+  } catch {
+    return false;
+  }
 }
 function safeMethod2(value, key) {
   let current = value;
@@ -34407,17 +35406,9 @@ function isSafeProviderObject2(value) {
   }
 }
 function isDataRecord(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!isPlainDataRecord(value)) return false;
   try {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return false;
-    const descriptors2 = Object.getOwnPropertyDescriptors(value);
-    for (const key of Reflect.ownKeys(descriptors2)) {
-      if (typeof key !== "string") return false;
-      const descriptor = descriptors2[key];
-      if (descriptor === void 0 || !("value" in descriptor) || descriptor.get !== void 0 || descriptor.set !== void 0) return false;
-    }
-    return true;
+    return Reflect.ownKeys(Object.getOwnPropertyDescriptors(value)).every((key) => typeof key === "string");
   } catch {
     return false;
   }
@@ -34626,7 +35617,7 @@ var MAX_ARTIFACTS_PER_TURN2 = 32;
 var MAX_TEXT_CHARS = 1e6;
 var MAX_TOTAL_TEXT_CHARS = 8e6;
 var MAX_RESPONSE_BYTES2 = 8 * 1024 * 1024;
-var MAX_NODES = 4096;
+var MAX_NODES = 32768;
 var MAX_ATTRIBUTE_LENGTH = 4096;
 var MAX_ARTIFACT_BYTES = 128 * 1024 * 1024;
 var OPAQUE_URL_PREFIX = "https://opaque.invalid/thread/";
@@ -34704,7 +35695,7 @@ function readPageObservation(args) {
   const MAX_ARTIFACTS_PER_TURN3 = 32;
   const MAX_TEXT_CHARS2 = 1e6;
   const MAX_TOTAL_TEXT_CHARS2 = 8e6;
-  const MAX_NODES2 = 4096;
+  const MAX_NODES2 = 32768;
   const MAX_ATTRIBUTE_LENGTH2 = 4096;
   const MAX_ARTIFACT_BYTES3 = 128 * 1024 * 1024;
   const ID_PATTERN11 = /^[A-Za-z0-9._:-]{1,512}$/;
@@ -34727,9 +35718,9 @@ function readPageObservation(args) {
     const candidate = index >= 0 ? parts[index + 1] : void 0;
     return candidate !== void 0 && ID_PATTERN11.test(candidate) ? candidate : void 0;
   };
-  const uniqueNodeAttribute = (root, roleNode, names) => {
+  const uniqueNodeAttribute = (root, roleNodes, names) => {
     const values = /* @__PURE__ */ new Set();
-    for (const node of [root, roleNode]) {
+    for (const node of [root, ...roleNodes]) {
       for (const name of names) {
         const value = node.getAttribute(name);
         if (value !== null && value.length > 0) {
@@ -34740,6 +35731,22 @@ function readPageObservation(args) {
     }
     if (values.size > 1) throw new Error("unstable identity");
     return [...values][0];
+  };
+  const preferredNodeAttribute = (root, roleNodes, names) => {
+    for (const name of names) {
+      const values = /* @__PURE__ */ new Set();
+      for (const node of [root, ...roleNodes]) {
+        const value = node.getAttribute(name);
+        if (value !== null && value.length > 0) {
+          if (value.length > MAX_ATTRIBUTE_LENGTH2 || !ID_PATTERN11.test(value)) throw new Error("attribute drift");
+          values.add(value);
+        }
+      }
+      if (values.size > 1) throw new Error("unstable identity");
+      const selected = [...values][0];
+      if (selected !== void 0) return selected;
+    }
+    return void 0;
   };
   const boundedText = (value, max) => {
     if (value.length > max || value.includes("\0")) throw new Error("text limit exceeded");
@@ -34791,9 +35798,9 @@ function readPageObservation(args) {
   const captureAssistantTurnId = args?.captureAssistantTurnId;
   if (captureAssistantTurnId !== void 0 && !isBoundedId3(captureAssistantTurnId)) throw new Error("capture identity unavailable");
   const allowBlankTask = args?.allowBlankTask === true;
-  const documentRoot = globalThis.document;
+  const documentRoot = typeof document === "undefined" ? void 0 : document;
   if (documentRoot === void 0) throw new Error("document unavailable");
-  const locationRoot = globalThis.location;
+  const locationRoot = typeof location === "undefined" ? void 0 : location;
   const currentUrl = locationRoot?.href;
   if (typeof currentUrl !== "string" || currentUrl.length === 0 || currentUrl.length > MAX_ATTRIBUTE_LENGTH2) {
     throw new Error("navigation unavailable");
@@ -34808,6 +35815,7 @@ function readPageObservation(args) {
   let roleNodeCount = 0;
   let blankTaskMarker = false;
   let visibleComposerCount = 0;
+  let visibleStructuralStopControlCount = 0;
   let completenessMarker;
   let visitedNodes = 0;
   const consumeNode2 = () => {
@@ -34824,10 +35832,18 @@ function readPageObservation(args) {
       }
     }
   };
-  const isTurnRoot = (element) => {
+  const isStructuralTurnRoot = (element) => {
     const testId = element.getAttribute("data-testid");
-    return testId !== null && testId.startsWith("conversation-turn") || element.hasAttribute("data-conversation-turn-id") || element.hasAttribute("data-turn-id") || element.hasAttribute("data-message-id");
+    return testId !== null && testId.startsWith("conversation-turn") || element.hasAttribute("data-conversation-turn-id") || element.hasAttribute("data-turn-id");
   };
+  const isFallbackTurnRoot = (element) => element.hasAttribute("data-message-id") && element.hasAttribute("data-message-author-role");
+  const isRendered = (element) => {
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(element) : void 0;
+    if (style !== void 0 && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) return false;
+    const rect = typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : void 0;
+    return rect === void 0 || rect.width > 0 || rect.height > 0;
+  };
+  const isStructuralStopControl = (element) => element.tagName.toLowerCase() === "button" && (element.getAttribute("data-testid") === "stop-button" || element.getAttribute("id") === "composer-stop-button");
   const isIgnoredMessageElement = (element) => {
     const tag = element.tagName.toLowerCase();
     return tag === "button" || tag === "script" || tag === "style" || tag === "svg" || element.getAttribute("role") === "button" || element.getAttribute("aria-hidden") === "true";
@@ -34885,10 +35901,18 @@ function readPageObservation(args) {
     activeArtifacts.push(state);
     return state;
   };
-  const ownerDocument = typeof documentRoot.createTreeWalker === "function" ? documentRoot : void 0;
-  if (ownerDocument === void 0) throw new Error("DOM traversal unavailable");
-  const walker = ownerDocument.createTreeWalker(documentRoot, 4294967295);
-  let current = walker.nextNode();
+  const nextDepthFirstNode = (node, root) => {
+    if (node.firstChild !== null) return node.firstChild;
+    let cursor = node;
+    while (cursor !== null && cursor !== root) {
+      if (cursor.nextSibling !== null) return cursor.nextSibling;
+      cursor = cursor.parentNode;
+    }
+    return null;
+  };
+  const mainRoot = typeof documentRoot.getElementById === "function" ? documentRoot.getElementById("main") : null;
+  const traversalRoot = mainRoot !== null && mainRoot.tagName.toLowerCase() === "main" ? mainRoot : documentRoot;
+  let current = traversalRoot.firstChild;
   while (current !== null) {
     consumeNode2();
     while (activeElements.length > 0 && activeElements[activeElements.length - 1]?.element !== current.parentNode) {
@@ -34902,8 +35926,23 @@ function readPageObservation(args) {
       const element = current;
       const parent = activeElements[activeElements.length - 1];
       const inheritedTurn = parent?.turn;
-      const rootCandidate = isTurnRoot(element);
-      if (rootCandidate && inheritedTurn !== void 0) throw new Error("nested turn root");
+      const inheritedHidden = parent?.hiddenAncestor ?? false;
+      const ownHidden = element.hidden === true || element.hasAttribute("hidden") || element.hasAttribute("inert") || element.getAttribute("aria-hidden") === "true";
+      const hiddenAncestor = inheritedHidden || ownHidden;
+      const role = element.getAttribute("data-message-author-role");
+      const structuralTurnCandidate = isStructuralTurnRoot(element);
+      const fallbackTurnCandidate = inheritedTurn === void 0 && isFallbackTurnRoot(element);
+      const identityCandidate = element.hasAttribute("data-conversation-id") || element.hasAttribute("data-chat-id") || element.hasAttribute("data-thread-id") || element.hasAttribute("data-conversation-thread-id");
+      const completenessCandidate = element.hasAttribute("data-observation-completeness") || element.hasAttribute("data-conversation-completeness") || element.hasAttribute("data-turns-truncated");
+      const blankTaskCandidate = isBlankTaskMarker(element);
+      const composerCandidate = isComposer(element);
+      const stopControlCandidate = isStructuralStopControl(element);
+      const artifactCandidate = inheritedTurn !== void 0 && isArtifact(element);
+      const needsRenderedCheck = structuralTurnCandidate || fallbackTurnCandidate || role !== null || identityCandidate || completenessCandidate || blankTaskCandidate || composerCandidate || stopControlCandidate || artifactCandidate;
+      const semanticVisible = !hiddenAncestor && (!needsRenderedCheck || isRendered(element));
+      const structuralRoot = semanticVisible && structuralTurnCandidate;
+      const rootCandidate = structuralRoot || semanticVisible && fallbackTurnCandidate;
+      if (structuralRoot && inheritedTurn !== void 0) throw new Error("nested turn root");
       let turn = rootCandidate ? {
         root: element,
         roleMarkers: [],
@@ -34918,8 +35957,7 @@ function readPageObservation(args) {
         roots.push(turn);
       }
       if (parent !== void 0 && parent.turn?.root === parent.element) parent.turn.directChildCount += 1;
-      const role = element.getAttribute("data-message-author-role");
-      if (role !== null) {
+      if (role !== null && semanticVisible) {
         roleNodeCount += 1;
         if (role !== "user" && role !== "assistant") throw new Error("role drift");
         if (turn === void 0) {
@@ -34937,26 +35975,19 @@ function readPageObservation(args) {
         turn.roleMarkers.push(element);
         if (turn.firstRoleNode === void 0) turn.firstRoleNode = element;
       }
-      addIdentityValues(element, ["data-conversation-id", "data-chat-id"], conversationValues);
-      addIdentityValues(element, ["data-thread-id", "data-conversation-thread-id"], threadValues);
-      if (completenessMarker === void 0 && (element.hasAttribute("data-observation-completeness") || element.hasAttribute("data-conversation-completeness") || element.hasAttribute("data-turns-truncated"))) {
+      if (semanticVisible) addIdentityValues(element, ["data-conversation-id", "data-chat-id"], conversationValues);
+      if (semanticVisible) addIdentityValues(element, ["data-thread-id", "data-conversation-thread-id"], threadValues);
+      if (semanticVisible && completenessMarker === void 0 && completenessCandidate) {
         completenessMarker = (element.getAttribute("data-observation-completeness") ?? element.getAttribute("data-conversation-completeness") ?? element.getAttribute("data-turns-truncated") ?? "").toLowerCase();
       }
-      if (isBlankTaskMarker(element)) blankTaskMarker = true;
-      const inheritedHidden = parent?.hiddenAncestor ?? false;
-      const ownHidden = element.hidden === true || element.hasAttribute("hidden") || element.hasAttribute("inert") || element.getAttribute("aria-hidden") === "true";
-      const hiddenAncestor = inheritedHidden || ownHidden;
-      if (!hiddenAncestor && isComposer(element)) {
-        const style = globalThis.getComputedStyle?.(element);
-        if (style === void 0 || style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0") {
-          visibleComposerCount += 1;
-        }
-      }
+      if (semanticVisible && blankTaskCandidate) blankTaskMarker = true;
+      if (semanticVisible && composerCandidate) visibleComposerCount += 1;
+      if (semanticVisible && stopControlCandidate) visibleStructuralStopControlCount += 1;
       const selectedRoleNode = turn?.firstRoleNode === element;
       const messageOwner = selectedRoleNode ? turn : parent?.messageOwner;
-      const messageIgnored = selectedRoleNode ? false : (parent?.messageIgnored ?? false) || isIgnoredMessageElement(element);
+      const messageIgnored = selectedRoleNode ? false : (parent?.messageIgnored ?? false) || hiddenAncestor || isIgnoredMessageElement(element);
       let artifact;
-      if (turn !== void 0 && turn.root !== element && isArtifact(element)) artifact = readArtifact(element, turn);
+      if (semanticVisible && turn !== void 0 && turn.root !== element && artifactCandidate) artifact = readArtifact(element, turn);
       activeElements.push({
         element,
         ...turn === void 0 ? {} : { turn },
@@ -34978,7 +36009,7 @@ function readPageObservation(args) {
         if (value.length > 0) owner.messageOwner.messageChunks.push(value);
       }
     }
-    current = walker.nextNode();
+    current = nextDepthFirstNode(current, traversalRoot);
   }
   while (activeElements.length > 0) {
     const closed = activeElements.pop();
@@ -34986,6 +36017,9 @@ function readPageObservation(args) {
   }
   const conversationId = [...conversationValues][0];
   const threadId = [...threadValues][0];
+  if (conversationId !== void 0 && fromUrl !== void 0 && conversationId !== fromUrl) {
+    throw new Error("conversation navigation mismatch");
+  }
   const resolvedConversationId = conversationId ?? fromUrl;
   const resolvedThreadId = threadId ?? resolvedConversationId;
   if ((resolvedConversationId === void 0 || resolvedThreadId === void 0) && (!allowBlankTask || roleNodeCount !== 0 || !blankTaskMarker && visibleComposerCount !== 1)) {
@@ -34994,7 +36028,7 @@ function readPageObservation(args) {
   const outputRoots = roots.filter((root) => root.roleMarkers.length > 0);
   if (outputRoots.length > maxTurns) throw new Error("turn limit exceeded");
   let totalTextChars = 0;
-  const turns = [];
+  let turns = [];
   for (const root of outputRoots) {
     const roleMarkers = root.roleMarkers;
     const distinctRoles = new Set(roleMarkers.map((node) => node.getAttribute("data-message-author-role")));
@@ -35003,10 +36037,14 @@ function readPageObservation(args) {
     if (role !== "user" && role !== "assistant") throw new Error("role drift");
     const roleNode = roleMarkers[0];
     if (roleNode === void 0) throw new Error("role missing");
-    const stableId2 = uniqueNodeAttribute(root.root, roleNode, ["data-message-id", "data-turn-id", "data-conversation-turn-id"]);
+    const stableId2 = preferredNodeAttribute(root.root, roleMarkers, ["data-message-id", "data-conversation-turn-id", "data-turn-id"]);
     if (stableId2 === void 0) throw new Error("turn identity unavailable");
-    const parentStableId = uniqueNodeAttribute(root.root, roleNode, ["data-parent-message-id", "data-parent-turn-id", "data-parent-id"]);
-    const branchStableId = uniqueNodeAttribute(root.root, roleNode, ["data-branch-id", "data-conversation-branch-id", "data-message-branch-id"]);
+    const explicitParentStableId = uniqueNodeAttribute(root.root, roleMarkers, ["data-parent-message-id", "data-parent-turn-id", "data-parent-id"]);
+    const explicitBranchStableId = uniqueNodeAttribute(root.root, roleMarkers, ["data-branch-id", "data-conversation-branch-id", "data-message-branch-id"]);
+    const previousTurn = turns.at(-1);
+    const parentStableId = role === "assistant" ? explicitParentStableId ?? (previousTurn?.role === "user" ? previousTurn.stableId : void 0) : explicitParentStableId;
+    if (role === "assistant" && parentStableId === void 0) throw new Error("branch ambiguity");
+    const branchStableId = role === "assistant" ? explicitBranchStableId ?? stableId2 : explicitBranchStableId;
     const text = boundedText(root.messageChunks.join("").replace(/\s+/g, " ").trim().normalize("NFC"), maxTextChars);
     totalTextChars += text.length;
     if (totalTextChars > MAX_TOTAL_TEXT_CHARS2) throw new Error("text limit exceeded");
@@ -35032,6 +36070,20 @@ function readPageObservation(args) {
       artifacts
     });
   }
+  if (visibleStructuralStopControlCount > 1) throw new Error("generation state ambiguity");
+  const assistantIndexes = turns.flatMap((turn, index) => turn.role === "assistant" ? [index] : []);
+  if (visibleStructuralStopControlCount === 1 && assistantIndexes.length === 0) throw new Error("assistant identity unavailable");
+  const latestAssistantIndex = assistantIndexes.at(-1);
+  turns = turns.map((turn, index) => {
+    if (turn.role !== "assistant") return turn;
+    const inferredState = visibleStructuralStopControlCount === 1 && index === latestAssistantIndex ? "generating" : "terminal";
+    if (turn.state !== void 0 && turn.state !== inferredState) throw new Error("unstable generation state");
+    return {
+      ...turn,
+      state: turn.state ?? inferredState,
+      ...(turn.state ?? inferredState) === "terminal" && turn.finishReason === void 0 ? { finishReason: "provider_terminal" } : {}
+    };
+  });
   validateRawTurnOrdering2(turns);
   const assistantTurns = turns.filter((turn) => turn.role === "assistant");
   if (assistantTurns.some((turn) => turn.state === void 0)) throw new Error("assistant state unavailable");
@@ -35398,17 +36450,7 @@ function validateRawTurnOrdering(turns) {
   }
 }
 function isRecord11(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  try {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return false;
-    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
-      if (!("value" in descriptor) || descriptor.get !== void 0 || descriptor.set !== void 0) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
+  return isPlainDataRecord(value);
 }
 function assertExactKeys5(value, allowed) {
   const allowedSet = new Set(allowed);
@@ -35493,7 +36535,19 @@ function createProductionOperationPrimitives(options) {
   });
   const sendObservers = Object.freeze({
     observePrecondition: (request) => observeSendPrecondition(request, options.evidenceDigest, state, options.observeAttachments),
-    observePostcondition: (request) => observeSendPostcondition(request, options.evidenceDigest, state)
+    observePostcondition: async (request) => {
+      const result3 = await observeSendPostcondition(request, options.evidenceDigest, state);
+      return result3.status === "blocked" && (result3.blockerCode === "ambiguous_submit" || result3.blockerCode === "target_evidence_unavailable") ? { result: result3, retryable: true } : result3;
+    },
+    // Every retry is an observation-only transaction. The delay remains
+    // outside the tab actor and can never repeat the Send activation.
+    sleep: sleepOutsideBrowser,
+    // ChatGPT can establish the canonical conversation URL before it exposes
+    // stable user/assistant DOM identities. Keep that provider settling window
+    // bounded without collapsing a successful one-shot Send into uncertainty.
+    maxPostconditionAttempts: 32,
+    postconditionIntervalMs: 250,
+    postconditionTimeoutMs: 15e3
   });
   const submission = Object.freeze({
     observeStaging: (request, page, target) => observeSubmissionStaging(request, page, target, options.evidenceDigest, state),
@@ -35601,7 +36655,7 @@ async function observeSubmissionStaging(request, page, target, evidenceDigest, s
   if (!isDigest7(request.configurationReceiptDigest) || !isDigest7(request.composerReceiptDigest)) {
     return { status: "unavailable", reason: "unknown" };
   }
-  const expectedConfiguration = state.requestDigest === void 0 ? void 0 : safeDigestWith(evidenceDigest, "configuration-request", { requestDigest: state.requestDigest });
+  const expectedConfiguration = state.requestDigest === void 0 ? void 0 : safeDigestWith(evidenceDigest, "configuration-request", state.requestDigest);
   const expectedComposer = state.requestDigest === void 0 ? void 0 : safeDigestWith(evidenceDigest, "composer-request", state.requestDigest);
   if (expectedConfiguration === void 0 || expectedComposer === void 0) {
     return { status: "unavailable", reason: "target" };
@@ -35653,7 +36707,7 @@ async function observeSendPrecondition(request, evidenceDigest, state, attachmen
   }
   if (state.desiredComposerText === void 0) return { status: "unavailable", code: "composer_drift" };
   const expectedComposer = safeDigestWith(evidenceDigest, "composer-request", state.requestDigest);
-  const expectedConfiguration = safeDigestWith(evidenceDigest, "configuration-request", { requestDigest: state.requestDigest });
+  const expectedConfiguration = safeDigestWith(evidenceDigest, "configuration-request", state.requestDigest);
   if (expectedComposer === void 0 || expectedConfiguration === void 0) {
     return { status: "unavailable", code: "target_evidence_unavailable" };
   }
@@ -35834,30 +36888,100 @@ async function readEmptyAttachmentState(page) {
   try {
     const result3 = await page.evaluate(() => {
       const visible = (element) => {
-        if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+        let ancestor = element;
+        for (let depth = 0; ancestor !== null && depth < 4096; depth += 1) {
+          if (ancestor.nodeType === 1) {
+            const candidate = ancestor;
+            if (candidate.hasAttribute("hidden") || candidate.hasAttribute("inert") || candidate.getAttribute("aria-hidden") === "true") return false;
+          }
+          ancestor = ancestor.parentNode;
+        }
+        if (ancestor !== null) throw new Error("node limit exceeded");
         const style = window.getComputedStyle(element);
         if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
-        const rect = element.getBoundingClientRect();
-        return rect.width > 0 || rect.height > 0;
+        const rect = typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : void 0;
+        return rect === void 0 || rect.width > 0 || rect.height > 0;
       };
       const boundedQuery = (root, selector, maxMatched = 4096, maxVisited = 4096) => {
-        const ownerDocument = root.nodeType === 9 ? root : root.ownerDocument;
-        if (ownerDocument === null || typeof ownerDocument.createTreeWalker !== "function") {
-          throw new Error("DOM traversal unavailable");
-        }
-        const walker = ownerDocument.createTreeWalker(root, 4294967295);
-        const matches = [];
+        const simpleMatch = (element, token) => {
+          let offset = 0;
+          const tag = /^[A-Za-z][A-Za-z0-9-]*/u.exec(token);
+          if (tag !== null) {
+            if (element.tagName.toLocaleLowerCase() !== tag[0].toLocaleLowerCase()) return false;
+            offset = tag[0].length;
+          }
+          while (offset < token.length) {
+            if (token[offset] !== "[") return false;
+            const close = token.indexOf("]", offset + 1);
+            if (close < 0) return false;
+            const expression = token.slice(offset + 1, close).trim();
+            const attribute = /^([A-Za-z0-9_:-]+)(?:(\*=|=)'([^']*)'(?:\s+(i))?)?$/u.exec(expression);
+            if (attribute === null) return false;
+            const actual = element.getAttribute(attribute[1]);
+            if (attribute[2] === void 0) {
+              if (actual === null) return false;
+            } else {
+              if (actual === null) return false;
+              const insensitive = attribute[4] === "i";
+              const left = insensitive ? actual.toLocaleLowerCase() : actual;
+              const rightValue = attribute[3] ?? "";
+              const right = insensitive ? rightValue.toLocaleLowerCase() : rightValue;
+              if (attribute[2] === "=" ? left !== right : !left.includes(right)) return false;
+            }
+            offset = close + 1;
+          }
+          return true;
+        };
+        const tokensFor = (branch) => {
+          const tokens = [];
+          let depth = 0;
+          let start = 0;
+          for (let index = 0; index <= branch.length; index += 1) {
+            const character = branch[index];
+            if (character === "[") depth += 1;
+            if (character === "]") depth -= 1;
+            if ((character === void 0 || /\s/u.test(character)) && depth === 0) {
+              const token = branch.slice(start, index).trim();
+              if (token.length > 0) tokens.push(token);
+              start = index + 1;
+            }
+          }
+          return tokens;
+        };
+        const selectorMatch = (element) => {
+          for (const rawBranch of selector.split(",")) {
+            const tokens = tokensFor(rawBranch.trim());
+            if (tokens.length === 0 || !simpleMatch(element, tokens[tokens.length - 1])) continue;
+            let ancestor = element.parentNode;
+            let tokenIndex = tokens.length - 2;
+            while (tokenIndex >= 0) {
+              while (ancestor !== null && (ancestor.nodeType !== 1 || !simpleMatch(ancestor, tokens[tokenIndex]))) {
+                ancestor = ancestor.parentNode;
+              }
+              if (ancestor === null) break;
+              tokenIndex -= 1;
+              ancestor = ancestor.parentNode;
+            }
+            if (tokenIndex < 0) return true;
+          }
+          return false;
+        };
         let visited = 0;
-        let current = walker.nextNode();
+        const matches = [];
+        let current = root.firstChild;
         while (current !== null) {
           visited += 1;
           if (visited > maxVisited) throw new Error("node limit exceeded");
-          const element = current.nodeType === 1 ? current : void 0;
-          if (element !== void 0 && element.matches(selector)) {
-            matches.push(element);
+          if (current.nodeType === 1 && selectorMatch(current)) {
+            matches.push(current);
             if (matches.length > maxMatched) throw new Error("node limit exceeded");
           }
-          current = walker.nextNode();
+          if (current.firstChild !== null) {
+            current = current.firstChild;
+            continue;
+          }
+          while (current !== null && current !== root && current.nextSibling === null) current = current.parentNode;
+          current = current === null || current === root ? null : current.nextSibling;
         }
         return matches;
       };
@@ -35865,8 +36989,24 @@ async function readEmptyAttachmentState(page) {
         document,
         "textarea, [contenteditable='true'], [role='textbox']"
       ).filter(visible);
+      const composerAncestor = (textbox) => {
+        let fallback = null;
+        let current = textbox;
+        for (let depth = 0; current !== null && depth < 4096; depth += 1) {
+          if (current.nodeType === 1) {
+            const element = current;
+            if (element.tagName === "FORM") return element;
+            const testId = (element.getAttribute("data-testid") ?? "").toLocaleLowerCase();
+            const classTokens = (element.getAttribute("class") ?? "").toLocaleLowerCase().split(/\s+/u);
+            if (fallback === null && (testId.includes("composer") || classTokens.includes("composer-parent") || classTokens.includes("group/composer"))) fallback = element;
+          }
+          current = current.parentNode;
+        }
+        if (current !== null) throw new Error("node limit exceeded");
+        return fallback;
+      };
       const composers = [...new Set(textboxes.map(
-        (textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")
+        (textbox) => composerAncestor(textbox)
       ).filter((value) => value !== null))];
       if (composers.length !== 1) return { supported: false, count: 0, visibleAttachmentCount: 0 };
       const inputs = boundedQuery(composers[0], "input[type='file']").filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
@@ -35920,7 +37060,8 @@ async function readLocatorText2(locator) {
     const value = await locator.evaluate((element) => {
       const candidate = element;
       const candidateValue = candidate.value;
-      if (typeof candidateValue === "string") {
+      const tag = typeof candidate.tagName === "string" ? candidate.tagName.toLowerCase() : "";
+      if ((tag === "input" || tag === "textarea" || tag === "select") && typeof candidateValue === "string") {
         return candidateValue.length <= 8 * 1024 * 1024 ? candidateValue : void 0;
       }
       const chunks = [];
@@ -36063,16 +37204,17 @@ function makeObservationTarget(target, state) {
 }
 async function readCollectorContext(request, page, target, evidenceDigest, state) {
   if (request.submissionActionId === void 0 || !isId(request.submissionActionId)) throw new ProductionPrimitiveError("submission_witness_unwired");
+  const baseline = request.baseline;
+  if (baseline === void 0) throw new ProductionPrimitiveError("target_evidence_unavailable");
   const observationTarget = makeObservationTarget(target, state);
   if (observationTarget === void 0) throw new ProductionPrimitiveError("target_evidence_unavailable");
   const observation = await observeBrowserPage(page, {
     operationId: request.operationId,
     target: observationTarget,
     evidenceDigest,
-    responseContent: "metadata"
+    responseContent: "metadata",
+    baseline
   });
-  const baseline = request.baseline;
-  if (baseline === void 0) throw new ProductionPrimitiveError("target_evidence_unavailable");
   const binding = {
     schemaVersion: TURN_OWNERSHIP_SCHEMA_VERSION,
     operationId: request.operationId,
@@ -36087,9 +37229,26 @@ async function readCollectorContext(request, page, target, evidenceDigest, state
     },
     replacementTabRecovery: false,
     actionId: request.submissionActionId,
-    actionKind: "send"
+    actionKind: request.submissionActionKind ?? "send"
   };
-  return { binding, baseline };
+  let prior;
+  if (request.submissionWitness !== void 0) {
+    try {
+      prior = classifyTurnOwnership({
+        binding,
+        baseline,
+        snapshot: observation.snapshot,
+        submissionWitness: request.submissionWitness
+      }).cursor;
+    } catch {
+      prior = void 0;
+    }
+  }
+  return {
+    binding,
+    baseline,
+    ...prior === void 0 ? {} : { prior }
+  };
 }
 async function observeCollector(request, page, target, context, evidenceDigest, state) {
   const observationTarget = makeObservationTarget(target, state);
@@ -36603,7 +37762,7 @@ var BrowserTargetError = class extends Error {
     this.code = code;
   }
 };
-function isPlainRecord4(value) {
+function isPlainRecord3(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   try {
     const prototype = Object.getPrototypeOf(value);
@@ -36621,7 +37780,7 @@ function fail(code, message) {
   throw new BrowserTargetError(code, message);
 }
 function assertPlainRecord(value, code, message) {
-  if (!isPlainRecord4(value)) fail(code, message);
+  if (!isPlainRecord3(value)) fail(code, message);
 }
 function assertExactKeys7(value, keys, code) {
   const allowed = new Set(keys);
@@ -36965,7 +38124,7 @@ function bindBrowserTarget(input) {
   };
   const withTabTransaction = async (options, callback) => {
     if (typeof callback !== "function") fail("invalid_target_evidence", "A transaction callback is required.");
-    if (!isPlainRecord4(options)) fail("invalid_target_evidence", "Transaction options are invalid.");
+    if (!isPlainRecord3(options)) fail("invalid_target_evidence", "Transaction options are invalid.");
     assertExactKeys7(options, ["priority", "signal", "deadlineAt", "timeoutMs", "label"], "invalid_target_evidence");
     const requestOptions = makeTransactionOptions(owner, options);
     const run = (acquisition) => callback(Object.freeze({
@@ -36993,7 +38152,7 @@ function bindBrowserTarget(input) {
     assertCurrent,
     ...pending2 ? {
       markTargetEstablished: (establishment) => {
-        if (!isPlainRecord4(establishment) || typeof establishment.conversationId !== "string" || !OPAQUE_ID_PATTERN2.test(establishment.conversationId) || typeof establishment.canonicalThreadUrl !== "string" || !OPAQUE_THREAD_URL_PATTERN2.test(establishment.canonicalThreadUrl)) return;
+        if (!isPlainRecord3(establishment) || typeof establishment.conversationId !== "string" || !OPAQUE_ID_PATTERN2.test(establishment.conversationId) || typeof establishment.canonicalThreadUrl !== "string" || !OPAQUE_THREAD_URL_PATTERN2.test(establishment.canonicalThreadUrl)) return;
         activeTarget = Object.freeze({
           providerId: target.providerId,
           browserId: target.browserId,
@@ -37444,13 +38603,13 @@ async function observeExistingTurn(request, expected, baseline, activation, muta
   return mutationMayHaveOccurred ? uncertain(evidenceOf(lastResult)) : blocked3("operation_timeout");
 }
 function normalizePostconditionProbe(value) {
-  if (isPlainRecord5(value) && hasOwnDataProperty(value, "result") && hasOwnDataProperty(value, "retryable")) {
+  if (isPlainRecord4(value) && hasOwnDataProperty(value, "result") && hasOwnDataProperty(value, "retryable")) {
     const record = value;
     assertExactKeys8(record, ["result", "retryable"]);
     const result3 = record.result;
     const retryable = record.retryable;
     if (typeof retryable !== "boolean") throw new Error("invalid postcondition retry flag");
-    if (!isPlainRecord5(result3)) throw new Error("invalid postcondition result");
+    if (!isPlainRecord4(result3)) throw new Error("invalid postcondition result");
     return { result: result3, retryable };
   }
   return { result: value, retryable: false };
@@ -37540,14 +38699,14 @@ async function resolveSendControl(page) {
   return enabled ? { status: "ready", locator: candidate } : { status: "not_ready" };
 }
 function validateRequest2(request) {
-  if (!isPlainRecord5(request)) throw new Error("invalid request");
+  if (!isPlainRecord4(request)) throw new Error("invalid request");
   if (!isPageLike(request.page)) throw new Error("invalid page");
   if (!isSafeId2(request.operationId) || !isDigest8(request.requestDigest) || !isSafeId2(request.actionId)) throw new Error("invalid identity");
   if (request.surface !== "chat" && request.surface !== "work") throw new Error("invalid surface");
   if (request.mode !== "mutate_once" && request.mode !== "observe_only") throw new Error("invalid mode");
   validateExpected(request.expected);
   if (request.expected.surface !== request.surface) throw new Error("surface mismatch");
-  if (!isPlainRecord5(request.observers) || typeof request.observers.observePrecondition !== "function" || typeof request.observers.observePostcondition !== "function") throw new Error("invalid observers");
+  if (!isPlainRecord4(request.observers) || typeof request.observers.observePrecondition !== "function" || typeof request.observers.observePostcondition !== "function") throw new Error("invalid observers");
   if (request.observers.sleep !== void 0 && typeof request.observers.sleep !== "function") throw new Error("invalid observer sleep");
   if (request.observers.maxPostconditionAttempts !== void 0 && (!Number.isSafeInteger(request.observers.maxPostconditionAttempts) || request.observers.maxPostconditionAttempts < 1 || request.observers.maxPostconditionAttempts > MAX_POSTCONDITION_ATTEMPTS)) throw new Error("invalid postcondition attempts");
   if (request.observers.postconditionIntervalMs !== void 0 && (!Number.isSafeInteger(request.observers.postconditionIntervalMs) || request.observers.postconditionIntervalMs < 0 || request.observers.postconditionIntervalMs > MAX_POSTCONDITION_INTERVAL_MS)) throw new Error("invalid postcondition interval");
@@ -37561,7 +38720,7 @@ function validateRequest2(request) {
   }
 }
 function validatePrepareRequest(request) {
-  if (!isPlainRecord5(request)) throw new Error("invalid prepare request");
+  if (!isPlainRecord4(request)) throw new Error("invalid prepare request");
   validateRequest2({
     page: request.page,
     operationId: request.operationId,
@@ -37577,17 +38736,17 @@ function validatePrepareRequest(request) {
   });
 }
 function validateExecutePreparedRequest(request) {
-  if (!isPlainRecord5(request) || !isPageLike(request.page)) throw new Error("invalid execute request");
+  if (!isPlainRecord4(request) || !isPageLike(request.page)) throw new Error("invalid execute request");
   validatePrepared(request.prepared);
-  if (!isPlainRecord5(request.observers) || typeof request.observers.observePrecondition !== "function" || typeof request.observers.observePostcondition !== "function") throw new Error("invalid observers");
+  if (!isPlainRecord4(request.observers) || typeof request.observers.observePrecondition !== "function" || typeof request.observers.observePostcondition !== "function") throw new Error("invalid observers");
   if (request.signal !== void 0 && !isAbortSignalLike3(request.signal)) throw new Error("invalid signal");
   if (request.deadlineAt !== void 0 && (!Number.isSafeInteger(request.deadlineAt) || request.deadlineAt < 0)) throw new Error("invalid deadline");
   if (request.transaction !== void 0 && typeof request.transaction !== "function") throw new Error("invalid transaction");
 }
 function validateVerifyRequest(request) {
-  if (!isPlainRecord5(request) || !isPageLike(request.page)) throw new Error("invalid verify request");
+  if (!isPlainRecord4(request) || !isPageLike(request.page)) throw new Error("invalid verify request");
   validatePrepared(request.prepared);
-  if (!isPlainRecord5(request.observers) || typeof request.observers.observePrecondition !== "function" || typeof request.observers.observePostcondition !== "function") throw new Error("invalid observers");
+  if (!isPlainRecord4(request.observers) || typeof request.observers.observePrecondition !== "function" || typeof request.observers.observePostcondition !== "function") throw new Error("invalid observers");
   if (request.activation !== "not_attempted" && request.activation !== "activated" && request.activation !== "activation_threw") throw new Error("invalid activation");
   if (typeof request.mutationMayHaveOccurred !== "boolean") throw new Error("invalid mutation boundary");
   if (!request.mutationMayHaveOccurred && request.activation !== "not_attempted") throw new Error("invalid non-mutating activation");
@@ -37595,7 +38754,7 @@ function validateVerifyRequest(request) {
   if (request.deadlineAt !== void 0 && (!Number.isSafeInteger(request.deadlineAt) || request.deadlineAt < 0)) throw new Error("invalid deadline");
 }
 function validateRecoverRequest(request) {
-  if (!isPlainRecord5(request)) throw new Error("invalid recover request");
+  if (!isPlainRecord4(request)) throw new Error("invalid recover request");
   validateRequest2({
     page: request.page,
     operationId: request.operationId,
@@ -37611,7 +38770,7 @@ function validateRecoverRequest(request) {
   });
 }
 function validatePrepared(value) {
-  if (!isPlainRecord5(value)) throw new Error("invalid prepared value");
+  if (!isPlainRecord4(value)) throw new Error("invalid prepared value");
   assertExactKeys8(value, ["schemaVersion", "operationId", "requestDigest", "surface", "actionId", "expected", "observation", "baseline"]);
   if (value.schemaVersion !== "chatgpt.browser_control.send_once_prepared.v1") throw new Error("invalid prepared schema");
   if (!isSafeId2(value.operationId) || !isDigest8(value.requestDigest) || !isSafeId2(value.actionId)) throw new Error("invalid prepared identity");
@@ -37624,26 +38783,26 @@ function validatePrepared(value) {
   if (!sameBaseline(value.baseline, value.observation.baseline)) throw new Error("prepared baseline mismatch");
 }
 function validateExpected(value) {
-  if (!isPlainRecord5(value)) throw new Error("invalid expected envelope");
+  if (!isPlainRecord4(value)) throw new Error("invalid expected envelope");
   assertExactKeys8(value, ["surface", "targetBindingDigest", "configurationReceiptDigest", "composerReceiptDigest", "attachmentManifest"]);
   if (value.surface !== "chat" && value.surface !== "work") throw new Error("invalid expected surface");
   for (const digest4 of [value.targetBindingDigest, value.configurationReceiptDigest, value.composerReceiptDigest]) {
     if (!isDigest8(digest4)) throw new Error("invalid expected digest");
   }
-  if (!isPlainRecord5(value.attachmentManifest)) throw new Error("invalid attachment manifest");
+  if (!isPlainRecord4(value.attachmentManifest)) throw new Error("invalid attachment manifest");
   assertExactKeys8(value.attachmentManifest, ["count", "orderPolicy", "identities"]);
   const manifest = value.attachmentManifest;
   if (!Number.isSafeInteger(manifest.count) || manifest.count < 0 || manifest.count > MAX_ATTACHMENTS2 || manifest.orderPolicy !== "exact" || !Array.isArray(manifest.identities) || manifest.identities.length !== manifest.count) throw new Error("invalid attachment manifest");
   const seen = /* @__PURE__ */ new Set();
   manifest.identities.forEach((entry, index) => {
-    if (!isPlainRecord5(entry)) throw new Error("invalid attachment identity");
+    if (!isPlainRecord4(entry)) throw new Error("invalid attachment identity");
     assertExactKeys8(entry, ["identityDigest", "ordinal"]);
     if (entry.ordinal !== index || !isDigest8(entry.identityDigest) || seen.has(entry.identityDigest)) throw new Error("invalid attachment identity");
     seen.add(entry.identityDigest);
   });
 }
 function validatePreconditionObservation(value, expected) {
-  if (!isPlainRecord5(value) || typeof value.status !== "string") throw new Error("invalid precondition");
+  if (!isPlainRecord4(value) || typeof value.status !== "string") throw new Error("invalid precondition");
   if (value.status === "exact") {
     assertExactKeys8(value, ["status", "targetBindingDigest", "configurationReceiptDigest", "composerReceiptDigest", "attachments", "baseline", "evidenceDigest"]);
     if (value.targetBindingDigest !== expected.targetBindingDigest) throw new PreconditionValidationError("target_binding_mismatch");
@@ -37664,7 +38823,7 @@ function validatePreconditionObservation(value, expected) {
   if (value.evidenceDigest !== void 0 && !isDigest8(value.evidenceDigest)) throw new Error("invalid precondition evidence");
 }
 function validateAttachmentObservation2(value, expected) {
-  if (!isPlainRecord5(value)) throw new Error("invalid attachment observation");
+  if (!isPlainRecord4(value)) throw new Error("invalid attachment observation");
   assertExactKeys8(value, ["count", "orderPolicy", "identityDigests"]);
   if (!Number.isSafeInteger(value.count) || value.count < 0 || value.count > MAX_ATTACHMENTS2 || value.orderPolicy !== "exact" || !Array.isArray(value.identityDigests) || value.identityDigests.length !== value.count || value.count !== expected.attachmentManifest.count) throw new Error("attachment mismatch");
   value.identityDigests.forEach((digest4, index) => {
@@ -37672,14 +38831,14 @@ function validateAttachmentObservation2(value, expected) {
   });
 }
 function validateBaseline2(value) {
-  if (!isPlainRecord5(value)) throw new Error("invalid baseline");
+  if (!isPlainRecord4(value)) throw new Error("invalid baseline");
   assertExactKeys8(value, ["userTurnId", "userTurnEvidenceDigest", "ownershipBaseline"]);
   if (!isDigest8(value.userTurnEvidenceDigest)) throw new Error("invalid baseline evidence");
   if (value.userTurnId !== void 0 && !isSafeId2(value.userTurnId)) throw new Error("invalid baseline id");
   if (value.ownershipBaseline !== void 0) validateOwnershipBaseline(value.ownershipBaseline);
 }
 function validatePostcondition(value, expected, mode, baseline) {
-  if (!isPlainRecord5(value) || typeof value.status !== "string") throw new Error("invalid postcondition");
+  if (!isPlainRecord4(value) || typeof value.status !== "string") throw new Error("invalid postcondition");
   if (value.status === "submitted" || value.status === "already_submitted") {
     assertExactKeys8(value, ["status", "targetBindingDigest", "evidenceDigest", "userTurnId", "userTurnEvidenceDigest", "postSendDeltaDigest", "assistantTurnId", "targetEstablishment"]);
     if (mode === "observe_only" && value.status === "submitted") throw new Error("observation claimed activation");
@@ -37794,17 +38953,17 @@ function deepFreeze2(value) {
   return value;
 }
 function validateOwnershipBaseline(value) {
-  if (!isPlainRecord5(value) || value.schemaVersion !== TURN_OWNERSHIP_SCHEMA_VERSION || value.completeness !== "complete") {
+  if (!isPlainRecord4(value) || value.schemaVersion !== TURN_OWNERSHIP_SCHEMA_VERSION || value.completeness !== "complete") {
     throw new Error("invalid ownership baseline");
   }
   assertExactKeys8(value, ["schemaVersion", "snapshotDigest", "target", "userTurns", "assistantTurns", "completeness"]);
   if (!isDigest8(value.snapshotDigest)) throw new Error("invalid ownership baseline digest");
-  if (!isPlainRecord5(value.target)) throw new Error("invalid ownership baseline target");
+  if (!isPlainRecord4(value.target)) throw new Error("invalid ownership baseline target");
   assertExactKeys8(value.target, ["provider", "browser", "tab", "thread", "conversation", "canonicalThreadUrl", "authoritativeTabClaim", "coordinationScope"]);
   if (value.target.coordinationScope !== "process" && value.target.coordinationScope !== "provider") throw new Error("invalid ownership baseline scope");
   for (const key of ["provider", "browser", "tab", "thread", "conversation", "canonicalThreadUrl", "authoritativeTabClaim"]) {
     const identity = value.target[key];
-    if (!isPlainRecord5(identity) || identity.status !== "available" && identity.status !== "unavailable") throw new Error("invalid ownership identity");
+    if (!isPlainRecord4(identity) || identity.status !== "available" && identity.status !== "unavailable") throw new Error("invalid ownership identity");
     if (identity.status === "available") {
       assertExactKeys8(identity, ["status", "value"]);
       if (!isSafeId2(identity.value) && key !== "canonicalThreadUrl") throw new Error("invalid ownership identity value");
@@ -37817,7 +38976,7 @@ function validateOwnershipBaseline(value) {
   for (const [turns, kind] of [[value.userTurns, "user"], [value.assistantTurns, "assistant"]]) {
     if (!Array.isArray(turns) || turns.length > 256) throw new Error("invalid ownership turn bound");
     turns.forEach((turn, index) => {
-      if (!isPlainRecord5(turn)) throw new Error("invalid ownership turn");
+      if (!isPlainRecord4(turn)) throw new Error("invalid ownership turn");
       assertExactKeys8(turn, ["stableId", "evidenceDigest", "structureDigest", "ordinal", "parentStableId", "branchStableId", "state", "artifactEvidenceDigests"]);
       if (turn.ordinal !== index || !isDigest8(turn.evidenceDigest) || !isDigest8(turn.structureDigest)) throw new Error("invalid ownership turn");
       if (turn.stableId !== void 0 && !isSafeId2(turn.stableId)) throw new Error("invalid ownership turn id");
@@ -37850,7 +39009,7 @@ function isPageLike(value) {
 function isAbortSignalLike3(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) && typeof value.aborted === "boolean" && typeof value.addEventListener === "function" && typeof value.removeEventListener === "function";
 }
-function isPlainRecord5(value) {
+function isPlainRecord4(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   try {
     const prototype = Object.getPrototypeOf(value);
@@ -37897,7 +39056,7 @@ var MAX_PROVIDER_CHUNK_BYTES = 8 * 1024 * 1024;
 var ownedChunks = /* @__PURE__ */ new WeakSet();
 function copyProviderChunk(value, maxBytes = MAX_PROVIDER_CHUNK_BYTES) {
   const allowedBytes = Number.isSafeInteger(maxBytes) && maxBytes >= 0 ? Math.min(maxBytes, MAX_PROVIDER_CHUNK_BYTES) : -1;
-  if (!(value instanceof Uint8Array) || allowedBytes < 0 || value.byteLength > allowedBytes) {
+  if (!isByteArrayView(value) || allowedBytes < 0 || value.byteLength > allowedBytes) {
     throw new Error("provider chunk is invalid or oversized");
   }
   const copy = new Uint8Array(value);
@@ -37905,7 +39064,7 @@ function copyProviderChunk(value, maxBytes = MAX_PROVIDER_CHUNK_BYTES) {
   return copy;
 }
 function isOwnedProviderChunk(value) {
-  return value instanceof Uint8Array && ownedChunks.has(value);
+  return isByteArrayView(value) && ownedChunks.has(value);
 }
 
 // src/operations/artifact-output.ts
@@ -38845,7 +40004,7 @@ async function writeSource(temp, options, runtime) {
       if (isSignalAborted(options.signal)) {
         throw new StreamOutcome("blocked", "source_aborted", bytes, digest4.copy().digest("hex"));
       }
-      if (!(chunk instanceof Uint8Array)) {
+      if (!isByteArrayView(chunk)) {
         throw new StreamOutcome("blocked", "source_invalid", bytes, digest4.copy().digest("hex"));
       }
       if (chunk.byteLength > MAX_PROVIDER_CHUNK_BYTES) {
@@ -39189,7 +40348,7 @@ async function entropyHex(entropy, runtime) {
   try {
     checkRuntime(runtime);
     const value = entropy === void 0 ? randomBytes2(TEMP_TOKEN_BYTES) : await bounded(runtime, () => entropy(TEMP_TOKEN_BYTES));
-    if (!(value instanceof Uint8Array) || value.byteLength < TEMP_TOKEN_BYTES) {
+    if (!isByteArrayView(value) || value.byteLength < TEMP_TOKEN_BYTES) {
       throw new Error("invalid entropy");
     }
     return Buffer.from(value.subarray(0, TEMP_TOKEN_BYTES)).toString("hex");
@@ -41217,6 +42376,7 @@ function createOperationBrowserAdapter(options) {
     observeTurn,
     executeOnce: executeControlOnce2,
     observePostcondition,
+    postconditionRetry: CONTROL_POSTCONDITION_RETRY_POLICY,
     prepareSteer,
     executeSteerPrepared,
     verifySteer,
@@ -42538,6 +43698,7 @@ function createRuntimeOperationBrowserAdapter(options) {
     observe: (request) => delegateStaging(innerPromise, (adapter2) => adapter2.staging?.observe(request), unavailableStaging2(request))
   });
   const control = Object.freeze({
+    postconditionRetry: CONTROL_POSTCONDITION_RETRY_POLICY,
     observeTurn: (request) => delegateRecoveredControl(
       request.operationId,
       request.parentRequestDigest,
@@ -43724,7 +44885,7 @@ function boundedProviderByteStream(source, maxBytes, timeoutMs, signal) {
       throw providerError();
     }
     const value = readData4(raw, "value");
-    if (!(value instanceof Uint8Array) || value.byteLength > MAX_PROVIDER_CHUNK_BYTES || value.byteLength > maxBytes - bytes || chunks >= MAX_PROVIDER_CHUNKS2) {
+    if (!isByteArrayView(value) || value.byteLength > MAX_PROVIDER_CHUNK_BYTES || value.byteLength > maxBytes - bytes || chunks >= MAX_PROVIDER_CHUNKS2) {
       await close(false);
       throw providerError();
     }
@@ -44148,7 +45309,7 @@ function createProductionWorkSteerPrimitive(options) {
   return Object.freeze({ prepare: prepare2, executePrepared, verify, recover });
 }
 function captureOptions(options) {
-  if (!isPlainRecord6(options) || hasAccessorInGraph(options)) throw new ProductionWorkSteerPrimitiveError("invalid_options");
+  if (!isPlainRecord5(options) || hasAccessorInGraph(options)) throw new ProductionWorkSteerPrimitiveError("invalid_options");
   const allowed = /* @__PURE__ */ new Set([
     "evidenceDigest",
     "operationId",
@@ -44209,7 +45370,7 @@ function captureOptions(options) {
   });
 }
 function normalizeCall(request, options, clock, phase) {
-  if (!isPlainRecord6(request) || hasUnsafeRequestGraph(request)) throw new ProductionWorkSteerPrimitiveError("invalid_call");
+  if (!isPlainRecord5(request) || hasUnsafeRequestGraph(request)) throw new ProductionWorkSteerPrimitiveError("invalid_call");
   const allowed = phase === "prepare" ? /* @__PURE__ */ new Set(["page", "signal", "deadlineAt"]) : phase === "recovery" ? /* @__PURE__ */ new Set(["page", "prepared", "baseline", "signal", "deadlineAt"]) : /* @__PURE__ */ new Set(["page", "prepared", "signal", "deadlineAt"]);
   if (Reflect.ownKeys(request).some((key) => typeof key !== "string" || !allowed.has(key))) throw new ProductionWorkSteerPrimitiveError("invalid_call");
   const page = own(request, "page");
@@ -44267,7 +45428,7 @@ async function observeBounded(call, options, clock, phase, prepared, recoveryBas
     if (result3.kind !== "ok") return result3;
     const afterReadCancellation = cancellationCode6(call, clock);
     if (afterReadCancellation !== void 0) return { kind: "cancelled", code: afterReadCancellation };
-    if (!isPlainRecord6(result3.value) || hasAccessorInGraph(result3.value) || !hasOwn(result3.value, "snapshot")) return { kind: "error" };
+    if (!isPlainRecord5(result3.value) || hasAccessorInGraph(result3.value) || !hasOwn(result3.value, "snapshot")) return { kind: "error" };
     const rawSnapshot = own(result3.value, "snapshot");
     const snapshot = cloneSnapshot(rawSnapshot);
     validateSnapshotShape(snapshot);
@@ -44327,7 +45488,7 @@ async function validateSend(send, call, clock, requireEnabled) {
   return void 0;
 }
 function captureComposer(value) {
-  if (!isPlainRecord6(value) || hasUnsafeCapabilityGraph(value, ["locator", "capabilityKey", "candidateCount"]) || !exactKeys(value, ["locator", "capabilityKey", "candidateCount"])) throw new ProductionWorkSteerPrimitiveError("invalid_composer");
+  if (!isPlainRecord5(value) || hasUnsafeCapabilityGraph(value, ["locator", "capabilityKey", "candidateCount"]) || !exactKeys(value, ["locator", "capabilityKey", "candidateCount"])) throw new ProductionWorkSteerPrimitiveError("invalid_composer");
   const locator = own(value, "locator");
   const capabilityKey = own(value, "capabilityKey");
   const candidateCount = own(value, "candidateCount");
@@ -44345,7 +45506,7 @@ function captureComposer(value) {
   });
 }
 function captureSend(value) {
-  if (!isPlainRecord6(value) || hasUnsafeCapabilityGraph(value, ["locator", "capabilityKey", "localeKey", "candidateCount"]) || !exactKeys(value, ["locator", "capabilityKey", "localeKey", "candidateCount"])) throw new ProductionWorkSteerPrimitiveError("invalid_send");
+  if (!isPlainRecord5(value) || hasUnsafeCapabilityGraph(value, ["locator", "capabilityKey", "localeKey", "candidateCount"]) || !exactKeys(value, ["locator", "capabilityKey", "localeKey", "candidateCount"])) throw new ProductionWorkSteerPrimitiveError("invalid_send");
   const locator = own(value, "locator");
   const capabilityKey = own(value, "capabilityKey");
   const localeKey = own(value, "localeKey");
@@ -44441,7 +45602,7 @@ function makePrepared(snapshot, options) {
   };
 }
 function validatePrepared2(value, options) {
-  if (!isPlainRecord6(value) || hasAccessorInGraph(value) || !exactKeys(value, [
+  if (!isPlainRecord5(value) || hasAccessorInGraph(value) || !exactKeys(value, [
     "schemaVersion",
     "operationId",
     "parentRequestDigest",
@@ -44456,7 +45617,7 @@ function validatePrepared2(value, options) {
     "baseline"
   ])) throw new ProductionWorkSteerPrimitiveError("invalid_prepared");
   const cloned = cloneData(value, 0, { count: 0, active: /* @__PURE__ */ new Set() });
-  if (!isPlainRecord6(cloned)) throw new ProductionWorkSteerPrimitiveError("invalid_prepared");
+  if (!isPlainRecord5(cloned)) throw new ProductionWorkSteerPrimitiveError("invalid_prepared");
   if (cloned.schemaVersion !== PRODUCTION_WORK_STEER_SCHEMA_VERSION || cloned.operationId !== options.operationId || cloned.parentRequestDigest !== options.parentRequestDigest || cloned.targetBindingDigest !== options.targetBindingDigest || cloned.controlActionId !== options.controlActionId || cloned.action !== "work_steer" || cloned.expectedAssistantTurnId !== options.expectedAssistantTurnId || !isSafeIdentifier2(cloned.assistantBranchId) || !isSafeIdentifier2(cloned.assistantParentTurnId) || typeof cloned.baselineSnapshotDigest !== "string" || !DIGEST_PATTERN19.test(cloned.baselineSnapshotDigest) || typeof cloned.preparedDigest !== "string" || !DIGEST_PATTERN19.test(cloned.preparedDigest)) throw new ProductionWorkSteerPrimitiveError("invalid_prepared");
   validateBaselineInput(cloned.baseline, {
     ...options
@@ -44485,9 +45646,9 @@ function validatePrepared2(value, options) {
   return deepFreeze3(cloned);
 }
 function validateBaselineInput(value, options, expectedSnapshotDigest) {
-  if (!isPlainRecord6(value) || hasAccessorInGraph(value)) throw new ProductionWorkSteerPrimitiveError("invalid_baseline");
+  if (!isPlainRecord5(value) || hasAccessorInGraph(value)) throw new ProductionWorkSteerPrimitiveError("invalid_baseline");
   const cloned = cloneData(value, 0, { count: 0, active: /* @__PURE__ */ new Set() });
-  if (!isPlainRecord6(cloned)) throw new ProductionWorkSteerPrimitiveError("invalid_baseline");
+  if (!isPlainRecord5(cloned)) throw new ProductionWorkSteerPrimitiveError("invalid_baseline");
   const wrapper = {
     schemaVersion: OPERATION_OWNERSHIP_BASELINE_SCHEMA_VERSION,
     operationId: options.operationId,
@@ -44623,11 +45784,11 @@ function findExpectedAssistant(snapshot, id2) {
 }
 function cloneSnapshot(value) {
   const cloned = cloneData(value, 0, { count: 0, active: /* @__PURE__ */ new Set() });
-  if (!isPlainRecord6(cloned)) throw new ProductionWorkSteerPrimitiveError("invalid_snapshot");
+  if (!isPlainRecord5(cloned)) throw new ProductionWorkSteerPrimitiveError("invalid_snapshot");
   return cloned;
 }
 function validateSnapshotShape(value) {
-  if (!isPlainRecord6(value) || !allowedKeys(value, ["schemaVersion", "snapshotDigest", "target", "userTurns", "assistantTurns", "completeness", "terminalState", "postSendDelta"]) || !["schemaVersion", "snapshotDigest", "target", "userTurns", "assistantTurns", "completeness", "terminalState"].every((key) => hasOwn(value, key))) throw new ProductionWorkSteerPrimitiveError("invalid_snapshot");
+  if (!isPlainRecord5(value) || !allowedKeys(value, ["schemaVersion", "snapshotDigest", "target", "userTurns", "assistantTurns", "completeness", "terminalState", "postSendDelta"]) || !["schemaVersion", "snapshotDigest", "target", "userTurns", "assistantTurns", "completeness", "terminalState"].every((key) => hasOwn(value, key))) throw new ProductionWorkSteerPrimitiveError("invalid_snapshot");
   const wrapper = {
     schemaVersion: OPERATION_OWNERSHIP_BASELINE_SCHEMA_VERSION,
     operationId: "11111111-1111-4111-8111-111111111111",
@@ -44652,7 +45813,7 @@ function validateSnapshotShape(value) {
   if (value.terminalState !== "idle" && value.terminalState !== "generating" && value.terminalState !== "terminal" && value.terminalState !== "unknown") throw new ProductionWorkSteerPrimitiveError("invalid_snapshot");
   if (value.postSendDelta !== void 0) {
     const delta = value.postSendDelta;
-    if (!isPlainRecord6(delta) || !exactKeys(delta, ["baselineSnapshotDigest", "addedUserEvidenceDigests", "deltaDigest"]) || !DIGEST_PATTERN19.test(delta.baselineSnapshotDigest) || !DIGEST_PATTERN19.test(delta.deltaDigest) || !Array.isArray(delta.addedUserEvidenceDigests) || delta.addedUserEvidenceDigests.length > 256 || delta.addedUserEvidenceDigests.some((item) => typeof item !== "string" || !DIGEST_PATTERN19.test(item))) throw new ProductionWorkSteerPrimitiveError("invalid_snapshot");
+    if (!isPlainRecord5(delta) || !exactKeys(delta, ["baselineSnapshotDigest", "addedUserEvidenceDigests", "deltaDigest"]) || !DIGEST_PATTERN19.test(delta.baselineSnapshotDigest) || !DIGEST_PATTERN19.test(delta.deltaDigest) || !Array.isArray(delta.addedUserEvidenceDigests) || delta.addedUserEvidenceDigests.length > 256 || delta.addedUserEvidenceDigests.some((item) => typeof item !== "string" || !DIGEST_PATTERN19.test(item))) throw new ProductionWorkSteerPrimitiveError("invalid_snapshot");
   }
   const ids = /* @__PURE__ */ new Set();
   for (const turn of [...value.userTurns, ...value.assistantTurns]) {
@@ -44675,13 +45836,13 @@ function matchesRedactedTarget(target, evidence) {
   return identityEquals(evidence.provider, target.providerId) && identityEquals(evidence.browser, target.browserId) && identityEquals(evidence.tab, target.tabId) && optionalIdentityEquals(evidence.conversation, target.conversationId) && evidence.canonicalThreadUrl.status === "unavailable" && evidence.coordinationScope === target.coordinationScope && (target.evidenceProfile.authoritativeTabClaim === "unavailable" || evidence.authoritativeTabClaim.status === "available");
 }
 function identityEquals(value, expected) {
-  return isPlainRecord6(value) && value.status === "available" && value.value === expected;
+  return isPlainRecord5(value) && value.status === "available" && value.value === expected;
 }
 function optionalIdentityEquals(value, expected) {
   return expected === void 0 || identityEquals(value, expected);
 }
 function cloneTarget(value) {
-  if (!isPlainRecord6(value) || hasAccessorInGraph(value)) throw new ProductionWorkSteerPrimitiveError("invalid_target");
+  if (!isPlainRecord5(value) || hasAccessorInGraph(value)) throw new ProductionWorkSteerPrimitiveError("invalid_target");
   const allowed = /* @__PURE__ */ new Set([
     "providerId",
     "browserId",
@@ -44701,8 +45862,8 @@ function cloneTarget(value) {
   ]);
   if (Reflect.ownKeys(value).some((key) => typeof key !== "string" || !allowed.has(key)) || !hasOwn(value, "providerId") || !hasOwn(value, "browserId") || !hasOwn(value, "tabId") || !hasOwn(value, "coordinationScope") || !hasOwn(value, "evidenceProfile")) throw new ProductionWorkSteerPrimitiveError("invalid_target");
   const cloned = cloneData(value, 0, { count: 0, active: /* @__PURE__ */ new Set() });
-  if (!isPlainRecord6(cloned) || !isSafeIdentifier2(cloned.providerId) || !isSafeIdentifier2(cloned.browserId) || !isSafeIdentifier2(cloned.tabId) || cloned.coordinationScope !== "process" && cloned.coordinationScope !== "provider") throw new ProductionWorkSteerPrimitiveError("invalid_target");
-  if (!isPlainRecord6(cloned.evidenceProfile) || !exactKeys(cloned.evidenceProfile, ["providerIdentity", "stableTabId", "stableConversationId", "stableUserTurnId", "authoritativeTabClaim", "replacementTabRecovery"])) throw new ProductionWorkSteerPrimitiveError("invalid_target");
+  if (!isPlainRecord5(cloned) || !isSafeIdentifier2(cloned.providerId) || !isSafeIdentifier2(cloned.browserId) || !isSafeIdentifier2(cloned.tabId) || cloned.coordinationScope !== "process" && cloned.coordinationScope !== "provider") throw new ProductionWorkSteerPrimitiveError("invalid_target");
+  if (!isPlainRecord5(cloned.evidenceProfile) || !exactKeys(cloned.evidenceProfile, ["providerIdentity", "stableTabId", "stableConversationId", "stableUserTurnId", "authoritativeTabClaim", "replacementTabRecovery"])) throw new ProductionWorkSteerPrimitiveError("invalid_target");
   for (const key of ["providerIdentity", "stableTabId", "stableConversationId", "stableUserTurnId", "authoritativeTabClaim"]) if (cloned.evidenceProfile[key] !== "required" && cloned.evidenceProfile[key] !== "unavailable") throw new ProductionWorkSteerPrimitiveError("invalid_target");
   if (typeof cloned.evidenceProfile.replacementTabRecovery !== "boolean") throw new ProductionWorkSteerPrimitiveError("invalid_target");
   for (const key of ["tabClaimEvidenceDigest", "userTurnBaselineDigest", "assistantTurnBaselineDigest", "configurationReceiptDigest", "newTargetAnchorDigest", "blankTaskEvidenceDigest"]) {
@@ -44715,7 +45876,7 @@ function cloneTarget(value) {
 }
 function cloneBaseline2(value) {
   const cloned = cloneData(value, 0, { count: 0, active: /* @__PURE__ */ new Set() });
-  if (!isPlainRecord6(cloned)) throw new ProductionWorkSteerPrimitiveError("invalid_baseline");
+  if (!isPlainRecord5(cloned)) throw new ProductionWorkSteerPrimitiveError("invalid_baseline");
   return deepFreeze3(cloned);
 }
 function cloneData(value, depth, state) {
@@ -44840,7 +46001,7 @@ function own(value, key) {
     return void 0;
   }
 }
-function isPlainRecord6(value) {
+function isPlainRecord5(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   try {
     const prototype = Object.getPrototypeOf(value);
@@ -47813,6 +48974,88 @@ function arrayInput(input, key) {
 }
 
 // src/scripts/live-smoke/scenarios.ts
+async function restoreChatExperience(experience, options = {}) {
+  const attempts = Math.max(1, Math.min(5, options.attempts ?? 3));
+  const delayMs = Math.max(0, Math.min(5e3, options.delayMs ?? 750));
+  const timeoutMs = Math.max(1e3, Math.min(12e4, options.timeoutMs ?? 6e4));
+  const sleep3 = options.sleep ?? (async (milliseconds) => {
+    await new Promise((resolve9) => setTimeout(resolve9, milliseconds));
+  });
+  let terminal;
+  let observedExperience;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const detectedBefore = await experience.detect({ timeoutMs });
+    terminal = asCommand(detectedBefore);
+    observedExperience = detectedBefore.data?.experience;
+    if (detectedBefore.ok && observedExperience === "chat") {
+      return { command: terminal, verified: true, attempts: attempt, observedExperience };
+    }
+    const opened = await experience.open({ experience: "chat", timeoutMs });
+    terminal = asCommand(opened);
+    if (opened.ok && opened.data?.experience === "chat") {
+      const detectedAfter = await experience.detect({ timeoutMs });
+      terminal = asCommand(detectedAfter);
+      observedExperience = detectedAfter.data?.experience;
+      if (detectedAfter.ok && observedExperience === "chat") {
+        return { command: terminal, verified: true, attempts: attempt, observedExperience };
+      }
+    }
+    if (attempt < attempts) {
+      await sleep3(delayMs);
+    }
+  }
+  return {
+    command: terminal,
+    verified: false,
+    attempts,
+    ...observedExperience === void 0 ? {} : { observedExperience }
+  };
+}
+async function restoreWorkEffort(configuration, effort, options = {}) {
+  const attempts = Math.max(1, Math.min(5, options.attempts ?? 3));
+  const delayMs = Math.max(0, Math.min(5e3, options.delayMs ?? 750));
+  const timeoutMs = Math.max(1e3, Math.min(12e4, options.timeoutMs ?? 6e4));
+  const sleep3 = options.sleep ?? (async (milliseconds) => {
+    await new Promise((resolve9) => setTimeout(resolve9, milliseconds));
+  });
+  let terminal;
+  let observedEffort;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const applied = await configuration.apply({
+      experience: "work",
+      desired: { effort },
+      strict: true,
+      timeoutMs
+    });
+    terminal = asCommand(applied);
+    if (applied.ok && applied.data?.verified === true) {
+      const inspected = await configuration.inspect({
+        experience: "work",
+        includeOptions: false,
+        timeoutMs
+      });
+      terminal = asCommand(inspected);
+      observedEffort = inspected.data?.active.effort;
+      if (inspected.ok && inspected.data !== void 0 && configurationMatchesSelection(inspected.data, { effort })) {
+        return {
+          command: terminal,
+          verified: true,
+          attempts: attempt,
+          ...observedEffort === void 0 ? {} : { observedEffort }
+        };
+      }
+    }
+    if (attempt < attempts) {
+      await sleep3(delayMs);
+    }
+  }
+  return {
+    command: terminal,
+    verified: false,
+    attempts,
+    ...observedEffort === void 0 ? {} : { observedEffort }
+  };
+}
 var requiredScenarios = [
   scenario("bootstrap-new-tab", true, () => true, async (context, meta) => {
     const env = envFor(context);
@@ -48083,10 +49326,11 @@ var requiredScenarios = [
       }
     } finally {
       if (booted) {
-        const restored = await chatgpt.experience.open({ experience: "chat", timeoutMs: 6e4 });
-        terminal = asCommand(restored);
-        if (!restored.ok || restored.data?.experience !== "chat") {
-          failure = new LiveSmokeCommandFailure("experience.restore.chat", asCommand(restored));
+        const restored = await restoreChatExperience(chatgpt.experience);
+        terminal = restored.command;
+        details.experienceRestoreAttempts = restored.attempts;
+        if (!restored.verified) {
+          failure = new LiveSmokeCommandFailure("experience.restore.chat", restored.command);
         } else {
           details.restoredExperience = "chat";
         }
@@ -48428,24 +49672,24 @@ var optionalScenarios = [
       }
     } finally {
       if (booted && restoreNeeded && originalEffort !== void 0) {
-        const restoredConfiguration = await chatgpt.configuration.apply({
-          experience: "work",
-          desired: { effort: originalEffort },
-          strict: true,
-          timeoutMs: 6e4
-        });
-        terminal = asCommand(restoredConfiguration);
-        if (!restoredConfiguration.ok || restoredConfiguration.data?.verified !== true) {
-          failure = new LiveSmokeCommandFailure("configuration.restore.work", asCommand(restoredConfiguration));
+        const restoredConfiguration = await restoreWorkEffort(chatgpt.configuration, originalEffort);
+        terminal = restoredConfiguration.command;
+        details.configurationRestoreAttempts = restoredConfiguration.attempts;
+        if (restoredConfiguration.observedEffort !== void 0) {
+          details.restoredEffort = restoredConfiguration.observedEffort;
+        }
+        if (!restoredConfiguration.verified) {
+          failure = new LiveSmokeCommandFailure("configuration.restore.work", restoredConfiguration.command);
         } else {
           details.configurationRestored = true;
         }
       }
       if (booted) {
-        const restoredExperience = await chatgpt.experience.open({ experience: "chat", timeoutMs: 6e4 });
-        terminal = asCommand(restoredExperience);
-        if (!restoredExperience.ok || restoredExperience.data?.experience !== "chat") {
-          failure = new LiveSmokeCommandFailure("experience.restore.chat", asCommand(restoredExperience));
+        const restoredExperience = await restoreChatExperience(chatgpt.experience);
+        terminal = restoredExperience.command;
+        details.experienceRestoreAttempts = restoredExperience.attempts;
+        if (!restoredExperience.verified) {
+          failure = new LiveSmokeCommandFailure("experience.restore.chat", restoredExperience.command);
         } else {
           details.restoredExperience = "chat";
         }
@@ -48629,6 +49873,13 @@ async function boot(context, meta) {
 async function bootNewThread(context, meta) {
   const env = await boot(context, meta);
   if ("status" in env) return env;
+  const chat = await restoreChatExperience({
+    detect: (args) => detectExperience(env, args),
+    open: (args) => openExperience(env, args)
+  });
+  if (!chat.verified) {
+    return fail2(meta, chat.command, { failedStage: "experience.open.chat" });
+  }
   const created = await newThread(env);
   return created.ok ? env : fail2(meta, created);
 }
@@ -48824,6 +50075,7 @@ async function runReleaseCanary(runtime, options) {
   if (options.tabId.trim().length === 0) {
     throw new Error("runReleaseCanary requires an exact dedicated ChatGPT tab id.");
   }
+  const managedBrowser = await resolveChatGPTBrowser({ agent: runtime.agent });
   const reportDir = resolve8(options.reportDir ?? join8(process.cwd(), "reports", "release-canary"));
   const profileDir = join8(reportDir, "surface-profiles");
   await mkdir7(profileDir, { recursive: true });
@@ -48847,7 +50099,7 @@ async function runReleaseCanary(runtime, options) {
         profilePaths[index],
         "--provenance",
         "Sanitized release canary capture from a dedicated visible ChatGPT tab."
-      ], runtime);
+      ], { agent: runtime.agent });
       if (exitCode !== 0) {
         return {
           ok: false,
@@ -48858,12 +50110,16 @@ async function runReleaseCanary(runtime, options) {
       }
     }
   } finally {
-    await closeDedicatedProfileTab(runtime.browser, options.tabId);
+    await closeDedicatedProfileTab(managedBrowser, options.tabId);
   }
   const names = options.includeUpload === true ? [...CORE_SCENARIOS, "attach-one-file"] : CORE_SCENARIOS;
   const context = {
     agent: runtime.agent,
-    ...runtime.browser === void 0 ? {} : { browser: runtime.browser },
+    browser: managedBrowser,
+    // The agent-acquired browser is authoritative for tab discovery and page
+    // behavior. The bridge-hosted global browser separately owns finalize(),
+    // which closes only this tool call's temporary tabs after each scenario.
+    ...runtime.browser === void 0 ? {} : { cleanupBrowser: runtime.browser },
     reportDir: join8(reportDir, "live-smoke"),
     env: {
       CHATGPT_E2E_CONFIGURATION_MUTATION: "1",
@@ -48875,7 +50131,10 @@ async function runReleaseCanary(runtime, options) {
     throw new Error(`Release canary scenario registration drift: expected ${names.length}, found ${scenarios.length}.`);
   }
   const smoke = await runLiveSmoke(context, scenarios);
-  const failures = smoke.results.filter((result3) => result3.status !== "pass").map((result3) => result3.name);
+  const failures = smoke.results.flatMap((result3) => [
+    ...result3.status === "pass" ? [] : [result3.name],
+    ...result3.cleanup?.ok === true ? [] : [`${result3.name}:cleanup`]
+  ]);
   return {
     ok: failures.length === 0,
     profilePaths,
