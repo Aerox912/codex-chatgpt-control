@@ -601,6 +601,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TimeoutError):
             await close_task
         self.assertFalse(stream._close_source_tasks)
+        self.assertFalse(stream._close_source_awaitables)
         self.assertEqual(source.close_attempts, 1)
 
         await stream.aclose()

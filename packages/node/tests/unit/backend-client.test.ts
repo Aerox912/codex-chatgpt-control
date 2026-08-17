@@ -1805,6 +1805,8 @@ let legacyProbeCount = 0;
 let healthCount = 0;
 let healthInFlight = 0;
 let maxHealthInFlight = 0;
+let overflowCompleted = false;
+let pendingOverflowHealth;
 const seenRequestIds = [];
 const write = value => process.stdout.write(JSON.stringify(value) + "\\n");
 const ok = (request, result) => write({ schemaVersion: responseSchema, requestId: request.requestId, ok: true, result });
@@ -1887,6 +1889,10 @@ const health = request => {
   }
   if (mode === "timeout" && request.requestId === "req_slow") return setTimeout(() => ok(request, result), 45);
   if (mode === "cancel" && request.requestId === "req_cancel") return setTimeout(() => ok(request, result), 45);
+  if (mode === "overflow" && request.requestId === "req_after_overflow" && !overflowCompleted) {
+    pendingOverflowHealth = { request, result };
+    return;
+  }
   if (mode === "unknown" && request.requestId === "req_known") write({ schemaVersion: responseSchema, requestId: "unknown_backend_id", ok: true, result: {} });
   if (mode === "exit" && request.requestId === "req_exit") return setTimeout(() => process.exit(0), 5);
   if (mode === "legacy-mixed-exit" && request.requestId === "req_exit") return setTimeout(() => process.exit(0), 5);
@@ -1909,6 +1915,11 @@ const stream = request => {
   if (mode === "overflow") {
     for (let index = 0; index < 3; index += 1) {
       event(request, { type: "run_item_stream_event", name: "message_completed", item: { index } });
+    }
+    overflowCompleted = true;
+    if (pendingOverflowHealth !== undefined) {
+      ok(pendingOverflowHealth.request, pendingOverflowHealth.result);
+      pendingOverflowHealth = undefined;
     }
     return;
   }
