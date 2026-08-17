@@ -23484,9 +23484,14 @@ async function appendRecord(args) {
   const noFollow = fsConstants2.O_NOFOLLOW ?? 0;
   const createFlags = fsConstants2.O_WRONLY | fsConstants2.O_CREAT | fsConstants2.O_EXCL | noFollow;
   const appendFlags = fsConstants2.O_WRONLY | fsConstants2.O_APPEND | noFollow;
+  const repairFlags = fsConstants2.O_WRONLY | noFollow;
   let handle;
   try {
-    handle = await open2(args.logPath, args.createExclusive ? createFlags : appendFlags, POSIX_FILE_MODE);
+    handle = await open2(
+      args.logPath,
+      args.createExclusive ? createFlags : args.partialTailBytes > 0 ? repairFlags : appendFlags,
+      POSIX_FILE_MODE
+    );
   } catch (error) {
     if (args.createExclusive && isNodeError4(error, "EEXIST")) {
       throw new OperationJournalError("revision_conflict", "The operation log appeared during exclusive creation.");
@@ -23494,7 +23499,13 @@ async function appendRecord(args) {
     throw error;
   }
   try {
-    await assertSecureFileHandle(handle, args.logPath);
+    const metadata = await assertSecureFileHandle(handle, args.logPath);
+    if (metadata.size !== args.committedBytes + args.partialTailBytes) {
+      throw new OperationJournalError(
+        "revision_conflict",
+        "The operation log changed before its next record could be appended."
+      );
+    }
     if (args.committedBytes + args.encoded.byteLength > MAX_SINGLE_RECORD_FILE_BYTES) {
       throw new OperationJournalError(
         "journal_log_too_large",
@@ -23504,8 +23515,10 @@ async function appendRecord(args) {
     if (args.partialTailBytes > 0) {
       await handle.truncate(args.committedBytes);
       await args.inject("after_partial_tail_truncated");
+      await writeBufferAt(handle, args.encoded, args.committedBytes);
+    } else {
+      await handle.writeFile(args.encoded);
     }
-    await handle.writeFile(args.encoded);
     await args.inject("after_record_written");
     await handle.sync();
     await args.inject("after_record_synced");
@@ -23513,6 +23526,21 @@ async function appendRecord(args) {
     await handle.close();
   }
   if (args.syncParent) await syncDirectory(dirname2(args.logPath));
+}
+async function writeBufferAt(handle, bytes, position) {
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const { bytesWritten } = await handle.write(
+      bytes,
+      offset,
+      bytes.byteLength - offset,
+      position + offset
+    );
+    if (bytesWritten <= 0) {
+      throw new OperationJournalError("journal_write_failed", "Operation journal write made no progress.");
+    }
+    offset += bytesWritten;
+  }
 }
 async function readLog(logPath, key, allowMissing) {
   let handle;
@@ -50505,7 +50533,7 @@ function validateServerOptions(options) {
 
 // src/backend/runtime-identity.ts
 import { constants as fsConstants5 } from "node:fs";
-import { open as open5 } from "node:fs/promises";
+import { lstat as lstat5, open as open5 } from "node:fs/promises";
 import { createHash as createHash7 } from "node:crypto";
 import { dirname as dirname3, join as join6, resolve as resolve7 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50537,20 +50565,8 @@ function modulePath(moduleUrl) {
   }
 }
 async function digestArtifact(path3) {
-  let handle;
-  try {
-    handle = await open5(path3, fsConstants5.O_RDONLY | (fsConstants5.O_NOFOLLOW ?? 0));
-    const metadata = await handle.stat();
-    if (!metadata.isFile() || !Number.isSafeInteger(metadata.size) || metadata.size > MAX_BACKEND_ARTIFACT_BYTES) {
-      return void 0;
-    }
-    const bytes = await handle.readFile();
-    return `sha256:${createHash7("sha256").update(bytes).digest("hex")}`;
-  } catch {
-    return void 0;
-  } finally {
-    await handle?.close();
-  }
+  const bytes = await readStableRegularFile(path3, MAX_BACKEND_ARTIFACT_BYTES);
+  return bytes === void 0 ? void 0 : `sha256:${createHash7("sha256").update(bytes).digest("hex")}`;
 }
 async function findPackageMetadata(start) {
   let current = resolve7(start);
@@ -50574,18 +50590,41 @@ async function findPackageMetadata(start) {
   return {};
 }
 async function readBoundedJson(path3) {
+  const bytes = await readStableRegularFile(path3, MAX_METADATA_BYTES);
+  if (bytes === void 0) return void 0;
+  try {
+    const parsed = JSON.parse(bytes.toString("utf8"));
+    return isRecord19(parsed) ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
+}
+async function readStableRegularFile(path3, maxBytes) {
   let handle;
   try {
+    const before = await lstat5(path3);
+    if (!isBoundedRegularFile(before, maxBytes)) return void 0;
     handle = await open5(path3, fsConstants5.O_RDONLY | (fsConstants5.O_NOFOLLOW ?? 0));
-    const metadata = await handle.stat();
-    if (!metadata.isFile() || !Number.isSafeInteger(metadata.size) || metadata.size > MAX_METADATA_BYTES) return void 0;
-    const parsed = JSON.parse(await handle.readFile({ encoding: "utf8" }));
-    return isRecord19(parsed) ? parsed : void 0;
+    const opened = await handle.stat();
+    if (!isBoundedRegularFile(opened, maxBytes) || !sameFileIdentity2(before, opened)) return void 0;
+    const bytes = await handle.readFile();
+    const finalHandle = await handle.stat();
+    const finalPath = await lstat5(path3);
+    if (!isBoundedRegularFile(finalHandle, maxBytes) || !isBoundedRegularFile(finalPath, maxBytes) || !sameFileIdentity2(opened, finalHandle) || !sameFileIdentity2(finalHandle, finalPath) || bytes.byteLength !== finalHandle.size) {
+      return void 0;
+    }
+    return bytes;
   } catch {
     return void 0;
   } finally {
     await handle?.close();
   }
+}
+function isBoundedRegularFile(metadata, maxBytes) {
+  return !metadata.isSymbolicLink() && metadata.isFile() && Number.isSafeInteger(metadata.size) && metadata.size >= 0 && metadata.size <= maxBytes;
+}
+function sameFileIdentity2(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 function identityField(value) {
   return typeof value === "string" && value.length > 0 && value.length <= MAX_IDENTITY_FIELD_LENGTH2 && value.trim() === value && !/[\u0000-\u001f\u007f]/u.test(value) ? value : void 0;

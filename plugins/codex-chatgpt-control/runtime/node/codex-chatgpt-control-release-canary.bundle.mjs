@@ -24107,9 +24107,14 @@ async function appendRecord(args) {
   const noFollow = fsConstants2.O_NOFOLLOW ?? 0;
   const createFlags = fsConstants2.O_WRONLY | fsConstants2.O_CREAT | fsConstants2.O_EXCL | noFollow;
   const appendFlags = fsConstants2.O_WRONLY | fsConstants2.O_APPEND | noFollow;
+  const repairFlags = fsConstants2.O_WRONLY | noFollow;
   let handle;
   try {
-    handle = await open2(args.logPath, args.createExclusive ? createFlags : appendFlags, POSIX_FILE_MODE);
+    handle = await open2(
+      args.logPath,
+      args.createExclusive ? createFlags : args.partialTailBytes > 0 ? repairFlags : appendFlags,
+      POSIX_FILE_MODE
+    );
   } catch (error) {
     if (args.createExclusive && isNodeError4(error, "EEXIST")) {
       throw new OperationJournalError("revision_conflict", "The operation log appeared during exclusive creation.");
@@ -24117,7 +24122,13 @@ async function appendRecord(args) {
     throw error;
   }
   try {
-    await assertSecureFileHandle(handle, args.logPath);
+    const metadata = await assertSecureFileHandle(handle, args.logPath);
+    if (metadata.size !== args.committedBytes + args.partialTailBytes) {
+      throw new OperationJournalError(
+        "revision_conflict",
+        "The operation log changed before its next record could be appended."
+      );
+    }
     if (args.committedBytes + args.encoded.byteLength > MAX_SINGLE_RECORD_FILE_BYTES) {
       throw new OperationJournalError(
         "journal_log_too_large",
@@ -24127,8 +24138,10 @@ async function appendRecord(args) {
     if (args.partialTailBytes > 0) {
       await handle.truncate(args.committedBytes);
       await args.inject("after_partial_tail_truncated");
+      await writeBufferAt(handle, args.encoded, args.committedBytes);
+    } else {
+      await handle.writeFile(args.encoded);
     }
-    await handle.writeFile(args.encoded);
     await args.inject("after_record_written");
     await handle.sync();
     await args.inject("after_record_synced");
@@ -24136,6 +24149,21 @@ async function appendRecord(args) {
     await handle.close();
   }
   if (args.syncParent) await syncDirectory(dirname3(args.logPath));
+}
+async function writeBufferAt(handle, bytes, position) {
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const { bytesWritten } = await handle.write(
+      bytes,
+      offset,
+      bytes.byteLength - offset,
+      position + offset
+    );
+    if (bytesWritten <= 0) {
+      throw new OperationJournalError("journal_write_failed", "Operation journal write made no progress.");
+    }
+    offset += bytesWritten;
+  }
 }
 async function readLog(logPath, key, allowMissing) {
   let handle;
