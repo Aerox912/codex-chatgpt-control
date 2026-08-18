@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/operation-inspect-request.schema.json",
+  "title": "Transactional browser operation inspect request",
+  "description": "A browser-free inspect request. It reports durable redacted state and last-known ownership without touching the browser.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "handle"],
+  "properties": {
+    "schemaVersion": { "const": "chatgpt.browser_control.operation_inspect_request.v1" },
+    "handle": { "$ref": "#/$defs/handle" }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "handle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "requestDigest", "surface", "revision", "phase", "mutationBoundary"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_handle.v1" },
+        "operationId": { "$ref": "#/$defs/uuid" },
+        "requestDigest": { "$ref": "#/$defs/digest" },
+        "surface": { "enum": ["chat", "work"] },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "phase": {
+          "enum": ["prepared", "handoff_pending", "ready", "send_pending", "submitted", "generating", "capturing", "completed", "uncertain"]
+        },
+        "mutationBoundary": {
+          "enum": ["none", "handoff_may_have_occurred", "send_may_have_occurred", "control_may_have_occurred"]
+        },
+        "targetBindingDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { tabIdFromPage } from "../../browser/attach.js";
 import { redactReportValue } from "../../safety/report-redaction.js";
 import type {
   LiveSmokeBrowser,
@@ -11,6 +12,10 @@ import type {
 } from "./types.js";
 
 const CLEANUP_TIMEOUT_MS = 10_000;
+
+type BrowserTabBaseline =
+  | { ok: true; ids: ReadonlySet<string> }
+  | { ok: false; reason: string };
 
 export function envFlag(name: string): boolean {
   const value = readEnv(name);
@@ -42,6 +47,7 @@ export async function runScenario(
 ): Promise<LiveSmokeScenarioResult> {
   const startedAt = new Date().toISOString();
   const startedMs = Date.now();
+  const tabBaseline = await snapshotBrowserTabIds(context.browser);
 
   let result: LiveSmokeScenarioResult;
   if (!scenario.enabled(context)) {
@@ -73,7 +79,11 @@ export async function runScenario(
     }
   }
 
-  const cleanup = await finalizeBrowserTabs(context.browser);
+  const cleanup = await finalizeBrowserTabs(
+    context.cleanupBrowser ?? context.browser,
+    context.browser,
+    tabBaseline
+  );
   return { ...result, cleanup };
 }
 
@@ -142,24 +152,107 @@ export function filterScenarios(
   return scenarios.filter(scenario => wanted.has(scenario.name));
 }
 
-async function finalizeBrowserTabs(browser: LiveSmokeBrowser | undefined): Promise<LiveSmokeCleanupResult> {
-  const tabs = browser?.tabs;
-  const finalize = tabs?.finalize;
+async function finalizeBrowserTabs(
+  finalizerBrowser: LiveSmokeBrowser | undefined,
+  behaviorBrowser: LiveSmokeBrowser | undefined,
+  baseline: BrowserTabBaseline
+): Promise<LiveSmokeCleanupResult> {
+  const finalizerTabs = finalizerBrowser?.tabs;
+  const finalize = finalizerTabs?.finalize;
   if (typeof finalize !== "function") {
-    return {
-      attempted: false,
-      ok: false,
-      reason: "browser.tabs.finalize unavailable"
-    };
+    return closeNewExactTabs(behaviorBrowser, baseline);
   }
 
   try {
     await withTimeout(
-      finalize.call(tabs, { keep: [] }),
+      finalize.call(finalizerTabs, { keep: [] }),
       CLEANUP_TIMEOUT_MS,
       `browser.tabs.finalize timed out after ${CLEANUP_TIMEOUT_MS}ms`
     );
     return { attempted: true, ok: true };
+  } catch (error) {
+    return {
+      attempted: true,
+      ok: false,
+      error: {
+        name: error instanceof Error ? error.name : "Error",
+        message: error instanceof Error ? error.message : String(error)
+      }
+    };
+  }
+}
+
+async function snapshotBrowserTabIds(browser: LiveSmokeBrowser | undefined): Promise<BrowserTabBaseline> {
+  const tabs = browser?.tabs;
+  const list = tabs?.list;
+  if (tabs === undefined || typeof list !== "function") {
+    return { ok: false, reason: "browser.tabs.list unavailable" };
+  }
+  try {
+    const pages = await list.call(tabs);
+    const ids = new Set<string>();
+    for (const page of pages) {
+      const id = tabIdFromPage(page);
+      if (id === undefined) {
+        return { ok: false, reason: "browser.tabs.list returned a tab without an exact id" };
+      }
+      ids.add(id);
+    }
+    return { ok: true, ids };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `browser.tabs.list failed: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
+async function closeNewExactTabs(
+  browser: LiveSmokeBrowser | undefined,
+  baseline: BrowserTabBaseline
+): Promise<LiveSmokeCleanupResult> {
+  if (!baseline.ok) {
+    return { attempted: false, ok: false, reason: baseline.reason };
+  }
+  const tabs = browser?.tabs;
+  const list = tabs?.list;
+  const get = tabs?.get;
+  if (tabs === undefined || typeof list !== "function" || typeof get !== "function") {
+    return {
+      attempted: false,
+      ok: false,
+      reason: "browser.tabs.finalize unavailable and exact tabs.list/get cleanup is unavailable"
+    };
+  }
+
+  try {
+    const pages = await list.call(tabs);
+    const newTabIds: string[] = [];
+    for (const page of pages) {
+      const id = tabIdFromPage(page);
+      if (id === undefined) {
+        throw new Error("browser.tabs.list returned a tab without an exact id");
+      }
+      if (!baseline.ids.has(id) && !newTabIds.includes(id)) {
+        newTabIds.push(id);
+      }
+    }
+
+    for (const id of newTabIds) {
+      const page = await get.call(tabs, id);
+      if (tabIdFromPage(page) !== id) {
+        throw new Error(`browser.tabs.get did not preserve exact cleanup affinity for tab ${id}`);
+      }
+      if (typeof page.close !== "function") {
+        throw new Error(`browser tab ${id} does not expose close()`);
+      }
+      await withTimeout(
+        Promise.resolve(page.close()),
+        CLEANUP_TIMEOUT_MS,
+        `browser tab ${id} close timed out after ${CLEANUP_TIMEOUT_MS}ms`
+      );
+    }
+    return { attempted: true, ok: true, closedTabCount: newTabIds.length };
   } catch (error) {
     return {
       attempted: true,

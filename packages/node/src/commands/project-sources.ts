@@ -20,10 +20,18 @@ import type {
 import { contextFromPage } from "./context.js";
 import { preflightFiles } from "./files.js";
 import { bootstrap } from "./session.js";
+import { coordinatedEventRegistrationBarrier } from "../runtime/coordinated-page.js";
 
 const CHATGPT_ORIGIN = "https://chatgpt.com";
 const DEFAULT_PROJECT_SOURCE_BATCH_SIZE = 10;
 const PROJECT_SOURCE_CANDIDATE_LIMIT = 20;
+// The chooser transition is a short UI handoff. It must not inherit the much
+// longer file-handoff/refresh timeout: doing so can leave a rejected browser
+// event pending for minutes and can make us try a second UI path after an
+// ambiguous first action. The public timeout can shorten this budget, but
+// never extend it.
+const PROJECT_SOURCE_CHOOSER_TRANSITION_TIMEOUT_MS = 2500;
+const PROJECT_SOURCE_CHOOSER_POLL_INTERVAL_MS = 25;
 
 type SafeCandidate = NonNullable<NonNullable<CommandResult["blocker"]>["candidates"]>[number];
 
@@ -493,16 +501,116 @@ async function uploadProjectSourceBatch(
       throw new Error("The active Project Sources page does not expose file chooser events.");
     }
 
-    let chooserPromise = waitForFileChooser(page, timeoutMs);
-    await clickProjectSourceControl(page, localeLabels.projectSourcesAddSource, "button", timeoutMs);
-    const opened = await raceFileChooserOpen(chooserPromise, page, 300);
-    if (!opened) {
-      chooserPromise = waitForFileChooser(page, timeoutMs);
-      await clickProjectSourceControl(page, localeLabels.projectSourcesUploadFiles, "button", timeoutMs);
+    const chooserTransitionTimeoutMs = Math.min(timeoutMs, PROJECT_SOURCE_CHOOSER_TRANSITION_TIMEOUT_MS);
+    const chooserDeadline = Date.now() + chooserTransitionTimeoutMs;
+    // Validate the first visible mutation before subscribing to the chooser.
+    // A missing or ambiguous control must not leave a 2.5s bridge waiter alive.
+    const addSource = await waitForUniqueVisibleProjectSourceControl(
+      page,
+      localeLabels.projectSourcesAddSource,
+      "button",
+      chooserDeadline
+    );
+    if (addSource.kind !== "ready") {
+      throw new Error(projectSourceControlDiscoveryMessage(addSource, "button", localeLabels.projectSourcesAddSource));
     }
-    const chooser = await chooserPromise;
-    await chooser.setFiles(paths);
-    return resultOk({ files: batch.files.map(file => ({ name: file.name, bytes: file.bytes })) }, await contextFromPage(page));
+
+    const remainingChooserTimeoutMs = chooserDeadline - Date.now();
+    if (remainingChooserTimeoutMs <= 0) {
+      throw new Error("Project Sources Add source control was not ready before the chooser transition deadline.");
+    }
+
+    // Start exactly one handled waiter synchronously immediately before the
+    // first visible mutation. The listener is therefore installed before the
+    // click can deliver a chooser event, while synchronous bridge throws are
+    // converted into an already-handled terminal outcome.
+    const chooserWait = startFileChooserWait(page, remainingChooserTimeoutMs);
+
+    // Fence coordinated provider registration and drain already-scheduled
+    // settlement before crossing the first visible mutation boundary.
+    const beforeAddOutcome = await settleChooserBeforeMutation(chooserWait, chooserDeadline);
+    if (beforeAddOutcome !== undefined) {
+      throw chooserOutcomeError(beforeAddOutcome, undefined, "Add source");
+    }
+
+    let addSourceError: unknown;
+    try {
+      await clickProjectSourceControlLocator(page, addSource.locator, chooserDeadline);
+    } catch (error) {
+      addSourceError = error;
+    }
+
+    // A click can deliver the browser gesture and still reject at the bridge
+    // boundary. Reconcile a late chooser success instead of issuing a second
+    // Add/Upload action. A rejection is returned deterministically as the
+    // chooser outcome, with the click failure retained as context.
+    if (addSourceError !== undefined) {
+      const outcome = await awaitFileChooserOutcome(chooserWait, chooserDeadline);
+      if (outcome.kind === "success") {
+        await setProjectSourceChooserFiles(outcome.chooser, paths, timeoutMs);
+        return resultOk({ files: batch.files.map(file => ({ name: file.name, bytes: file.bytes })) }, await contextFromPage(page));
+      }
+      throw chooserOutcomeError(outcome, addSourceError, "Add source");
+    }
+
+    // Let a chooser event delivered during the Add click finish its handled
+    // microtask before deciding whether the optional menu path is necessary.
+    await Promise.resolve();
+    const afterAddOutcome = chooserWait.outcome;
+    if (afterAddOutcome?.kind === "success") {
+      await setProjectSourceChooserFiles(afterAddOutcome.chooser, paths, timeoutMs);
+      return resultOk({ files: batch.files.map(file => ({ name: file.name, bytes: file.bytes })) }, await contextFromPage(page));
+    }
+    if (afterAddOutcome?.kind === "rejected") {
+      throw chooserOutcomeError(afterAddOutcome, undefined, "Add source");
+    }
+
+    const uploadControl = await waitForChooserOrUploadControl(
+      page,
+      localeLabels.projectSourcesUploadFiles,
+      "button",
+      chooserWait,
+      chooserDeadline
+    );
+    if (uploadControl.kind === "chooser") {
+      if (uploadControl.outcome.kind === "success") {
+        await setProjectSourceChooserFiles(uploadControl.outcome.chooser, paths, timeoutMs);
+        return resultOk({ files: batch.files.map(file => ({ name: file.name, bytes: file.bytes })) }, await contextFromPage(page));
+      }
+      throw chooserOutcomeError(uploadControl.outcome, undefined, "Add source");
+    }
+    if (uploadControl.kind !== "ready") {
+      throw new Error(uploadControl.kind === "timeout"
+        ? uploadControl.message
+        : projectSourceControlDiscoveryMessage(uploadControl, "button", localeLabels.projectSourcesUploadFiles));
+    }
+
+    // Final settled-outcome gate: discovery may have yielded while the
+    // chooser promise settled. Do not click Upload when the original waiter
+    // has already produced either terminal outcome.
+    await Promise.resolve();
+    const settledBeforeUpload = chooserWait.outcome;
+    if (settledBeforeUpload?.kind === "success") {
+      await setProjectSourceChooserFiles(settledBeforeUpload.chooser, paths, timeoutMs);
+      return resultOk({ files: batch.files.map(file => ({ name: file.name, bytes: file.bytes })) }, await contextFromPage(page));
+    }
+    if (settledBeforeUpload?.kind === "rejected") {
+      throw chooserOutcomeError(settledBeforeUpload, undefined, "Add source");
+    }
+
+    let uploadError: unknown;
+    try {
+      await clickProjectSourceControlLocator(page, uploadControl.locator, chooserDeadline);
+    } catch (error) {
+      uploadError = error;
+    }
+
+    const outcome = await awaitFileChooserOutcome(chooserWait, chooserDeadline);
+    if (outcome.kind === "success") {
+      await setProjectSourceChooserFiles(outcome.chooser, paths, timeoutMs);
+      return resultOk({ files: batch.files.map(file => ({ name: file.name, bytes: file.bytes })) }, await contextFromPage(page));
+    }
+    throw chooserOutcomeError(outcome, uploadError, "Upload files");
   } catch (error) {
     return {
       ok: false,
@@ -540,43 +648,312 @@ async function clickProjectSourceControl(
   role: "button" | "tab",
   timeoutMs: number
 ): Promise<void> {
-  const locator = page.getByRole?.(role, { name: anyLabelPattern(labels) });
-  if (locator !== undefined && await locatorCount(locator) > 0) {
-    await (locator.first?.() ?? locator).click?.({ timeout: Math.min(timeoutMs, 10000) });
-    await page.waitForTimeout?.(250);
-    return;
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  // The Sources tab is a navigation aid, not part of the chooser transition.
+  // Keep its best-effort lookup bounded to one DOM observation so a page that
+  // lacks the tab still reaches the existing selector-drift fallback promptly.
+  const candidate = await discoverUniqueVisibleProjectSourceControl(page, labels, role);
+  if (candidate.kind !== "ready") {
+    throw new Error(projectSourceControlDiscoveryMessage(candidate, role, labels));
   }
-
-  const selector = labels
-    .map(label => `button[aria-label*='${cssString(label)}'], [role='${role}'][aria-label*='${cssString(label)}']`)
-    .join(", ");
-  const fallback = page.locator?.(selector);
-  if (fallback !== undefined && await locatorCount(fallback) > 0) {
-    await (fallback.first?.() ?? fallback).click?.({ timeout: Math.min(timeoutMs, 10000) });
+  await clickProjectSourceControlLocator(page, candidate.locator, deadline);
+  if (role === "tab") {
     await page.waitForTimeout?.(250);
-    return;
   }
-
-  throw new Error(`Project Sources ${role} was not available for labels: ${labels.join(", ")}`);
 }
 
-async function waitForFileChooser(page: PageLike, timeoutMs: number): Promise<FileChooserLike> {
-  const rawChooser = await page.waitForEvent?.("filechooser", { timeout: timeoutMs, timeoutMs });
-  if (rawChooser === null || typeof rawChooser !== "object" || typeof (rawChooser as FileChooserLike).setFiles !== "function") {
-    throw new Error("Project Sources file chooser did not expose setFiles().");
+type FileChooserOutcome =
+  | { kind: "success"; chooser: FileChooserLike }
+  | { kind: "rejected"; error: unknown };
+
+type FileChooserWait = {
+  promise: Promise<FileChooserOutcome>;
+  outcome?: FileChooserOutcome;
+  registration?: Promise<void>;
+};
+
+function startFileChooserWait(page: PageLike, timeoutMs: number): FileChooserWait {
+  const wait: FileChooserWait = {
+    promise: Promise.resolve({
+      kind: "rejected" as const,
+      error: new Error("Project Sources file chooser wait was not initialized.")
+    })
+  };
+
+  let rawWait: unknown;
+  try {
+    // Invoke waitForEvent in this call stack. Deferring registration through a
+    // Promise.resolve().then() can let an immediately-triggered Add click race
+    // the listener and lose the chooser event.
+    rawWait = page.waitForEvent?.("filechooser", { timeout: timeoutMs, timeoutMs });
+  } catch (error) {
+    const outcome: FileChooserOutcome = { kind: "rejected", error };
+    wait.outcome = outcome;
+    wait.promise = Promise.resolve(outcome);
+    return wait;
   }
-  return rawChooser as FileChooserLike;
+
+  const registration = coordinatedEventRegistrationBarrier(rawWait);
+  if (registration !== undefined) wait.registration = registration;
+  wait.promise = Promise.resolve(rawWait).then(
+    rawChooser => {
+      const outcome: FileChooserOutcome = isProjectSourceFileChooserLike(rawChooser)
+        ? { kind: "success", chooser: rawChooser }
+        : {
+          kind: "rejected",
+          error: new Error("Project Sources file chooser did not expose setFiles().")
+        };
+      wait.outcome = outcome;
+      return outcome;
+    },
+    error => {
+      const outcome: FileChooserOutcome = { kind: "rejected", error };
+      wait.outcome = outcome;
+      return outcome;
+    }
+  );
+  return wait;
 }
 
-async function raceFileChooserOpen(
-  chooserPromise: Promise<FileChooserLike>,
+/**
+ * Prove that a coordinated event listener finished registration before a
+ * click. One host turn then drains any outcome that was already scheduled;
+ * such an outcome cannot causally belong to the not-yet-issued click and
+ * therefore blocks the handoff.
+ */
+async function settleChooserBeforeMutation(
+  chooserWait: FileChooserWait,
+  deadline: number
+): Promise<FileChooserOutcome | { kind: "timeout" } | undefined> {
+  if (chooserWait.outcome !== undefined) return chooserWait.outcome;
+  if (chooserWait.registration !== undefined) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return { kind: "timeout" };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const registered = await Promise.race([
+      chooserWait.registration.then(() => true),
+      new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), remainingMs); })
+    ]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+    if (!registered) return { kind: "timeout" };
+  }
+  if (chooserWait.outcome !== undefined) return chooserWait.outcome;
+  if (deadline <= Date.now()) return { kind: "timeout" };
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  if (chooserWait.outcome !== undefined) return chooserWait.outcome;
+  return deadline <= Date.now() ? { kind: "timeout" } : undefined;
+}
+
+async function awaitFileChooserOutcome(
+  chooserWait: FileChooserWait,
+  deadline: number
+): Promise<FileChooserOutcome | { kind: "timeout" }> {
+  if (chooserWait.outcome !== undefined) {
+    return chooserWait.outcome;
+  }
+
+  const remainingMs = Math.max(0, deadline - Date.now());
+  if (remainingMs === 0) {
+    return { kind: "timeout" };
+  }
+
+  return new Promise(resolve => {
+    let finished = false;
+    const finish = (outcome: FileChooserOutcome | { kind: "timeout" }) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      resolve(outcome);
+    };
+    const timer = setTimeout(() => finish({ kind: "timeout" }), remainingMs);
+    // The chooser promise is always handled and never rejects. The timer is
+    // cleared when the event wins, avoiding a dangling transition timer.
+    void chooserWait.promise.then(outcome => finish(outcome));
+  });
+}
+
+type ProjectSourceControlDiscovery =
+  | { kind: "ready"; locator: LocatorLike }
+  | { kind: "absent" }
+  | { kind: "invalid"; message: string };
+
+function projectSourceControlDiscoveryMessage(
+  discovery: Exclude<ProjectSourceControlDiscovery, { kind: "ready" }>,
+  role: "button" | "tab",
+  labels: readonly string[]
+): string {
+  if (discovery.kind === "invalid") {
+    return discovery.message;
+  }
+  return `Project Sources ${role} was not uniquely visible for labels: ${labels.join(", ")}`;
+}
+
+async function waitForUniqueVisibleProjectSourceControl(
   page: PageLike,
+  labels: readonly string[],
+  role: "button" | "tab",
+  deadline: number
+): Promise<ProjectSourceControlDiscovery> {
+  while (true) {
+    const candidate = await discoverUniqueVisibleProjectSourceControl(page, labels, role);
+    if (candidate.kind !== "absent") {
+      return candidate;
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      return {
+        kind: "invalid",
+        message: `Project Sources ${role} was not uniquely visible before the chooser transition deadline for labels: ${labels.join(", ")}`
+      };
+    }
+    await waitForProjectSourceTransitionTick(page, Math.min(PROJECT_SOURCE_CHOOSER_POLL_INTERVAL_MS, remainingMs));
+  }
+}
+
+async function discoverUniqueVisibleProjectSourceControl(
+  page: PageLike,
+  labels: readonly string[],
+  role: "button" | "tab"
+): Promise<ProjectSourceControlDiscovery> {
+  const pattern = anyLabelPattern(labels);
+  const primary = page.getByRole?.(role, { name: pattern });
+  const candidate = primary !== undefined && await locatorCount(primary) > 0
+    ? primary
+    : page.locator?.(
+      labels
+        .map(label => `button[aria-label*='${cssString(label)}'], [role='${role}'][aria-label*='${cssString(label)}']`)
+        .join(", ")
+    );
+
+  if (candidate === undefined) {
+    return { kind: "absent" };
+  }
+
+  const count = await locatorCount(candidate);
+  if (count === 0) {
+    return { kind: "absent" };
+  }
+  if (count !== 1) {
+    return {
+      kind: "invalid",
+      message: `Project Sources ${role} was not uniquely available for labels: ${labels.join(", ")} (found ${count} controls).`
+    };
+  }
+  if (typeof candidate.isVisible !== "function") {
+    return {
+      kind: "invalid",
+      message: `Project Sources ${role} visibility could not be verified for labels: ${labels.join(", ")}.`
+    };
+  }
+  if (!await candidate.isVisible().catch(() => false)) {
+    return {
+      kind: "invalid",
+      message: `Project Sources ${role} was present but hidden for labels: ${labels.join(", ")}.`
+    };
+  }
+  return { kind: "ready", locator: candidate };
+}
+
+async function waitForChooserOrUploadControl(
+  page: PageLike,
+  labels: readonly string[],
+  role: "button" | "tab",
+  chooserWait: FileChooserWait,
+  deadline: number
+): Promise<ProjectSourceControlDiscovery | { kind: "chooser"; outcome: FileChooserOutcome } | { kind: "timeout"; message: string }> {
+  while (true) {
+    if (chooserWait.outcome !== undefined) {
+      return { kind: "chooser", outcome: chooserWait.outcome };
+    }
+
+    const candidate = await discoverUniqueVisibleProjectSourceControl(page, labels, role);
+    if (candidate.kind !== "absent") {
+      // A chooser rejection may race the final control observation. Prefer the
+      // already-settled browser outcome over reporting stale menu ambiguity.
+      if (chooserWait.outcome !== undefined) {
+        return { kind: "chooser", outcome: chooserWait.outcome };
+      }
+      return candidate;
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      return {
+        kind: "timeout",
+        message: `Project Sources file chooser did not settle and Upload control did not become uniquely visible before the ${PROJECT_SOURCE_CHOOSER_TRANSITION_TIMEOUT_MS}ms chooser transition deadline.`
+      };
+    }
+    await waitForChooserOrTransitionTick(page, chooserWait, Math.min(PROJECT_SOURCE_CHOOSER_POLL_INTERVAL_MS, remainingMs));
+  }
+}
+
+async function waitForChooserOrTransitionTick(
+  page: PageLike,
+  chooserWait: FileChooserWait,
   waitMs: number
-): Promise<boolean> {
-  return Promise.race([
-    chooserPromise.then(() => true, () => false),
-    (page.waitForTimeout?.(waitMs) ?? new Promise(resolve => setTimeout(resolve, waitMs))).then(() => false)
+): Promise<void> {
+  if (chooserWait.outcome !== undefined) return;
+  await Promise.race([
+    chooserWait.promise.then(() => undefined),
+    waitForProjectSourceTransitionTick(page, waitMs)
   ]);
+}
+
+async function waitForProjectSourceTransitionTick(page: PageLike, waitMs: number): Promise<void> {
+  if (typeof page.waitForTimeout === "function") {
+    await page.waitForTimeout(waitMs);
+    return;
+  }
+  await new Promise<void>(resolve => setTimeout(resolve, waitMs));
+}
+
+async function clickProjectSourceControlLocator(
+  page: PageLike,
+  locator: LocatorLike,
+  deadline: number
+): Promise<void> {
+  if (typeof locator.click !== "function") {
+    throw new Error("Project Sources control does not expose click().");
+  }
+  const remainingMs = Math.max(1, deadline - Date.now());
+  await locator.click({ timeout: Math.min(remainingMs, 10_000) });
+}
+
+async function setProjectSourceChooserFiles(
+  chooser: FileChooserLike,
+  paths: string[],
+  timeoutMs: number
+): Promise<void> {
+  await chooser.setFiles(paths, { timeoutMs });
+}
+
+function chooserOutcomeError(
+  outcome: FileChooserOutcome | { kind: "timeout" },
+  clickError: unknown,
+  controlLabel: string
+): Error {
+  if (outcome.kind === "rejected") {
+    const chooserMessage = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+    const clickMessage = clickError === undefined
+      ? ""
+      : ` ${controlLabel} click also failed: ${clickError instanceof Error ? clickError.message : String(clickError)}`;
+    return new Error(`Project Sources file chooser was rejected: ${chooserMessage}.${clickMessage}`);
+  }
+  if (outcome.kind === "timeout") {
+    const clickMessage = clickError === undefined
+      ? ""
+      : ` ${controlLabel} click failed: ${clickError instanceof Error ? clickError.message : String(clickError)}.`;
+    return new Error(`Project Sources file chooser did not settle before the ${PROJECT_SOURCE_CHOOSER_TRANSITION_TIMEOUT_MS}ms chooser transition deadline.${clickMessage}`);
+  }
+  return new Error(`Project Sources file chooser settled before the ${controlLabel} click; no file handoff was attempted.`);
+}
+
+function isProjectSourceFileChooserLike(value: unknown): value is FileChooserLike {
+  return value !== null
+    && typeof value === "object"
+    && typeof (value as FileChooserLike).setFiles === "function";
 }
 
 async function locatorCount(locator: LocatorLike): Promise<number> {

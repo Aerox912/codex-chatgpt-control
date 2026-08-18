@@ -2,9 +2,14 @@
   "ok": true,
   "requestId": "req_backend_version",
   "result": {
+    "backendSessionId": "fixture-backend-session",
+    "buildDigest": "unknown",
     "name": "codex-chatgpt-control-backend",
+    "packageName": "codex-chatgpt-control",
+    "packageVersion": "unknown",
     "protocolVersion": "chatgpt.browser_control.backend_request.v1",
-    "runtime": "node"
+    "runtime": "node",
+    "runtimeVersion": "fixture-runtime"
   },
   "schemaVersion": "chatgpt.browser_control.backend_response.v1"
 }

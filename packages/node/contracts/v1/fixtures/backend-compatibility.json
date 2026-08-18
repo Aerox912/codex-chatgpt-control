@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "chatgpt.browser_control.backend_compatibility.v1",
+  "status": "warning",
+  "mode": "multiplexed",
+  "protocolVersion": "chatgpt.browser_control.backend_request.v1",
+  "backendSessionId": "fixture-backend-session",
+  "packageName": "codex-chatgpt-control",
+  "packageVersion": "0.5.1-alpha.2",
+  "runtime": "node",
+  "runtimeVersion": "v22.14.0",
+  "buildDigest": "sha256:backend-build",
+  "warnings": [
+    {
+      "code": "build_digest_mismatch",
+      "field": "buildDigest",
+      "expected": "sha256:expected-build",
+      "received": "sha256:backend-build",
+      "message": "Backend build digest differs from the expected runtime (sha256:expected-build versus sha256:backend-build)."
+    }
+  ]
+}

@@ -1,0 +1,178 @@
+{
+  "schemaVersion": "chatgpt.browser_control.operation.v1",
+  "operationId": "11111111-1111-4111-8111-111111111111",
+  "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "surface": "chat",
+  "phase": "capturing",
+  "mutationBoundary": "send_may_have_occurred",
+  "revision": 6,
+  "createdAt": "2026-08-16T00:00:00.000Z",
+  "updatedAt": "2026-08-16T00:00:04.000Z",
+  "capturePolicy": {
+    "responseContent": "metadata",
+    "responseFormat": "markdown",
+    "artifacts": "transfer"
+  },
+  "responseFormat": "markdown",
+  "target": {
+    "providerId": "chrome",
+    "browserId": "browser-1",
+    "tabId": "tab-1",
+    "coordinationScope": "process",
+    "canonicalThreadUrl": "https://chatgpt.com/c/sanitized",
+    "conversationId": "conversation-1",
+    "evidenceProfile": {
+      "providerIdentity": "required",
+      "stableTabId": "required",
+      "stableConversationId": "required",
+      "stableUserTurnId": "required",
+      "authoritativeTabClaim": "unavailable",
+      "replacementTabRecovery": true
+    }
+  },
+  "actions": {
+    "33333333-3333-4333-8333-333333333333": {
+      "actionId": "33333333-3333-4333-8333-333333333333",
+      "kind": "send",
+      "repeatPolicy": "observe_only_after_intent",
+      "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "targetDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "intentRevision": 3,
+      "intentAt": "2026-08-16T00:00:01.000Z",
+      "outcome": "satisfied",
+      "receiptRevision": 4,
+      "receiptAt": "2026-08-16T00:00:02.000Z",
+      "evidenceDigest": "hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "66666666-6666-4666-8666-666666666666": {
+      "actionId": "66666666-6666-4666-8666-666666666666",
+      "kind": "local_output_commit",
+      "repeatPolicy": "reconcile_local_effect",
+      "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "targetDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "intentRevision": 5,
+      "intentAt": "2026-08-16T00:00:03.000Z"
+    },
+    "77777777-7777-4777-8777-777777777777": {
+      "actionId": "77777777-7777-4777-8777-777777777777",
+      "kind": "local_output_commit",
+      "repeatPolicy": "reconcile_local_effect",
+      "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "targetDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "intentRevision": 6,
+      "intentAt": "2026-08-16T00:00:04.000Z"
+    }
+  },
+  "ownershipBaseline": {
+    "schemaVersion": "chatgpt.browser_control.operation_ownership_baseline.v1",
+    "operationId": "11111111-1111-4111-8111-111111111111",
+    "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "actionId": "33333333-3333-4333-8333-333333333333",
+    "baseline": {
+      "schemaVersion": "chatgpt.browser_control.turn_ownership.v1",
+      "snapshotDigest": "hmac-sha256:1212121212121212121212121212121212121212121212121212121212121212",
+      "target": {
+        "provider": { "status": "available", "value": "chrome" },
+        "browser": { "status": "available", "value": "browser-1" },
+        "tab": { "status": "available", "value": "tab-1" },
+        "thread": { "status": "available", "value": "conversation-1" },
+        "conversation": { "status": "available", "value": "conversation-1" },
+        "canonicalThreadUrl": { "status": "available", "value": "https://chatgpt.com/c/sanitized" },
+        "authoritativeTabClaim": { "status": "unavailable", "reason": "not_exposed" },
+        "coordinationScope": "process"
+      },
+      "userTurns": [],
+      "assistantTurns": [],
+      "completeness": "complete"
+    },
+    "observedAt": "2026-08-16T00:00:01.000Z"
+  },
+  "ownershipBaselines": {
+    "33333333-3333-4333-8333-333333333333": {
+      "schemaVersion": "chatgpt.browser_control.operation_ownership_baseline.v1",
+      "operationId": "11111111-1111-4111-8111-111111111111",
+      "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "actionId": "33333333-3333-4333-8333-333333333333",
+      "baseline": {
+        "schemaVersion": "chatgpt.browser_control.turn_ownership.v1",
+        "snapshotDigest": "hmac-sha256:1212121212121212121212121212121212121212121212121212121212121212",
+        "target": {
+          "provider": { "status": "available", "value": "chrome" },
+          "browser": { "status": "available", "value": "browser-1" },
+          "tab": { "status": "available", "value": "tab-1" },
+          "thread": { "status": "available", "value": "conversation-1" },
+          "conversation": { "status": "available", "value": "conversation-1" },
+          "canonicalThreadUrl": { "status": "available", "value": "https://chatgpt.com/c/sanitized" },
+          "authoritativeTabClaim": { "status": "unavailable", "reason": "not_exposed" },
+          "coordinationScope": "process"
+        },
+        "userTurns": [],
+        "assistantTurns": [],
+        "completeness": "complete"
+      },
+      "observedAt": "2026-08-16T00:00:01.000Z"
+    }
+  },
+  "submissionWitness": {
+    "schemaVersion": "chatgpt.browser_control.operation_submission_witness.v1",
+    "actionId": "33333333-3333-4333-8333-333333333333",
+    "actionKind": "send",
+    "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "baselineSnapshotDigest": "hmac-sha256:1212121212121212121212121212121212121212121212121212121212121212",
+    "postSendDeltaDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "operationUserEvidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "userTurnId": "user-turn-1",
+    "observedAt": "2026-08-16T00:00:02.000Z"
+  },
+  "submissionWitnesses": {
+    "33333333-3333-4333-8333-333333333333": {
+      "schemaVersion": "chatgpt.browser_control.operation_submission_witness.v1",
+      "actionId": "33333333-3333-4333-8333-333333333333",
+      "actionKind": "send",
+      "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "baselineSnapshotDigest": "hmac-sha256:1212121212121212121212121212121212121212121212121212121212121212",
+      "postSendDeltaDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "operationUserEvidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "userTurnId": "user-turn-1",
+      "observedAt": "2026-08-16T00:00:02.000Z"
+    }
+  },
+  "artifactTransfers": {
+    "66666666-6666-4666-8666-666666666666": {
+      "intent": {
+        "schemaVersion": "chatgpt.browser_control.artifact_transfer_intent.v1",
+        "operationId": "11111111-1111-4111-8111-111111111111",
+        "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "assistantTurnId": "assistant-turn-1",
+        "sourceIdentityDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "kind": "file",
+        "ordinal": 0,
+        "transferActionId": "66666666-6666-4666-8666-666666666666",
+        "destinationIdentityDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "actionKind": "local_output_commit",
+        "repeatPolicy": "reconcile_local_effect",
+        "intentAt": "2026-08-16T00:00:03.000Z"
+      }
+    },
+    "77777777-7777-4777-8777-777777777777": {
+      "intent": {
+        "schemaVersion": "chatgpt.browser_control.artifact_transfer_intent.v1",
+        "operationId": "11111111-1111-4111-8111-111111111111",
+        "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "assistantTurnId": "assistant-turn-1",
+        "sourceIdentityDigest": "hmac-sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": "image",
+        "ordinal": 1,
+        "transferActionId": "77777777-7777-4777-8777-777777777777",
+        "destinationIdentityDigest": "hmac-sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "actionKind": "local_output_commit",
+        "repeatPolicy": "reconcile_local_effect",
+        "intentAt": "2026-08-16T00:00:04.000Z"
+      }
+    }
+  }
+}

@@ -1,20 +1,32 @@
-import type { CommandResult, CompletionState, SubmissionState } from "../types.js";
+import type { CommandResult, CompletionState, ResponseFormat, SubmissionState } from "../types.js";
 import { renderUntrustedOutputReturnEnvelope } from "../safety/untrusted-output.js";
 import { interruptionFromCommandResult } from "./interruptions.js";
 import { augmentCommandBlocker } from "./resume.js";
 import type { ChatGPTAgent, ChatGPTRunData, ChatGPTRunItem, ChatGPTRunResult } from "./types.js";
+import type { OperationHandleV1 } from "../operations/types.js";
+
+const MAX_RESULT_TRAVERSAL_DEPTH = 16;
+const MAX_RESULT_TRAVERSAL_NODES = 2_048;
+type ResultTraversalBudget = { remaining: number };
 
 export function toRunResult<TOutput>(
   agent: ChatGPTAgent<TOutput>,
   result: CommandResult<unknown>
 ): ChatGPTRunResult<TOutput> {
-  const outputText = extractOutputText(result.data);
+  const extractedOutput = extractOutput(result.data);
+  const outputText = extractedOutput?.text ?? "";
   const finalOutput = parseFinalOutput(agent, outputText);
   const interruption = interruptionFromCommandResult(result, failedCommand(result));
   const interruptions = interruption === undefined ? [] : [interruption];
-  const output = runItemsFromResult(result, outputText);
+  const output = runItemsFromResult(result, outputText, extractedOutput?.source);
   const state = runStateFromResult(result, interruptions);
   const data: ChatGPTRunData<TOutput> = { outputText };
+  const operationId = readOperationId(result.data);
+  const handle = readOperationHandle(result.data);
+  const requestDigest = readRequestDigest(result.data);
+  if (operationId !== undefined) data.operationId = operationId;
+  if (handle !== undefined) data.handle = handle;
+  if (requestDigest !== undefined) data.requestDigest = requestDigest;
   const submissionState = readSubmissionState(result.data);
   const completionState = readCompletionState(result.data);
   const generationActive = readGenerationActive(result.data);
@@ -54,15 +66,33 @@ export function toRunResult<TOutput>(
   return mapped;
 }
 
-function extractOutputText(data: unknown): string {
-  if (!isRecord(data)) return "";
-  if (typeof data.responseText === "string") return data.responseText;
-  if (typeof data.text === "string") return data.text;
-  for (const value of Object.values(data)) {
-    const nested = extractOutputText(value);
-    if (nested.length > 0) return nested;
+type ExtractedOutput = {
+  text: string;
+  source: Record<string, unknown>;
+};
+
+function extractOutput(
+  data: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0,
+  budget: ResultTraversalBudget = { remaining: MAX_RESULT_TRAVERSAL_NODES }
+): ExtractedOutput | undefined {
+  if (!enterResultRecord(data, seen, depth, budget)) return undefined;
+  const responseText = ownDataProperty(data, "responseText");
+  if (typeof responseText === "string") {
+    return { text: responseText, source: data };
   }
-  return "";
+  const text = ownDataProperty(data, "text");
+  if (typeof text === "string") {
+    return { text, source: data };
+  }
+  for (const value of ownDataValues(data)) {
+    const nested = extractOutput(value, seen, depth + 1, budget);
+    // Keep the pre-existing extractor's behavior: an empty nested record is
+    // not a usable result, so continue searching siblings for real output.
+    if (nested !== undefined && nested.text.length > 0) return nested;
+  }
+  return undefined;
 }
 
 function parseFinalOutput<TOutput>(agent: ChatGPTAgent<TOutput>, outputText: string): TOutput | undefined {
@@ -77,15 +107,19 @@ function parseFinalOutput<TOutput>(agent: ChatGPTAgent<TOutput>, outputText: str
   return outputText as TOutput;
 }
 
-function runItemsFromResult(result: CommandResult<unknown>, outputText: string): ChatGPTRunItem[] {
+function runItemsFromResult(
+  result: CommandResult<unknown>,
+  outputText: string,
+  outputSource: Record<string, unknown> | undefined
+): ChatGPTRunItem[] {
+  const responseFormat = responseFormatForOutput(result.data, outputSource);
   const items = lifecycleItemsFromSteps(result.steps);
+  // Prompt provenance is independent from assistant-output provenance: a
+  // submitted prompt may be recorded in a sibling branch of the result.
   items.push(...messageItemsFromData(result.data));
   if (!items.some(item => item.type === "message.completed" || item.type === "message.in_progress") && outputText.length > 0) {
-    if (result.status === "partial" && readCompletionState(result.data) !== "complete") {
-      items.push(inProgressItem(outputText, readCompletionState(result.data), readGenerationActive(result.data)));
-    } else {
-      items.push({ type: "message.completed", role: "assistant", output_text: outputText, format: "markdown" });
-    }
+    const assistant = assistantItemFromOutput(outputSource, outputText, responseFormat, result.status);
+    if (assistant !== undefined) items.push(assistant);
   }
   if (result.blocker !== undefined) {
     items.push({ type: "run.blocked", blocker: augmentCommandBlocker(result.blocker) });
@@ -126,31 +160,67 @@ function lifecycleItemsFromSteps(steps: CommandResult<unknown>["steps"]): ChatGP
   return items;
 }
 
-function messageItemsFromData(data: unknown): ChatGPTRunItem[] {
-  if (!isRecord(data)) return [];
+function messageItemsFromData(
+  data: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0,
+  budget: ResultTraversalBudget = { remaining: MAX_RESULT_TRAVERSAL_NODES }
+): ChatGPTRunItem[] {
+  if (!enterResultRecord(data, seen, depth, budget)) return [];
   const items: ChatGPTRunItem[] = [];
-  if (typeof data.prompt === "string" && data.prompt.length > 0) {
+  const prompt = ownDataProperty(data, "prompt");
+  if (typeof prompt === "string" && prompt.length > 0) {
     items.push({
       type: "message.submitted",
       role: "user",
-      preview: data.prompt.length > 160 ? `${data.prompt.slice(0, 159)}...` : data.prompt,
+      preview: prompt.length > 160 ? `${prompt.slice(0, 159)}...` : prompt,
       redacted: true
     });
+    return items;
   }
-  if (typeof data.responseText === "string" && data.responseText.length > 0) {
-    if (readCompletionState(data) === "complete" || data.complete === true) {
-      items.push({ type: "message.completed", role: "assistant", output_text: data.responseText, format: "markdown" });
-    } else {
-      items.push(inProgressItem(data.responseText, readCompletionState(data), readGenerationActive(data)));
-    }
-  }
-  if (items.length > 0) return items;
-
-  for (const value of Object.values(data)) {
-    const nested = messageItemsFromData(value);
+  for (const value of ownDataValues(data)) {
+    const nested = messageItemsFromData(value, seen, depth + 1, budget);
     if (nested.length > 0) return nested;
   }
-  return [];
+  return items;
+}
+
+function assistantItemFromOutput(
+  outputSource: Record<string, unknown> | undefined,
+  outputText: string,
+  responseFormat: ResponseFormat,
+  resultStatus: CommandResult<unknown>["status"]
+): ChatGPTRunItem | undefined {
+  if (outputSource === undefined || outputText.length === 0) return undefined;
+
+  // The selected output record is the sole authority for assistant text and
+  // lifecycle metadata. In particular, do not recursively borrow completion
+  // state from a later sibling branch.
+  const completionState = completionStateFromRecord(outputSource);
+  const complete = ownDataProperty(outputSource, "complete");
+  if (completionState === "complete" || complete === true) {
+    return { type: "message.completed", role: "assistant", output_text: outputText, format: responseFormat };
+  }
+
+  const incomplete = complete === false
+    || completionState !== undefined
+    || resultStatus === "partial";
+  if (incomplete) {
+    return inProgressItem(outputText, completionState, generationActiveFromRecord(outputSource), responseFormat);
+  }
+  return { type: "message.completed", role: "assistant", output_text: outputText, format: responseFormat };
+}
+
+function completionStateFromRecord(data: Record<string, unknown>): CompletionState | undefined {
+  const value = ownDataProperty(data, "completionState");
+  return value === "complete" || value === "generating" || value === "stopped" || value === "partial" || value === "unknown"
+    ? value
+    : undefined;
+}
+
+function generationActiveFromRecord(data: Record<string, unknown>): boolean | undefined {
+  const value = ownDataProperty(data, "generationActive");
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function runStateFromResult(
@@ -163,6 +233,16 @@ function runStateFromResult(
     id: firstResume?.supported === true && firstResume.stateId !== undefined ? firstResume.stateId : `run_${Date.now().toString(36)}`,
     resumable
   };
+  const operationId = readOperationId(result.data);
+  const handle = readOperationHandle(result.data);
+  if (operationId !== undefined) {
+    state.operationId = operationId;
+    // Use the durable identity for correlation without changing the runner's
+    // resume-policy bit: recovery is collect-only through the operation
+    // handle, not permission to replay the high-level workflow.
+    state.id = operationId;
+  }
+  if (handle !== undefined) state.handle = handle;
   const thread = threadRefFromContext(result.context);
   if (thread !== undefined) state.thread = thread;
   const submissionState = readSubmissionState(result.data);
@@ -175,14 +255,15 @@ function runStateFromResult(
 function inProgressItem(
   outputText: string,
   completionState: CompletionState | undefined,
-  generationActive: boolean | undefined
+  generationActive: boolean | undefined,
+  responseFormat: ResponseFormat
 ): ChatGPTRunItem {
   const item: ChatGPTRunItem = {
     type: "message.in_progress",
     role: "assistant",
     output_text: outputText,
     preview: outputText.length > 160 ? `${outputText.slice(0, 159)}...` : outputText,
-    format: "markdown",
+    format: responseFormat,
     textLength: outputText.length,
     textHash: hashText(outputText)
   };
@@ -191,40 +272,185 @@ function inProgressItem(
   return item;
 }
 
-function readCompletionState(data: unknown): CompletionState | undefined {
-  if (!isRecord(data)) return undefined;
-  const value = data.completionState;
+function responseFormatForOutput(
+  data: unknown,
+  outputSource: Record<string, unknown> | undefined
+): ResponseFormat {
+  // A top-level responseFormat is an explicit result contract and therefore
+  // remains authoritative even when the output text is nested below it.
+  const topLevel = ownDataProperty(data, "responseFormat");
+  if (isResponseFormat(topLevel)) return topLevel;
+
+  // Legacy format fields are only meaningful when co-located with the record
+  // whose text won the bounded output traversal. Never borrow one from an
+  // unrelated metadata/configuration branch.
+  const local = responseFormatFromRecord(outputSource);
+  return local ?? "markdown";
+}
+
+function responseFormatFromRecord(data: Record<string, unknown> | undefined): ResponseFormat | undefined {
+  if (data === undefined) return undefined;
+  const explicit = ownDataProperty(data, "responseFormat");
+  if (isResponseFormat(explicit)) return explicit;
+  const local = ownDataProperty(data, "format");
+  return isResponseFormat(local) ? local : undefined;
+}
+
+function isResponseFormat(value: unknown): value is ResponseFormat {
+  return value === "markdown"
+    || value === "text"
+    || value === "normalized_text"
+    || value === "visible_text"
+    || value === "html"
+    || value === "blocks"
+    || value === "all";
+}
+
+function readCompletionState(
+  data: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0,
+  budget: ResultTraversalBudget = { remaining: MAX_RESULT_TRAVERSAL_NODES }
+): CompletionState | undefined {
+  if (!enterResultRecord(data, seen, depth, budget)) return undefined;
+  const value = ownDataProperty(data, "completionState");
   if (value === "complete" || value === "generating" || value === "stopped" || value === "partial" || value === "unknown") {
     return value;
   }
-  for (const nested of Object.values(data)) {
-    const nestedState = readCompletionState(nested);
+  for (const nested of ownDataValues(data)) {
+    const nestedState = readCompletionState(nested, seen, depth + 1, budget);
     if (nestedState !== undefined) return nestedState;
   }
   return undefined;
 }
 
-function readSubmissionState(data: unknown): SubmissionState | undefined {
-  if (!isRecord(data)) return undefined;
-  const value = data.submissionState;
+function readSubmissionState(
+  data: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0,
+  budget: ResultTraversalBudget = { remaining: MAX_RESULT_TRAVERSAL_NODES }
+): SubmissionState | undefined {
+  if (!enterResultRecord(data, seen, depth, budget)) return undefined;
+  const value = ownDataProperty(data, "submissionState");
   if (value === "not_submitted" || value === "submitted" || value === "submitted_unconfirmed" || value === "submitted_generating") {
     return value;
   }
-  for (const nested of Object.values(data)) {
-    const nestedState = readSubmissionState(nested);
+  for (const nested of ownDataValues(data)) {
+    const nestedState = readSubmissionState(nested, seen, depth + 1, budget);
     if (nestedState !== undefined) return nestedState;
   }
   return undefined;
 }
 
-function readGenerationActive(data: unknown): boolean | undefined {
-  if (!isRecord(data)) return undefined;
-  if (typeof data.generationActive === "boolean") return data.generationActive;
-  for (const nested of Object.values(data)) {
-    const value = readGenerationActive(nested);
+function readGenerationActive(
+  data: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0,
+  budget: ResultTraversalBudget = { remaining: MAX_RESULT_TRAVERSAL_NODES }
+): boolean | undefined {
+  if (!enterResultRecord(data, seen, depth, budget)) return undefined;
+  const generationActive = ownDataProperty(data, "generationActive");
+  if (typeof generationActive === "boolean") return generationActive;
+  for (const nested of ownDataValues(data)) {
+    const value = readGenerationActive(nested, seen, depth + 1, budget);
     if (value !== undefined) return value;
   }
   return undefined;
+}
+
+function readOperationId(data: unknown): string | undefined {
+  const value = ownDataProperty(data, "operationId");
+  return typeof value === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value)
+    ? value
+    : undefined;
+}
+
+function readRequestDigest(data: unknown): string | undefined {
+  const value = ownDataProperty(data, "requestDigest");
+  return typeof value === "string" && /^hmac-sha256:[0-9a-f]{64}$/u.test(value)
+    ? value
+    : undefined;
+}
+
+function readOperationHandle(data: unknown): OperationHandleV1 | undefined {
+  const value = ownDataProperty(data, "handle");
+  if (!isRecord(value)) return undefined;
+  const operationId = ownDataProperty(value, "operationId");
+  const requestDigest = ownDataProperty(value, "requestDigest");
+  const schemaVersion = ownDataProperty(value, "schemaVersion");
+  const surface = ownDataProperty(value, "surface");
+  const revision = ownDataProperty(value, "revision");
+  const phase = ownDataProperty(value, "phase");
+  const mutationBoundary = ownDataProperty(value, "mutationBoundary");
+  const targetBindingDigest = ownDataProperty(value, "targetBindingDigest");
+  if (
+    schemaVersion !== "chatgpt.browser_control.operation_handle.v1"
+    || typeof operationId !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(operationId)
+    || typeof requestDigest !== "string"
+    || !/^hmac-sha256:[0-9a-f]{64}$/u.test(requestDigest)
+    || (surface !== "chat" && surface !== "work")
+    || !Number.isSafeInteger(revision)
+    || (revision as number) < 1
+    || !["prepared", "handoff_pending", "ready", "send_pending", "submitted", "generating", "capturing", "completed", "uncertain"].includes(String(phase))
+    || !["none", "handoff_may_have_occurred", "send_may_have_occurred", "control_may_have_occurred"].includes(String(mutationBoundary))
+    || (targetBindingDigest !== undefined
+      && (typeof targetBindingDigest !== "string" || !/^hmac-sha256:[0-9a-f]{64}$/u.test(targetBindingDigest)))
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    schemaVersion,
+    operationId,
+    requestDigest,
+    surface,
+    revision: revision as number,
+    phase: phase as OperationHandleV1["phase"],
+    mutationBoundary: mutationBoundary as OperationHandleV1["mutationBoundary"],
+    ...(targetBindingDigest === undefined ? {} : { targetBindingDigest })
+  });
+}
+
+/** Never invoke a getter while extracting operation metadata from result data. */
+function ownDataProperty(value: unknown, key: string): unknown {
+  if (!isRecord(value)) return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor !== undefined && "value" in descriptor ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Enumerate data values without invoking getters or trusting proxy traps. */
+function ownDataValues(value: unknown): readonly unknown[] {
+  if (!isRecord(value)) return [];
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const values: unknown[] = [];
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (typeof key !== "string") continue;
+      const descriptor = descriptors[key];
+      if (descriptor !== undefined && "value" in descriptor) values.push(descriptor.value);
+    }
+    return values;
+  } catch {
+    return [];
+  }
+}
+
+function enterResultRecord(
+  value: unknown,
+  seen: WeakSet<object>,
+  depth: number,
+  budget: ResultTraversalBudget
+): value is Record<string, unknown> {
+  if (!isRecord(value) || depth > MAX_RESULT_TRAVERSAL_DEPTH || budget.remaining <= 0) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  budget.remaining -= 1;
+  return true;
 }
 
 function hashText(value: string): string {

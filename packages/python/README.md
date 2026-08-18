@@ -91,6 +91,38 @@ The `ChatGPT` facade exposes workflows and primitive command groups:
 
 Unsupported OpenAI API-only Responses fields, such as `model`, `temperature`, and `previous_response_id`, return explicit unsupported responses instead of silently submitting misleading prompts.
 
+## Transactional operations (v1 preview)
+
+`chatgpt.operations` and `AsyncChatGPT.operations` expose the shared
+`submit`, `collect`, `inspect`, and `control` commands; `run` is an SDK
+composition of one submit and at most one collect.
+
+```python
+submitted = chatgpt.operations.submit(
+    operation_id="123e4567-e89b-42d3-a456-426614174000",
+    surface="chat",
+    prompt="Summarize the visible thread.",
+    target={"type": "conversation_id", "conversationId": "caller-owned-conversation-id"},
+    capture={"responseContent": "metadata", "artifacts": "receipt_only"},
+)
+
+if submitted.status == "accepted":
+    collected = chatgpt.operations.collect(
+        handle=submitted.handle,
+        wait=False,
+        response_content="metadata",
+    )
+```
+
+The caller owns the canonical `operation_id` and must persist/reuse the fresh
+handle after partial or uncertain outcomes; a new ID must not be used to repeat
+the same logical Send. Python keeps idiomatic snake_case arguments while
+validating the same strict camelCase wire envelopes as TypeScript. High-level
+Runner and Responses calls opt in only when given `operation_id`; legacy calls
+remain compatible. See
+[Transactional browser operations](../node/references/2026-08-16-transactional-operations.md)
+for recovery, privacy, coordinator, and provider-capability boundaries.
+
 Inspect and control Chat or Work with the same sync/async surface:
 
 ```python
@@ -164,6 +196,15 @@ added = chatgpt.projects.sources.add(
 ## Backend And Browser Bridge
 
 Ordinary shells can launch the backend and validate the protocol. Browser-required calls need a compatible browser bridge.
+
+The persistent Python transport uses one lifecycle-owned reader and routes
+concurrent unary and milestone-stream records by `requestId`. Per-stream event
+and byte queues, pending stdin writes, and aggregate live routes are bounded.
+`max_in_flight` defaults to `256` with a minimum of `2`; saturation rejects
+before request-ID reservation, and negotiation retains one virtual control
+slot whenever no hello/legacy probe is currently charged. This is transport
+multiplexing, not permission to mutate one tab concurrently: the Node runtime's
+capability-gated per-tab coordinator remains authoritative.
 
 Without a bridge, live browser operations should return:
 

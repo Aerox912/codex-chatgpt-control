@@ -1,4 +1,5 @@
 import { resultError, resultOk } from "../errors.js";
+import { readPageState } from "../browser/page-state.js";
 import { localeLabels } from "../dom/locale-labels.js";
 import { normalizeForLabelMatch, visibleLabelMatches } from "../dom/label-match.js";
 import type {
@@ -66,6 +67,8 @@ export async function openExperience(
   const page = env.page!;
   try {
     const before = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
+    const initialBlocker = await experiencePageBlocker(page, before);
+    if (initialBlocker !== undefined) return initialBlocker;
     if (before.experience === args.experience) {
       return resultOk({
         experience: args.experience,
@@ -88,6 +91,8 @@ export async function openExperience(
     let controlClicked = await clickUniqueExperienceControl(page, labels);
     if (!controlClicked && await navigateConversationToSurfaceHome(page, args.timeoutMs)) {
       observed = detectExperienceFromSnapshot(await readSurfaceSnapshot(page));
+      const navigationBlocker = await experiencePageBlocker(page, observed);
+      if (navigationBlocker !== undefined) return navigationBlocker;
       if (observed.experience === args.experience) {
         return resultOk({
           experience: args.experience,
@@ -122,6 +127,8 @@ export async function openExperience(
       controlClicked = await clickUniqueExperienceControl(page, labels);
     }
     if (!controlClicked) {
+      const discoveryBlocker = await experiencePageBlocker(page, observed);
+      if (discoveryBlocker !== undefined) return discoveryBlocker;
       return experienceSelectorDrift(
         page,
         `No unique visible ChatGPT ${args.experience === "work" ? "Work" : "Chat"} surface control was found.`,
@@ -146,6 +153,8 @@ export async function openExperience(
       }
     }
 
+    const postconditionBlocker = await experiencePageBlocker(page, after);
+    if (postconditionBlocker !== undefined) return postconditionBlocker;
     return {
       ok: false,
       status: "blocked",
@@ -166,6 +175,31 @@ export async function openExperience(
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
   }
+}
+
+async function experiencePageBlocker(
+  page: PageLike,
+  observed: DetectExperienceData
+): Promise<CommandResult<OpenExperienceData> | undefined> {
+  const state = await readPageState(page);
+  if (state.blocker === undefined) return undefined;
+  return {
+    ok: false,
+    status: "blocked",
+    warnings: [],
+    blocker: {
+      kind: state.blocker.kind,
+      code: `experience_blocked_${state.blocker.kind}`,
+      fieldPath: "experience",
+      message: state.blocker.message,
+      ...(state.blocker.visibleText === undefined ? {} : { visibleText: state.blocker.visibleText }),
+      resumable: true
+    },
+    context: await contextFromPage(page, {
+      experience: observed.experience,
+      selectorProfile: observed.selectorProfile
+    })
+  };
 }
 
 function pollAttempts(timeoutMs: number, pollMs: number): number {

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/operation-control-receipt.schema.json",
+  "title": "Transactional browser operation control receipt",
+  "description": "A redacted receipt for one operation-bound stop or steer action. It never contains the steer text or response content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "controlActionId",
+    "parentOperationId",
+    "parentRequestDigest",
+    "parentTargetBindingDigest",
+    "expectedAssistantTurnId",
+    "requestDigest",
+    "action",
+    "outcome",
+    "observedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "chatgpt.browser_control.operation_control_receipt.v1" },
+    "controlActionId": { "$ref": "#/$defs/uuid" },
+    "parentOperationId": { "$ref": "#/$defs/uuid" },
+    "parentRequestDigest": { "$ref": "#/$defs/digest" },
+    "parentTargetBindingDigest": { "$ref": "#/$defs/digest" },
+    "expectedAssistantTurnId": { "$ref": "#/$defs/opaqueId" },
+    "requestDigest": { "$ref": "#/$defs/digest" },
+    "action": { "enum": ["stop", "steer"] },
+    "outcome": { "enum": ["satisfied", "not_satisfied", "uncertain"] },
+    "evidenceDigest": { "$ref": "#/$defs/digest" },
+    "blockerCode": { "$ref": "#/$defs/blockerCode" },
+    "observedAt": { "$ref": "#/$defs/instant" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "satisfied" } }, "required": ["outcome"] },
+      "then": {
+        "required": ["evidenceDigest"],
+        "properties": {
+          "evidenceDigest": { "$ref": "#/$defs/digest" },
+          "blockerCode": false
+        }
+      }
+    },
+    {
+      "if": { "properties": { "outcome": { "enum": ["not_satisfied", "uncertain"] } }, "required": ["outcome"] },
+      "then": { "required": ["blockerCode"] }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001f\\u007f]{1,512}$"
+    },
+    "instant": {
+      "type": "string",
+      "pattern": "^(?!\\d{4}-02-(?:30|31)T)(?!\\d{4}-(?:04|06|09|11)-31T)\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    },
+    "blockerCode": {
+      "enum": [
+        "operation_not_found",
+        "operation_request_mismatch",
+        "operation_state_corrupt",
+        "operation_receipt_expired",
+        "operation_quota_exceeded",
+        "operation_cancelled",
+        "operation_timeout",
+        "ambiguous_file_handoff",
+        "ambiguous_submit",
+        "attachment_manifest_mismatch",
+        "input_file_changed",
+        "target_binding_mismatch",
+        "target_evidence_unavailable",
+        "turn_ownership_ambiguous",
+        "concurrent_user_turn",
+        "configuration_drift",
+        "tab_ownership_conflict",
+        "provider_concurrency_unsupported",
+        "runtime_incompatible",
+        "backend_unavailable",
+        "browser_bridge_unavailable",
+        "login_required",
+        "captcha",
+        "rate_limited",
+        "permission_required",
+        "needs_confirmation",
+        "selector_drift",
+        "send_control_unavailable",
+        "capture_ownership_lost",
+        "artifact_unavailable",
+        "artifact_transfer_partial",
+        "output_collision",
+        "output_commit_indeterminate",
+        "clipboard_restore_failed"
+      ]
+    }
+  }
+}

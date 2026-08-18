@@ -1,0 +1,31 @@
+{
+  "action": "stop",
+  "blocker": {
+    "code": "send_control_unavailable",
+    "message": "Operation blocked: send control unavailable (evidence recorded).",
+    "mutationBoundary": "control_may_have_occurred",
+    "operationId": "11111111-1111-4111-8111-111111111111",
+    "phase": "generating",
+    "recoverable": true,
+    "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "schemaVersion": "chatgpt.browser_control.operation_blocker.v1"
+  },
+  "controlActionId": "22222222-2222-4222-8222-222222222222",
+  "expectedAssistantTurnId": "assistant-turn-1",
+  "handle": {
+    "mutationBoundary": "control_may_have_occurred",
+    "operationId": "11111111-1111-4111-8111-111111111111",
+    "phase": "generating",
+    "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revision": 6,
+    "schemaVersion": "chatgpt.browser_control.operation_handle.v1",
+    "surface": "chat",
+    "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "operationId": "11111111-1111-4111-8111-111111111111",
+  "parentRequestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "parentTargetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "requestDigest": "hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "schemaVersion": "chatgpt.browser_control.operation_control_result.v1",
+  "status": "uncertain"
+}

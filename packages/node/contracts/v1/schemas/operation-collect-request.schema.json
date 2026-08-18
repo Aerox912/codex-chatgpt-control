@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/operation-collect-request.schema.json",
+  "title": "Transactional browser operation collect request",
+  "description": "A browser-touching collect request. It can observe and capture only the exact operation-owned turn; it cannot compose, attach, or submit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "handle"],
+  "properties": {
+    "schemaVersion": { "const": "chatgpt.browser_control.operation_collect_request.v1" },
+    "handle": { "$ref": "#/$defs/handle" },
+    "wait": { "type": "boolean" },
+    "timeoutMs": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "pollIntervalMs": { "type": "integer", "minimum": 0, "maximum": 60000 },
+    "responseContent": { "enum": ["include", "metadata"] }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "handle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "requestDigest", "surface", "revision", "phase", "mutationBoundary"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_handle.v1" },
+        "operationId": { "$ref": "#/$defs/uuid" },
+        "requestDigest": { "$ref": "#/$defs/digest" },
+        "surface": { "enum": ["chat", "work"] },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "phase": {
+          "enum": ["prepared", "handoff_pending", "ready", "send_pending", "submitted", "generating", "capturing", "completed", "uncertain"]
+        },
+        "mutationBoundary": {
+          "enum": ["none", "handoff_may_have_occurred", "send_may_have_occurred", "control_may_have_occurred"]
+        },
+        "targetBindingDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

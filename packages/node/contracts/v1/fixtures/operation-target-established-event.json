@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "chatgpt.browser_control.operation_event.v1",
+  "revision": 5,
+  "previousEventDigest": "hmac-sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "eventDigest": "hmac-sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "event": {
+    "type": "target_established",
+    "establishment": {
+      "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "anchorDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "causalSendActionId": "33333333-3333-4333-8333-333333333333",
+      "conversationId": "conversation-new",
+      "canonicalThreadUrl": "https://chatgpt.com/c/conversation-new",
+      "userTurnId": "user-turn-1",
+      "userTurnEvidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "postSendDeltaDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "evidenceDigest": "hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "observedAt": "2026-08-16T00:00:02.000Z"
+    }
+  }
+}

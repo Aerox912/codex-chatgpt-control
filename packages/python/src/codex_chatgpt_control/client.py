@@ -6,6 +6,7 @@ from .agent import Agent
 from .commands import CommandClient
 from .diagnostics import explain_blocker
 from .models import ChatGPTRunResult, SequencePlan
+from .operations import OperationsClient
 from .primitives import (
     ArtifactsClient,
     ConfigurationClient,
@@ -22,6 +23,12 @@ from .primitives import (
 )
 from .reports import ReportsClient
 from .responses import ResponsesClient
+from .runner import (
+    TransactionalInputError,
+    _operation_id_from_input,
+    _unsupported_run_result,
+    run_transactional_sync,
+)
 from .workflows import WorkflowClient
 
 
@@ -46,7 +53,32 @@ class ChatGPTRunner:
     def __init__(self, transport: RunTransport) -> None:
         self._transport = transport
 
-    def run(self, agent: ChatGPTAgent, input: Any) -> ChatGPTRunResult:
+    def run(
+        self,
+        agent: ChatGPTAgent,
+        input: Any,
+        *,
+        operation_id: str | None = None,
+        **operation_options: Any,
+    ) -> ChatGPTRunResult:
+        try:
+            embedded_operation_id = _operation_id_from_input(input)
+        except TransactionalInputError as error:
+            return _unsupported_run_result(agent, operation_id, error)
+        except Exception:
+            return _unsupported_run_result(
+                agent,
+                operation_id,
+                TransactionalInputError("<invalid-field>", "runner input could not be read safely."),
+            )
+        if operation_id is not None or embedded_operation_id is not None:
+            return run_transactional_sync(
+                self._transport,
+                agent,
+                input,
+                operation_id=operation_id,
+                options=operation_options,
+            )
         runner_run = getattr(self._transport, "runner_run", None)
         if callable(runner_run):
             result = runner_run(agent.to_wire(), input)
@@ -90,9 +122,17 @@ class ChatGPT:
         self.tools = ToolsClient(self._transport)
         self.response = ResponseClient(self._transport)
         self.reports = ReportsClient(self._transport)
+        self.operations = OperationsClient(self._transport)
 
-    def run(self, agent: ChatGPTAgent, input: Any) -> ChatGPTRunResult:
-        return self.runner.run(agent, input)
+    def run(
+        self,
+        agent: ChatGPTAgent,
+        input: Any,
+        *,
+        operation_id: str | None = None,
+        **operation_options: Any,
+    ) -> ChatGPTRunResult:
+        return self.runner.run(agent, input, operation_id=operation_id, **operation_options)
 
     def ask(self, **kwargs: Any):
         return self._workflows.ask(**kwargs)
@@ -132,6 +172,13 @@ class ChatGPT:
 
     def explain_blocker(self, result_or_blocker: Any, **kwargs: Any) -> dict[str, Any]:
         return explain_blocker(result_or_blocker, **kwargs)
+
+    def close(self) -> None:
+        """Close a lifecycle-owned backend session when the transport exposes one."""
+
+        close_backend = getattr(self._transport, "close", None)
+        if callable(close_backend):
+            close_backend()
 
     def commands(self, *, layer: str | None = None):
         return self._commands.commands(layer=layer)

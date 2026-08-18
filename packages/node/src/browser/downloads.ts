@@ -5,6 +5,8 @@ import { localGuardTimeout, withTimeout } from "../commands/timeouts.js";
 
 export type DownloadLike = {
   suggestedFilename?: () => string;
+  /** Capability-based stream exposed by Playwright's Download implementation. */
+  createReadStream?: () => Promise<AsyncIterable<Uint8Array>>;
   saveAs?: (path: string) => Promise<void>;
   path?: () => Promise<string | null>;
 };

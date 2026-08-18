@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/operation-recovery.schema.json",
+  "title": "Transactional browser operation recovery observation or decision",
+  "description": "Collect-only recovery is represented as an observation or an explicit non-repeating decision. No branch authorizes replay after a durable mutation intent.",
+  "oneOf": [
+    { "$ref": "#/$defs/observation" },
+    { "$ref": "#/$defs/decision" }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001f\\u007f]{1,512}$"
+    },
+    "actionKind": {
+      "enum": [
+        "status_read",
+        "configuration_set",
+        "tool_set",
+        "composer_set",
+        "power_discovery",
+        "power_select",
+        "file_handoff",
+        "send",
+        "work_steer",
+        "stop",
+        "download",
+        "local_output_commit",
+        "clipboard_capture_restore"
+      ]
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "target", "turn"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_recovery_observation.v1" },
+        "target": { "$ref": "#/$defs/targetObservation" },
+        "turn": { "$ref": "#/$defs/turnObservation" }
+      }
+    },
+    "targetObservation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": { "status": { "const": "matches" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": { "const": "mismatch" },
+            "evidenceDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": { "const": "unavailable" },
+            "evidenceDigest": { "$ref": "#/$defs/digest" }
+          }
+        }
+      ]
+    },
+    "turnObservation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": { "status": { "const": "not_observed" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "userTurnId", "evidenceDigest"],
+          "properties": {
+            "status": { "const": "owned_user_turn" },
+            "userTurnId": { "$ref": "#/$defs/opaqueId" },
+            "evidenceDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "userTurnId", "assistantTurnId", "evidenceDigest"],
+          "properties": {
+            "status": { "const": "owned_assistant_generating" },
+            "userTurnId": { "$ref": "#/$defs/opaqueId" },
+            "assistantTurnId": { "$ref": "#/$defs/opaqueId" },
+            "evidenceDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "userTurnId", "assistantTurnId", "evidenceDigest"],
+          "properties": {
+            "status": { "const": "owned_assistant_terminal" },
+            "userTurnId": { "$ref": "#/$defs/opaqueId" },
+            "assistantTurnId": { "$ref": "#/$defs/opaqueId" },
+            "evidenceDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": { "const": "ambiguous" },
+            "evidenceDigest": { "$ref": "#/$defs/digest" }
+          }
+        }
+      ]
+    },
+    "decision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "kind", "receipt"],
+          "properties": {
+            "schemaVersion": { "const": "chatgpt.browser_control.operation_recovery_decision.v1" },
+            "kind": { "const": "return_completed_receipt" },
+            "receipt": { "$ref": "#/$defs/receipt" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "kind", "phase", "nonRepeatableActionMayStart"],
+          "properties": {
+            "schemaVersion": { "const": "chatgpt.browser_control.operation_recovery_decision.v1" },
+            "kind": { "const": "continue_preparation" },
+            "phase": { "enum": ["prepared", "ready"] },
+            "nonRepeatableActionMayStart": { "const": true }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "kind", "actionId", "actionKind", "mayRepeatAction"],
+          "properties": {
+            "schemaVersion": { "const": "chatgpt.browser_control.operation_recovery_decision.v1" },
+            "kind": { "const": "observe_action_postcondition" },
+            "actionId": { "$ref": "#/$defs/uuid" },
+            "actionKind": { "$ref": "#/$defs/actionKind" },
+            "mayRepeatAction": { "const": false }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "kind", "phase"],
+          "properties": {
+            "schemaVersion": { "const": "chatgpt.browser_control.operation_recovery_decision.v1" },
+            "kind": { "const": "continue_owned_turn_observation" },
+            "phase": { "enum": ["submitted", "generating"] },
+            "userTurnId": { "$ref": "#/$defs/opaqueId" },
+            "assistantTurnId": { "$ref": "#/$defs/opaqueId" },
+            "evidenceDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "kind", "assistantTurnId", "evidenceDigest"],
+          "properties": {
+            "schemaVersion": { "const": "chatgpt.browser_control.operation_recovery_decision.v1" },
+            "kind": { "const": "capture_owned_turn" },
+            "assistantTurnId": { "$ref": "#/$defs/opaqueId" },
+            "evidenceDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "kind", "code", "mayRepeatAction"],
+          "properties": {
+            "schemaVersion": { "const": "chatgpt.browser_control.operation_recovery_decision.v1" },
+            "kind": { "const": "enter_uncertain" },
+            "code": { "enum": ["target_evidence_unavailable", "turn_ownership_ambiguous", "capture_ownership_lost"] },
+            "mayRepeatAction": { "const": false }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "kind", "code", "mayRepeatAction"],
+          "properties": {
+            "schemaVersion": { "const": "chatgpt.browser_control.operation_recovery_decision.v1" },
+            "kind": { "const": "block" },
+            "code": { "enum": ["target_binding_mismatch", "target_evidence_unavailable", "operation_state_inconsistent"] },
+            "mayRepeatAction": { "const": false }
+          }
+        }
+      ]
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "operationId",
+        "requestDigest",
+        "targetBindingDigest",
+        "userTurnId",
+        "userTurnEvidenceDigest",
+        "assistantTurnId",
+        "ownershipEvidenceDigest",
+        "finishReason",
+        "contentAvailable",
+        "artifacts",
+        "completedAt"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_receipt.v1" },
+        "operationId": { "$ref": "#/$defs/uuid" },
+        "requestDigest": { "$ref": "#/$defs/digest" },
+        "targetBindingDigest": { "$ref": "#/$defs/digest" },
+        "userTurnId": { "$ref": "#/$defs/opaqueId" },
+        "userTurnEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "assistantTurnId": { "$ref": "#/$defs/opaqueId" },
+        "ownershipEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "responseDigest": { "$ref": "#/$defs/digest" },
+        "responseBytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "responseFormat": { "enum": ["markdown", "text"] },
+        "finishReason": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "contentAvailable": { "type": "boolean" },
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" }, "maxItems": 32 },
+        "completedAt": { "$ref": "#/$defs/instant" }
+      },
+      "dependentRequired": {
+        "responseDigest": ["responseBytes"],
+        "responseBytes": ["responseDigest"]
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "contentAvailable": { "const": true } }, "required": ["contentAvailable"] },
+          "then": {
+            "required": ["responseDigest", "responseBytes"],
+            "properties": {
+              "responseDigest": { "$ref": "#/$defs/digest" },
+              "responseBytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+            }
+          }
+        }
+      ]
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "artifactKey", "assistantTurnId", "sourceIdentityDigest", "kind", "ordinal", "status"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_artifact_receipt.v1" },
+        "operationId": { "$ref": "#/$defs/uuid" },
+        "artifactKey": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "assistantTurnId": { "$ref": "#/$defs/opaqueId" },
+        "sourceIdentityDigest": { "$ref": "#/$defs/digest" },
+        "kind": { "enum": ["file", "image", "other"] },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "outputKey": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "mimeType": { "type": "string", "minLength": 1, "maxLength": 127, "pattern": "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+/-]{0,126}$" },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "status": { "enum": ["available", "transferred", "partial", "blocked"] },
+        "blockerCode": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "transferred" } }, "required": ["status"] },
+          "then": {
+            "required": ["outputKey", "bytes", "sha256"],
+            "properties": {
+              "outputKey": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+              "bytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "enum": ["partial", "blocked"] } }, "required": ["status"] },
+          "then": {
+            "required": ["blockerCode"],
+            "properties": { "blockerCode": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" } }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "enum": ["available", "transferred"] } }, "required": ["status"] },
+          "then": { "not": { "required": ["blockerCode"] } }
+        }
+      ]
+    },
+    "instant": {
+      "type": "string",
+      "pattern": "^(?!\\d{4}-02-(?:30|31)T)(?!\\d{4}-(?:04|06|09|11)-31T)\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    }
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/backend-compatibility.schema.json",
+  "title": "Negotiated backend compatibility report",
+  "description": "A bounded, redacted report retained by the lifecycle-owned backend transport.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "mode", "warnings"],
+  "properties": {
+    "schemaVersion": {
+      "const": "chatgpt.browser_control.backend_compatibility.v1"
+    },
+    "status": {
+      "enum": ["compatible", "warning", "unknown", "blocked"]
+    },
+    "mode": {
+      "enum": ["multiplexed", "single-flight", "legacy", "unknown"]
+    },
+    "protocolVersion": { "$ref": "#/$defs/text" },
+    "backendSessionId": { "$ref": "#/$defs/text" },
+    "packageName": { "$ref": "#/$defs/text" },
+    "packageVersion": { "$ref": "#/$defs/text" },
+    "runtime": { "$ref": "#/$defs/text" },
+    "runtimeVersion": { "$ref": "#/$defs/text" },
+    "buildDigest": { "$ref": "#/$defs/text" },
+    "warnings": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/warning" }
+    }
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001f\\u007f]{1,512}$"
+    },
+    "warning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "enum": [
+            "package_name_mismatch",
+            "package_version_mismatch",
+            "runtime_mismatch",
+            "runtime_version_mismatch",
+            "build_digest_mismatch",
+            "provenance_unknown",
+            "legacy_backend",
+            "negotiation_rejected"
+          ]
+        },
+        "field": {
+          "enum": ["packageName", "packageVersion", "runtime", "runtimeVersion", "buildDigest"]
+        },
+        "expected": { "$ref": "#/$defs/text" },
+        "received": { "$ref": "#/$defs/text" },
+        "message": { "$ref": "#/$defs/text" }
+      }
+    }
+  }
+}

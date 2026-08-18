@@ -1,10 +1,15 @@
 {
-  "contractVersion": "0.1.0",
+  "contractVersion": "0.2.0",
   "fixtures": [
     {
       "case": "backend_capabilities",
       "file": "backend-capabilities.json",
       "schema": "capabilities"
+    },
+    {
+      "case": "backend_compatibility",
+      "file": "backend-compatibility.json",
+      "schema": "backendCompatibility"
     },
     {
       "case": "backend_error_event_missing_stream_input",
@@ -95,6 +100,136 @@
       "case": "named_plan_two_turn",
       "file": "named-plan-two-turn.json",
       "schema": "sequencePlan"
+    },
+    {
+      "case": "operation_action_prepared_event",
+      "file": "operation-action-prepared-event.json",
+      "schema": "operationEvent"
+    },
+    {
+      "case": "operation_action",
+      "file": "operation-action.json",
+      "schema": "operationAction"
+    },
+    {
+      "case": "operation_artifact_receipt",
+      "file": "operation-artifact-receipt.json",
+      "schema": "operationArtifactReceipt"
+    },
+    {
+      "case": "operation_artifact_transfer_intent_event",
+      "file": "operation-artifact-transfer-intent-event.json",
+      "schema": "operationEvent"
+    },
+    {
+      "case": "operation_artifact_transfer_receipt_event",
+      "file": "operation-artifact-transfer-receipt-event.json",
+      "schema": "operationEvent"
+    },
+    {
+      "case": "operation_artifact_transfer_state",
+      "file": "operation-artifact-transfer-state.json",
+      "schema": "operationState"
+    },
+    {
+      "case": "operation_blocker",
+      "file": "operation-blocker.json",
+      "schema": "operationBlocker"
+    },
+    {
+      "case": "operation_collect_request",
+      "file": "operation-collect-request.json",
+      "schema": "operationCollectRequest"
+    },
+    {
+      "case": "operation_collect_result",
+      "file": "operation-collect-result.json",
+      "schema": "operationCollectResult"
+    },
+    {
+      "case": "operation_control_receipt",
+      "file": "operation-control-receipt.json",
+      "schema": "operationControlReceipt"
+    },
+    {
+      "case": "operation_control_request",
+      "file": "operation-control-request.json",
+      "schema": "operationControlRequest"
+    },
+    {
+      "case": "operation_control_result",
+      "file": "operation-control-result.json",
+      "schema": "operationControlResult"
+    },
+    {
+      "case": "operation_event",
+      "file": "operation-event.json",
+      "schema": "operationEvent"
+    },
+    {
+      "case": "operation_handle",
+      "file": "operation-handle.json",
+      "schema": "operationHandle"
+    },
+    {
+      "case": "operation_inspect_request",
+      "file": "operation-inspect-request.json",
+      "schema": "operationInspectRequest"
+    },
+    {
+      "case": "operation_inspect_result",
+      "file": "operation-inspect-result.json",
+      "schema": "operationInspectResult"
+    },
+    {
+      "case": "operation_ownership_baseline_event",
+      "file": "operation-ownership-baseline-event.json",
+      "schema": "operationEvent"
+    },
+    {
+      "case": "operation_receipt",
+      "file": "operation-receipt.json",
+      "schema": "operationReceipt"
+    },
+    {
+      "case": "operation_recovery_decision",
+      "file": "operation-recovery-decision.json",
+      "schema": "operationRecovery"
+    },
+    {
+      "case": "operation_recovery_observation",
+      "file": "operation-recovery-observation.json",
+      "schema": "operationRecovery"
+    },
+    {
+      "case": "operation_request",
+      "file": "operation-request.json",
+      "schema": "operationRequest"
+    },
+    {
+      "case": "operation_state",
+      "file": "operation-state.json",
+      "schema": "operationState"
+    },
+    {
+      "case": "operation_submission_witness_event",
+      "file": "operation-submission-witness-event.json",
+      "schema": "operationEvent"
+    },
+    {
+      "case": "operation_submission_witness",
+      "file": "operation-submission-witness.json",
+      "schema": "operationSubmissionWitness"
+    },
+    {
+      "case": "operation_submit_result",
+      "file": "operation-submit-result.json",
+      "schema": "operationSubmitResult"
+    },
+    {
+      "case": "operation_target_established_event",
+      "file": "operation-target-established-event.json",
+      "schema": "operationEvent"
     },
     {
       "case": "output_json_parse_success",
@@ -279,12 +414,31 @@
   ],
   "schemas": {
     "agent": "schemas/agent.schema.json",
+    "backendCompatibility": "schemas/backend-compatibility.schema.json",
     "backendEvent": "schemas/backend-event.schema.json",
     "backendRequest": "schemas/backend-request.schema.json",
     "backendResponse": "schemas/backend-response.schema.json",
     "capabilities": "schemas/capabilities.schema.json",
     "commandDescriptor": "schemas/command-descriptor.schema.json",
     "commandResult": "schemas/command-result.schema.json",
+    "operationAction": "schemas/operation-action.schema.json",
+    "operationArtifactReceipt": "schemas/operation-artifact-receipt.schema.json",
+    "operationBlocker": "schemas/operation-blocker.schema.json",
+    "operationCollectRequest": "schemas/operation-collect-request.schema.json",
+    "operationCollectResult": "schemas/operation-collect-result.schema.json",
+    "operationControlReceipt": "schemas/operation-control-receipt.schema.json",
+    "operationControlRequest": "schemas/operation-control-request.schema.json",
+    "operationControlResult": "schemas/operation-control-result.schema.json",
+    "operationEvent": "schemas/operation-event.schema.json",
+    "operationHandle": "schemas/operation-handle.schema.json",
+    "operationInspectRequest": "schemas/operation-inspect-request.schema.json",
+    "operationInspectResult": "schemas/operation-inspect-result.schema.json",
+    "operationReceipt": "schemas/operation-receipt.schema.json",
+    "operationRecovery": "schemas/operation-recovery.schema.json",
+    "operationRequest": "schemas/operation-request.schema.json",
+    "operationState": "schemas/operation-state.schema.json",
+    "operationSubmissionWitness": "schemas/operation-submission-witness.schema.json",
+    "operationSubmitResult": "schemas/operation-submit-result.schema.json",
     "response": "schemas/response.schema.json",
     "runResult": "schemas/run-result.schema.json",
     "sequencePlan": "schemas/sequence-plan.schema.json",

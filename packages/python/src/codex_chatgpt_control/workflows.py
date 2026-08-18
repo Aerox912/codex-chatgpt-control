@@ -4,6 +4,7 @@ from typing import Any
 
 from .commands import wire_kwargs
 from .models import CommandResult
+from .operation_models import BackendCompatibilityReport
 from .primitives import command_result
 
 
@@ -42,7 +43,8 @@ class WorkflowClient:
         return command_result(self._backend, "runPlan", plan)
 
     def doctor(self, **kwargs: Any) -> CommandResult:
-        return command_result(self._backend, "doctor", wire_kwargs(**kwargs))
+        result = command_result(self._backend, "doctor", wire_kwargs(**kwargs))
+        return _attach_doctor_compatibility(result, self._backend, kwargs)
 
     def create_report(self, result: dict[str, Any], **kwargs: Any) -> CommandResult:
         payload: dict[str, Any] = {"result": result}
@@ -50,3 +52,36 @@ class WorkflowClient:
         if args:
             payload["args"] = args
         return command_result(self._backend, "createReport", payload)
+
+
+def _attach_doctor_compatibility(result: CommandResult, backend: Any, kwargs: dict[str, Any]) -> CommandResult:
+    getter = getattr(backend, "compatibility_report", None)
+    if not callable(getter):
+        return result
+    requested = kwargs.get("check")
+    if isinstance(requested, list) and "compatibility" not in requested:
+        return result
+    report = getter()
+    if not isinstance(report, dict):
+        return result
+    try:
+        parsed = BackendCompatibilityReport.from_wire(report)
+    except (TypeError, ValueError):
+        return result
+    if not isinstance(result.data, dict):
+        return result
+    checks = result.data.get("checks")
+    if not isinstance(checks, dict):
+        checks = {}
+    warning = parsed.warnings[0] if parsed.warnings else None
+    status = "blocked" if parsed.status == "blocked" else "unknown" if parsed.status in {"warning", "unknown"} else "ok"
+    compatibility = {
+        "status": status,
+        "message": warning.message if warning is not None else "Backend protocol and advertised capabilities are compatible.",
+        "details": parsed.to_wire(),
+    }
+    if warning is not None:
+        compatibility["code"] = warning.code
+    data = dict(result.data)
+    data["checks"] = {**checks, "compatibility": compatibility}
+    return result.model_copy(update={"data": data})

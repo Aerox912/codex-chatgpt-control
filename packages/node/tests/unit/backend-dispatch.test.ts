@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,6 +11,13 @@ import {
   parseBackendRequest
 } from "../../src/backend/protocol.js";
 import type { LocatorLike, PageLike } from "../../src/types.js";
+import { OperationJournal } from "../../src/operations/journal.js";
+import {
+  OPERATION_COLLECT_REQUEST_SCHEMA_VERSION,
+  OPERATION_INSPECT_REQUEST_SCHEMA_VERSION,
+  OPERATION_REQUEST_SCHEMA_VERSION,
+  type OperationSubmitRequestV1
+} from "../../src/operations/types.js";
 
 describe("backend dispatch", () => {
   it("reports backend version, health, and capabilities", async () => {
@@ -43,10 +50,162 @@ describe("backend dispatch", () => {
       }
     });
     expect((capabilities.result as { commands: string[] }).commands).toContain("runner.run");
+    expect((capabilities.result as { commands: string[] }).commands).toContain("backend.hello");
     expect((capabilities.result as { commands: string[] }).commands).toContain("responses.create");
     expect((capabilities.result as { commands: string[] }).commands).toContain("files.preflight");
     expect((capabilities.result as { commands: string[] }).commands).toContain("projects.sources.add");
     expect((capabilities.result as { commands: string[] }).commands).toContain("messages.stop");
+    expect((capabilities.result as { commands: string[] }).commands).toEqual(expect.arrayContaining([
+      "operations.submit",
+      "operations.collect",
+      "operations.inspect",
+      "operations.control"
+    ]));
+    expect(capabilities).toMatchObject({
+      ok: true,
+      result: {
+        requestIds: { required: true, scope: "connection" },
+        multiplexing: { unary: true, streams: true },
+        cancellation: { supported: false, requests: false, streams: false },
+        supportedProtocolVersions: [BACKEND_REQUEST_SCHEMA_VERSION],
+        tabs: {
+          stableProviderIdentity: false,
+          stableBrowserIdentity: false,
+          stableTabIdentity: false,
+          coordinationScope: "none",
+          authoritativeClaim: false,
+          fencing: false,
+          concurrentTabs: false
+        }
+      }
+    });
+
+    const hello = await send(session, "backend.hello", {
+      protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+      capabilities: { requestIds: { required: true, scope: "connection" } }
+    });
+    expectOk(hello);
+    expect(hello.result).toMatchObject({
+      accepted: true,
+      backendSessionId: expect.any(String),
+      packageName: "codex-chatgpt-control",
+      packageVersion: "unknown",
+      runtime: "node",
+      runtimeVersion: process.version,
+      buildDigest: "unknown",
+      protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+      capabilities: expect.objectContaining({
+        multiplexing: { unary: true, streams: true }
+      })
+    });
+
+    const secondHello = await send(new BackendSession({ now: () => new Date("2026-06-06T00:00:00.000Z") }), "backend.hello", {
+      protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION
+    });
+    expectOk(secondHello);
+    expect(secondHello.result).toMatchObject({ backendSessionId: expect.any(String) });
+    const firstSessionId = (hello.result as { backendSessionId: string }).backendSessionId;
+    expect((secondHello.result as { backendSessionId: string }).backendSessionId).toBe(firstSessionId);
+
+    const explicitSession = new BackendSession({
+      now: () => new Date("2026-06-06T00:00:00.000Z"),
+      backendIdentity: { backendSessionId: "explicit-session-id" }
+    });
+    const explicitHello = await send(explicitSession, "backend.hello", {
+      protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION
+    });
+    expect(explicitHello).toMatchObject({ ok: true, result: { backendSessionId: "explicit-session-id" } });
+  });
+
+  it("intersects requested hello capabilities without initializing the browser client", async () => {
+    let browserReads = 0;
+    const options: ConstructorParameters<typeof BackendSession>[0] = {
+      now: () => new Date("2026-06-06T00:00:00.000Z"),
+      get browser() {
+        browserReads += 1;
+        return undefined as never;
+      }
+    };
+    const session = new BackendSession(options);
+    const hello = await send(session, "backend.hello", {
+      protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+      capabilities: {
+        commands: ["backend.health"],
+        transports: ["stdio"],
+        streaming: { modes: ["ndjson"], tokenDeltas: false },
+        supportedProtocolVersions: [BACKEND_REQUEST_SCHEMA_VERSION],
+        requestIds: { required: false, scope: "connection" },
+        multiplexing: { unary: false, streams: false }
+      }
+    });
+    expectOk(hello);
+    expect(hello.result).toMatchObject({
+      accepted: true,
+      capabilities: {
+        commands: ["backend.health"],
+        multiplexing: { unary: false, streams: false }
+      }
+    });
+    await expect(send(session, "backend.health")).resolves.toMatchObject({ ok: true });
+    expect(browserReads).toBe(0);
+  });
+
+  it("rejects malformed or unsatisfied hello capability requests", async () => {
+    const session = deterministicSession();
+
+    const malformed = await send(session, "backend.hello", {
+      protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+      capabilities: "not-an-object"
+    });
+    expectOk(malformed);
+    expect(malformed.result).toMatchObject({ accepted: false });
+
+    const unsupported = await send(session, "backend.hello", {
+      protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+      capabilities: {
+        streaming: { modes: ["ndjson"], tokenDeltas: true },
+        requestIds: { required: true, scope: "process" }
+      }
+    });
+    expectOk(unsupported);
+    expect(unsupported.result).toMatchObject({
+      accepted: false,
+      capabilities: {
+        streaming: { tokenDeltas: false },
+        requestIds: { scope: "none" }
+      }
+    });
+
+    const inconsistentAliases = await send(session, "backend.hello", {
+      protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+      capabilities: {
+        tabs: {
+          stableProviderIdentity: false,
+          stableBrowserIdentity: false,
+          stableTabIdentity: false,
+          coordinationScope: "none",
+          authoritativeClaim: false,
+          fencing: false,
+          concurrentTabs: false,
+          concurrent: true
+        }
+      }
+    });
+    expectOk(inconsistentAliases);
+    expect(inconsistentAliases.result).toMatchObject({ accepted: false });
+
+    const malformedIdentity = await send(session, "backend.hello", {
+      protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+      capabilities: { runtime: "python" }
+    });
+    expectOk(malformedIdentity);
+    expect(malformedIdentity.result).toMatchObject({ accepted: false });
+  });
+
+  it("rejects malformed runtime identity overrides", () => {
+    for (const packageName of ["", " leading", "x".repeat(513), "bad\nvalue"]) {
+      expect(() => new BackendSession({ backendIdentity: { packageName } })).toThrow(/backend identity/);
+    }
   });
 
   it("requires the exact boolean stop confirmation at the backend boundary", async () => {
@@ -287,6 +446,117 @@ describe("backend dispatch", () => {
         kind: "confirmation",
         code: "project_sources_add_confirmation_required"
       }
+    });
+  });
+
+  it("keeps transactional operation failures free of request secrets", async () => {
+    const prompt = "private prompt that must never be echoed";
+    const path = "/private/user/secret/attachment.pdf";
+    const response = await send(deterministicSession(), "operations.submit", {
+      schemaVersion: "chatgpt.browser_control.operation_request.v1",
+      operationId: "not-a-uuid",
+      surface: "chat",
+      prompt,
+      target: { type: "new" },
+      files: [{ path }]
+    });
+
+    expect(response.ok).toBe(false);
+    if (response.ok) return;
+    expect(response.error.message).not.toContain(prompt);
+    expect(response.error.message).not.toContain(path);
+    expect([
+      "Transactional operation payload is invalid.",
+      "Transactional browser operations are unavailable in this backend.",
+      "Transactional browser operation could not complete safely."
+    ]).toContain(response.error.message);
+  });
+
+  it("dispatches browser-free operations.inspect through the stable client facade", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chatgpt-backend-operations-"));
+    try {
+      const journal = await OperationJournal.open({ stateRoot: root });
+      const request: OperationSubmitRequestV1 = {
+        schemaVersion: OPERATION_REQUEST_SCHEMA_VERSION,
+        operationId: "33333333-3333-4333-8333-333333333333",
+        surface: "chat",
+        prompt: "private backend prompt",
+        target: { type: "new" },
+        files: [{ path: "/private/backend/secret.txt" }]
+      };
+      const manifest = [{
+        displayName: "secret.txt",
+        bytes: 7,
+        contentSha256: "c".repeat(64)
+      }];
+      const requestDigest = journal.submitRequestDigest(request, manifest);
+      const loaded = await journal.create({
+        type: "operation_created",
+        operationId: request.operationId,
+        requestDigest,
+        surface: request.surface,
+        createdAt: "2026-06-06T00:00:00.000Z"
+      });
+      const session = new BackendSession({ operations: { stateRoot: root } });
+      const response = await send(session, "operations.inspect", {
+        schemaVersion: OPERATION_INSPECT_REQUEST_SCHEMA_VERSION,
+        handle: journal.handleFromState(loaded.state)
+      });
+
+      expectOk(response);
+      expect(response.result).toMatchObject({
+        schemaVersion: "chatgpt.browser_control.operation_inspect_result.v1",
+        status: "pending",
+        operationId: request.operationId,
+        requestDigest,
+        handle: {
+          operationId: request.operationId,
+          requestDigest
+        }
+      });
+      const encoded = JSON.stringify(response.result);
+      expect(encoded).not.toContain("private backend prompt");
+      expect(encoded).not.toContain("/private/backend/secret.txt");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards a validated collect poll interval through backend dispatch", async () => {
+    let capturedOptions: Record<string, unknown> | undefined;
+    const session = new BackendSession();
+    (session as unknown as { clientInstance: unknown }).clientInstance = {
+      operations: {
+        submit: async () => { throw new Error("unused"); },
+        collect: async (_handle: unknown, options: Record<string, unknown>) => {
+          capturedOptions = options;
+          throw new Error("stop after capture");
+        },
+        inspect: async () => { throw new Error("unused"); },
+        control: async () => { throw new Error("unused"); }
+      }
+    };
+
+    const response = await send(session, "operations.collect", {
+      schemaVersion: OPERATION_COLLECT_REQUEST_SCHEMA_VERSION,
+      handle: {
+        schemaVersion: "chatgpt.browser_control.operation_handle.v1",
+        operationId: "33333333-3333-4333-8333-333333333333",
+        requestDigest: "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        surface: "chat",
+        revision: 3,
+        phase: "generating",
+        mutationBoundary: "send_may_have_occurred",
+        targetBindingDigest: "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      wait: true,
+      pollIntervalMs: 250
+    });
+
+    expect(capturedOptions).toEqual({ wait: true, pollIntervalMs: 250 });
+    expect(response).toMatchObject({
+      ok: false,
+      error: { message: "Transactional browser operation could not complete safely." }
     });
   });
 });

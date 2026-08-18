@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/operation-control-result.schema.json",
+  "title": "Transactional browser operation control result",
+  "description": "A strict versioned stop or steer envelope. The handle is the freshly reloaded parent handle; steer text is never present.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "operationId", "requestDigest", "handle", "parentRequestDigest", "parentTargetBindingDigest", "controlActionId", "action", "expectedAssistantTurnId"],
+  "properties": {
+    "schemaVersion": { "const": "chatgpt.browser_control.operation_control_result.v1" },
+    "status": { "enum": ["completed", "blocked", "uncertain"] },
+    "operationId": { "$ref": "#/$defs/uuid" },
+    "requestDigest": {
+      "$ref": "#/$defs/digest",
+      "description": "Digest of the child stop or steer request; it is intentionally distinct from the parent handle digest."
+    },
+    "handle": {
+      "$ref": "#/$defs/handle",
+      "description": "Freshly reloaded parent operation handle, bound to parentRequestDigest."
+    },
+    "parentRequestDigest": {
+      "$ref": "#/$defs/digest",
+      "description": "Immutable parent operation request digest used by the handle and blocker."
+    },
+    "parentTargetBindingDigest": { "$ref": "#/$defs/digest" }, "controlActionId": { "$ref": "#/$defs/uuid" },
+    "action": { "enum": ["stop", "steer"] }, "expectedAssistantTurnId": { "$ref": "#/$defs/opaqueId" },
+    "receipt": { "$ref": "#/$defs/receipt" }, "blocker": { "$ref": "#/$defs/blocker" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
+      "then": {
+        "required": ["receipt"],
+        "properties": {
+          "receipt": { "allOf": [{ "$ref": "#/$defs/receipt" }, { "type": "object", "required": ["outcome"], "properties": { "outcome": { "const": "satisfied" } } }] },
+          "blocker": false
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "blocked" } }, "required": ["status"] },
+      "then": {
+        "required": ["blocker"],
+        "properties": {
+          "blocker": { "$ref": "#/$defs/blocker" },
+          "receipt": { "allOf": [{ "$ref": "#/$defs/receipt" }, { "type": "object", "required": ["outcome"], "properties": { "outcome": { "const": "not_satisfied" } } }] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "uncertain" } }, "required": ["status"] },
+      "then": {
+        "required": ["blocker"],
+        "properties": {
+          "blocker": { "$ref": "#/$defs/blocker" },
+          "receipt": { "allOf": [{ "$ref": "#/$defs/receipt" }, { "type": "object", "required": ["outcome"], "properties": { "outcome": { "const": "uncertain" } } }] }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "digest": { "type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$" },
+    "opaqueId": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?=.*\\S)[^\\u0000-\\u001f\\u007f]{1,512}$" },
+    "instant": { "type": "string", "pattern": "^(?!\\d{4}-02-(?:30|31)T)(?!\\d{4}-(?:04|06|09|11)-31T)\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$" },
+    "phase": { "enum": ["prepared", "handoff_pending", "ready", "send_pending", "submitted", "generating", "capturing", "completed", "uncertain"] },
+    "boundary": { "enum": ["none", "handoff_may_have_occurred", "send_may_have_occurred", "control_may_have_occurred"] },
+    "handle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "requestDigest", "surface", "revision", "phase", "mutationBoundary", "targetBindingDigest"],
+      "properties": { "schemaVersion": { "const": "chatgpt.browser_control.operation_handle.v1" }, "operationId": { "$ref": "#/$defs/uuid" }, "requestDigest": { "$ref": "#/$defs/digest" }, "surface": { "enum": ["chat", "work"] }, "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }, "phase": { "$ref": "#/$defs/phase" }, "mutationBoundary": { "$ref": "#/$defs/boundary" }, "targetBindingDigest": { "$ref": "#/$defs/digest" } }
+    },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "controlActionId", "parentOperationId", "parentRequestDigest", "parentTargetBindingDigest", "expectedAssistantTurnId", "requestDigest", "action", "outcome", "observedAt"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_control_receipt.v1" }, "controlActionId": { "$ref": "#/$defs/uuid" }, "parentOperationId": { "$ref": "#/$defs/uuid" }, "parentRequestDigest": { "$ref": "#/$defs/digest" }, "parentTargetBindingDigest": { "$ref": "#/$defs/digest" }, "expectedAssistantTurnId": { "$ref": "#/$defs/opaqueId" }, "requestDigest": { "$ref": "#/$defs/digest" }, "action": { "enum": ["stop", "steer"] }, "outcome": { "enum": ["satisfied", "not_satisfied", "uncertain"] }, "evidenceDigest": { "$ref": "#/$defs/digest" }, "blockerCode": { "$ref": "#/$defs/code" }, "observedAt": { "$ref": "#/$defs/instant" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "outcome": { "const": "satisfied" } }, "required": ["outcome"] },
+          "then": {
+            "required": ["evidenceDigest"],
+            "properties": { "evidenceDigest": { "$ref": "#/$defs/digest" }, "blockerCode": false }
+          }
+        },
+        {
+          "if": { "properties": { "outcome": { "enum": ["not_satisfied", "uncertain"] } }, "required": ["outcome"] },
+          "then": { "required": ["blockerCode"] }
+        }
+      ]
+    },
+    "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+    "blocker": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "code", "recoverable", "operationId", "requestDigest", "phase", "mutationBoundary", "message"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_blocker.v1" },
+        "code": { "$ref": "#/$defs/code" },
+        "recoverable": { "type": "boolean" },
+        "operationId": { "$ref": "#/$defs/uuid" },
+        "requestDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "Parent operation request digest; a control blocker never identifies the child request here."
+        },
+        "phase": { "$ref": "#/$defs/phase" },
+        "mutationBoundary": { "$ref": "#/$defs/boundary" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[A-Za-z0-9][A-Za-z0-9 .,:;'()\\-]{0,511}$" }
+      }
+    }
+  }
+}

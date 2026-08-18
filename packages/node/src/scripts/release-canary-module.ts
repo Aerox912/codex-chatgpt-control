@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { resolveChatGPTBrowser } from "../browser/attach.js";
 import type { BrowserLike } from "../types.js";
 import { main as captureSurfaceProfile } from "./capture-surface-profile.js";
 import { filterScenarios, runLiveSmoke } from "./live-smoke/harness.js";
@@ -42,6 +43,12 @@ export async function runReleaseCanary(
     throw new Error("runReleaseCanary requires an exact dedicated ChatGPT tab id.");
   }
 
+  // Acquire through the agent once so bridge capability proxies are normalized
+  // before coordination. Passing globalThis.browser back through RuntimeEnv
+  // bypasses that acquisition boundary and can lose user-open-tab visibility
+  // or private-field receiver bindings on Chrome bridge methods.
+  const managedBrowser = await resolveChatGPTBrowser({ agent: runtime.agent });
+
   const reportDir = resolve(options.reportDir ?? join(process.cwd(), "reports", "release-canary"));
   const profileDir = join(reportDir, "surface-profiles");
   await mkdir(profileDir, { recursive: true });
@@ -60,7 +67,7 @@ export async function runReleaseCanary(
         "--if-missing", "block",
         "--out", profilePaths[index]!,
         "--provenance", "Sanitized release canary capture from a dedicated visible ChatGPT tab."
-      ], runtime);
+      ], { agent: runtime.agent });
       if (exitCode !== 0) {
         return {
           ok: false,
@@ -71,7 +78,7 @@ export async function runReleaseCanary(
       }
     }
   } finally {
-    await closeDedicatedProfileTab(runtime.browser, options.tabId);
+    await closeDedicatedProfileTab(managedBrowser, options.tabId);
   }
 
   const names = options.includeUpload === true
@@ -79,7 +86,11 @@ export async function runReleaseCanary(
     : CORE_SCENARIOS;
   const context = {
     agent: runtime.agent,
-    ...(runtime.browser === undefined ? {} : { browser: runtime.browser as LiveSmokeBrowser }),
+    browser: managedBrowser as LiveSmokeBrowser,
+    // The agent-acquired browser is authoritative for tab discovery and page
+    // behavior. The bridge-hosted global browser separately owns finalize(),
+    // which closes only this tool call's temporary tabs after each scenario.
+    ...(runtime.browser === undefined ? {} : { cleanupBrowser: runtime.browser as LiveSmokeBrowser }),
     reportDir: join(reportDir, "live-smoke"),
     env: {
       CHATGPT_E2E_CONFIGURATION_MUTATION: "1",
@@ -91,7 +102,10 @@ export async function runReleaseCanary(
     throw new Error(`Release canary scenario registration drift: expected ${names.length}, found ${scenarios.length}.`);
   }
   const smoke = await runLiveSmoke(context, scenarios);
-  const failures = smoke.results.filter(result => result.status !== "pass").map(result => result.name);
+  const failures = smoke.results.flatMap(result => [
+    ...(result.status === "pass" ? [] : [result.name]),
+    ...(result.cleanup?.ok === true ? [] : [`${result.name}:cleanup`])
+  ]);
   return {
     ok: failures.length === 0,
     profilePaths,

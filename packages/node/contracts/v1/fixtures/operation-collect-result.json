@@ -1,0 +1,42 @@
+{
+  "handle": {
+    "mutationBoundary": "send_may_have_occurred",
+    "operationId": "11111111-1111-4111-8111-111111111111",
+    "phase": "completed",
+    "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revision": 10,
+    "schemaVersion": "chatgpt.browser_control.operation_handle.v1",
+    "surface": "chat",
+    "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "liveResponse": {
+    "bytes": 11,
+    "chars": 11,
+    "content": "safe answer",
+    "durability": "ephemeral",
+    "durable": false,
+    "responseFormat": "markdown",
+    "schemaVersion": "chatgpt.browser_control.operation_live_response.v1"
+  },
+  "operationId": "11111111-1111-4111-8111-111111111111",
+  "receipt": {
+    "artifacts": [],
+    "assistantTurnId": "assistant-turn-1",
+    "completedAt": "2026-06-06T00:00:00.000Z",
+    "contentAvailable": true,
+    "finishReason": "stop",
+    "operationId": "11111111-1111-4111-8111-111111111111",
+    "ownershipEvidenceDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "responseBytes": 11,
+    "responseDigest": "hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "responseFormat": "markdown",
+    "schemaVersion": "chatgpt.browser_control.operation_receipt.v1",
+    "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "userTurnEvidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "userTurnId": "user-turn-1"
+  },
+  "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "schemaVersion": "chatgpt.browser_control.operation_collect_result.v1",
+  "status": "completed"
+}

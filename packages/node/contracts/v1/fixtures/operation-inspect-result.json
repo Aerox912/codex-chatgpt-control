@@ -1,0 +1,205 @@
+{
+  "compatibility": {
+    "backendSessionId": "fixture-backend-session",
+    "buildDigest": "sha256:backend-build",
+    "mode": "multiplexed",
+    "packageName": "codex-chatgpt-control",
+    "packageVersion": "0.5.1-alpha.2",
+    "protocolVersion": "chatgpt.browser_control.backend_request.v1",
+    "runtime": "node",
+    "runtimeVersion": "v22.14.0",
+    "schemaVersion": "chatgpt.browser_control.backend_compatibility.v1",
+    "status": "warning",
+    "warnings": [
+      {
+        "code": "build_digest_mismatch",
+        "expected": "sha256:expected-build",
+        "field": "buildDigest",
+        "message": "Backend build digest differs from the expected runtime (sha256:expected-build versus sha256:backend-build).",
+        "received": "sha256:backend-build"
+      }
+    ]
+  },
+  "handle": {
+    "mutationBoundary": "send_may_have_occurred",
+    "operationId": "11111111-1111-4111-8111-111111111111",
+    "phase": "generating",
+    "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revision": 4,
+    "schemaVersion": "chatgpt.browser_control.operation_handle.v1",
+    "surface": "chat",
+    "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "operationId": "11111111-1111-4111-8111-111111111111",
+  "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "schemaVersion": "chatgpt.browser_control.operation_inspect_result.v1",
+  "state": {
+    "actions": {
+      "33333333-3333-4333-8333-333333333333": {
+        "actionId": "33333333-3333-4333-8333-333333333333",
+        "evidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "intentAt": "2026-06-06T00:00:00.000Z",
+        "intentRevision": 2,
+        "kind": "send",
+        "outcome": "satisfied",
+        "receiptAt": "2026-06-06T00:00:00.000Z",
+        "receiptRevision": 3,
+        "repeatPolicy": "observe_only_after_intent",
+        "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "targetDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    "capturePolicy": {
+      "artifacts": "receipt_only",
+      "responseContent": "metadata",
+      "responseFormat": "markdown"
+    },
+    "createdAt": "2026-06-06T00:00:00.000Z",
+    "mutationBoundary": "send_may_have_occurred",
+    "operationId": "11111111-1111-4111-8111-111111111111",
+    "ownershipBaseline": {
+      "actionId": "33333333-3333-4333-8333-333333333333",
+      "baseline": {
+        "assistantTurns": [],
+        "completeness": "complete",
+        "schemaVersion": "chatgpt.browser_control.turn_ownership.v1",
+        "snapshotDigest": "hmac-sha256:1212121212121212121212121212121212121212121212121212121212121212",
+        "target": {
+          "authoritativeTabClaim": {
+            "reason": "not_exposed",
+            "status": "unavailable"
+          },
+          "browser": {
+            "status": "available",
+            "value": "browser-1"
+          },
+          "canonicalThreadUrl": {
+            "status": "available",
+            "value": "https://chatgpt.com/c/sanitized"
+          },
+          "conversation": {
+            "status": "available",
+            "value": "conversation-1"
+          },
+          "coordinationScope": "process",
+          "provider": {
+            "status": "available",
+            "value": "chrome"
+          },
+          "tab": {
+            "status": "available",
+            "value": "tab-1"
+          },
+          "thread": {
+            "status": "available",
+            "value": "conversation-1"
+          }
+        },
+        "userTurns": []
+      },
+      "observedAt": "2026-06-06T00:00:00.000Z",
+      "operationId": "11111111-1111-4111-8111-111111111111",
+      "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "schemaVersion": "chatgpt.browser_control.operation_ownership_baseline.v1",
+      "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "ownershipBaselines": {
+      "33333333-3333-4333-8333-333333333333": {
+        "actionId": "33333333-3333-4333-8333-333333333333",
+        "baseline": {
+          "assistantTurns": [],
+          "completeness": "complete",
+          "schemaVersion": "chatgpt.browser_control.turn_ownership.v1",
+          "snapshotDigest": "hmac-sha256:1212121212121212121212121212121212121212121212121212121212121212",
+          "target": {
+            "authoritativeTabClaim": {
+              "reason": "not_exposed",
+              "status": "unavailable"
+            },
+            "browser": {
+              "status": "available",
+              "value": "browser-1"
+            },
+            "canonicalThreadUrl": {
+              "status": "available",
+              "value": "https://chatgpt.com/c/sanitized"
+            },
+            "conversation": {
+              "status": "available",
+              "value": "conversation-1"
+            },
+            "coordinationScope": "process",
+            "provider": {
+              "status": "available",
+              "value": "chrome"
+            },
+            "tab": {
+              "status": "available",
+              "value": "tab-1"
+            },
+            "thread": {
+              "status": "available",
+              "value": "conversation-1"
+            }
+          },
+          "userTurns": []
+        },
+        "observedAt": "2026-06-06T00:00:00.000Z",
+        "operationId": "11111111-1111-4111-8111-111111111111",
+        "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "schemaVersion": "chatgpt.browser_control.operation_ownership_baseline.v1",
+        "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    "phase": "generating",
+    "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revision": 4,
+    "schemaVersion": "chatgpt.browser_control.operation.v1",
+    "submissionWitness": {
+      "actionId": "33333333-3333-4333-8333-333333333333",
+      "actionKind": "send",
+      "baselineSnapshotDigest": "hmac-sha256:1212121212121212121212121212121212121212121212121212121212121212",
+      "observedAt": "2026-06-06T00:00:00.000Z",
+      "operationUserEvidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "postSendDeltaDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "schemaVersion": "chatgpt.browser_control.operation_submission_witness.v1",
+      "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "userTurnId": "user-turn-1"
+    },
+    "submissionWitnesses": {
+      "33333333-3333-4333-8333-333333333333": {
+        "actionId": "33333333-3333-4333-8333-333333333333",
+        "actionKind": "send",
+        "baselineSnapshotDigest": "hmac-sha256:1212121212121212121212121212121212121212121212121212121212121212",
+        "observedAt": "2026-06-06T00:00:00.000Z",
+        "operationUserEvidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "postSendDeltaDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schemaVersion": "chatgpt.browser_control.operation_submission_witness.v1",
+        "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "userTurnId": "user-turn-1"
+      }
+    },
+    "surface": "chat",
+    "target": {
+      "assistantTurnBaselineDigest": "hmac-sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "browserId": "browser-1",
+      "canonicalThreadUrl": "https://chatgpt.com/c/sanitized",
+      "configurationReceiptDigest": "hmac-sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "conversationId": "conversation-1",
+      "coordinationScope": "process",
+      "evidenceProfile": {
+        "authoritativeTabClaim": "unavailable",
+        "providerIdentity": "required",
+        "replacementTabRecovery": true,
+        "stableConversationId": "required",
+        "stableTabId": "required",
+        "stableUserTurnId": "required"
+      },
+      "providerId": "chrome",
+      "tabId": "tab-1",
+      "userTurnBaselineDigest": "hmac-sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "updatedAt": "2026-06-06T00:00:00.000Z"
+  },
+  "status": "pending"
+}

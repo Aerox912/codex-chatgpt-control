@@ -28,6 +28,27 @@ export const BROWSER_BRIDGE_REMEDIATION: NonNullable<NonNullable<CommandResult["
   }
 ];
 
+/**
+ * Read a Node-style errno code without relying on realm-sensitive
+ * `instanceof Error` checks or invoking an untrusted accessor.
+ *
+ * Browser-hosted modules can receive filesystem errors created by the host
+ * realm. Those values are genuine Node errno objects but are not necessarily
+ * instances of this bundle's `Error` constructor.
+ */
+export function nodeErrorCode(error: unknown): string | undefined {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(error, "code");
+    if (descriptor === undefined || !("value" in descriptor) || typeof descriptor.value !== "string") {
+      return undefined;
+    }
+    return descriptor.value;
+  } catch {
+    return undefined;
+  }
+}
+
 export class ChatGPTControlError extends Error {
   constructor(
     message: string,

@@ -7,6 +7,58 @@ from pathlib import Path
 from typing import Any
 
 
+BACKEND_PROTOCOL = "chatgpt.browser_control.backend_request.v1"
+BACKEND_COMMANDS = [
+    "backend.hello",
+    "backend.version",
+    "backend.capabilities",
+    "backend.health",
+    "runner.run",
+    "runner.stream",
+    "responses.create",
+    "runPlan",
+    "reports.create",
+    "commands",
+]
+
+
+def backend_identity() -> dict[str, str]:
+    return {
+        "backendSessionId": "python-live-smoke-fixture-session",
+        "packageName": "fixture-backend",
+        "packageVersion": "0.0.0",
+        "runtime": "python",
+        "runtimeVersion": "fixture-runtime",
+        "buildDigest": "fixture-build",
+        "protocolVersion": BACKEND_PROTOCOL,
+    }
+
+
+def backend_capabilities() -> dict[str, Any]:
+    return {
+        **backend_identity(),
+        "commands": BACKEND_COMMANDS,
+        "transports": ["stdio"],
+        "streaming": {"modes": ["ndjson"], "tokenDeltas": False},
+        "supportedProtocolVersions": [BACKEND_PROTOCOL],
+        "requestIds": {"required": True, "scope": "connection"},
+        "multiplexing": {"unary": True, "streams": True},
+        "cancellation": {"supported": False, "requests": False, "streams": False},
+        "tabs": {
+            "stableProviderIdentity": False,
+            "stableBrowserIdentity": False,
+            "stableTabIdentity": False,
+            "coordinationScope": "none",
+            "authoritativeClaim": False,
+            "fencing": False,
+            "concurrentTabs": False,
+            "stableIdentity": False,
+            "coordination": False,
+            "concurrent": False,
+        },
+    }
+
+
 def run_result() -> dict[str, Any]:
     return {
         "ok": True,
@@ -55,6 +107,12 @@ def event(request: dict[str, Any], payload: dict[str, Any]) -> None:
 def handle(request: dict[str, Any]) -> Any:
     command = request["command"]
     payload = request.get("payload") or {}
+    if command == "backend.hello":
+        return {**backend_identity(), "accepted": True, "capabilities": backend_capabilities()}
+    if command == "backend.version":
+        return {"name": "fixture-backend", **backend_identity()}
+    if command == "backend.capabilities":
+        return backend_capabilities()
     if command == "backend.health":
         return {"ok": True, "status": "ok", "timestamp": "2026-06-06T00:00:00.000Z"}
     if command == "commands":

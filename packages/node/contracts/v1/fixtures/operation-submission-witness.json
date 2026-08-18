@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "chatgpt.browser_control.operation_submission_witness.v1",
+  "actionId": "33333333-3333-4333-8333-333333333333",
+  "actionKind": "send",
+  "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "baselineSnapshotDigest": "hmac-sha256:1212121212121212121212121212121212121212121212121212121212121212",
+  "postSendDeltaDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "operationUserEvidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "userTurnId": "user-turn-1",
+  "observedAt": "2026-08-16T00:00:02.000Z"
+}

@@ -1,8 +1,16 @@
 {
+  "backendSessionId": "fixture-backend-session",
+  "buildDigest": "unknown",
+  "cancellation": {
+    "requests": false,
+    "streams": false,
+    "supported": false
+  },
   "commands": [
     "backend.version",
     "backend.health",
     "backend.capabilities",
+    "backend.hello",
     "runner.run",
     "runner.plan",
     "runner.stream",
@@ -58,14 +66,45 @@
     "modes.set",
     "modes.get",
     "tools.select",
-    "response.copy"
+    "response.copy",
+    "operations.submit",
+    "operations.collect",
+    "operations.inspect",
+    "operations.control"
   ],
+  "multiplexing": {
+    "streams": true,
+    "unary": true
+  },
+  "packageName": "codex-chatgpt-control",
+  "packageVersion": "unknown",
   "protocolVersion": "chatgpt.browser_control.backend_request.v1",
+  "requestIds": {
+    "required": true,
+    "scope": "connection"
+  },
+  "runtime": "node",
+  "runtimeVersion": "fixture-runtime",
   "streaming": {
     "modes": [
       "ndjson"
     ],
     "tokenDeltas": false
+  },
+  "supportedProtocolVersions": [
+    "chatgpt.browser_control.backend_request.v1"
+  ],
+  "tabs": {
+    "authoritativeClaim": false,
+    "concurrent": false,
+    "concurrentTabs": false,
+    "coordination": false,
+    "coordinationScope": "none",
+    "fencing": false,
+    "stableBrowserIdentity": false,
+    "stableIdentity": false,
+    "stableProviderIdentity": false,
+    "stableTabIdentity": false
   },
   "transports": [
     "stdio"

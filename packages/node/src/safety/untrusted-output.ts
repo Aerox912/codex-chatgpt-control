@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { link, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { nodeErrorCode } from "../errors.js";
 
 export const UNTRUSTED_OUTPUT_INLINE_LIMIT_BYTES = 12_000;
 export const UNTRUSTED_OUTPUT_SCHEMA_VERSION = "chatgpt.browser_control.untrusted_output_return.v1" as const;
@@ -291,5 +292,5 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
+  return nodeErrorCode(error) !== undefined;
 }

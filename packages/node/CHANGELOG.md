@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.1-alpha.3
+
+- Adds the transactional `operations.submit`, `collect`, `inspect`, `control`,
+  and `run` surface with durable request identity, monotonic mutation
+  boundaries, exact ownership, non-repetition, and redacted recovery receipts.
+- Adds capability-aware runtime identity, correlated multiplexed backend
+  traffic, process-scoped tab coordination, bounded DOM/file/artifact
+  observation, and deterministic configuration restoration.
+- Hardens browser acquisition and attachment input scoping, acts-then-throws
+  settlement, late deadline behavior, output path validation, journal quotas,
+  lifecycle controls, and visible blocker classification.
+- Extends release-canary coverage with exact per-scenario tab cleanup and
+  independent Chat/Work/configuration postconditions; refreshes all four plugin
+  runtime bundles from the qualified source.
+
 ## 0.5.1-alpha.2
 
 - Adds confirmation-gated, fail-closed `messages.stop` lifecycle control with
