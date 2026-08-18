@@ -753,11 +753,9 @@ async function readEmptyAttachmentState(page: Readonly<PageLike>): Promise<{
         }
         return matches;
       };
-      const textboxes = boundedQuery<HTMLElement>(document,
-        "textarea, [contenteditable='true'], [role='textbox']").filter(visible);
-      const composerAncestor = (textbox: Element): HTMLElement | null => {
+      const composerAncestor = (anchor: Element): HTMLElement | null => {
         let fallback: HTMLElement | null = null;
-        let current: Node | null = textbox;
+        let current: Node | null = anchor;
         for (let depth = 0; current !== null && depth < 4096; depth += 1) {
           if (current.nodeType === 1) {
             const element = current as HTMLElement;
@@ -773,12 +771,27 @@ async function readEmptyAttachmentState(page: Readonly<PageLike>): Promise<{
         if (current !== null) throw new Error("node limit exceeded");
         return fallback;
       };
-      const composers = [...new Set(textboxes.map(textbox =>
-        composerAncestor(textbox)
+      const allInputs = boundedQuery<HTMLInputElement>(document, "input[type='file']")
+        .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+      const preferred = allInputs.filter(input => input.getAttribute("id") === "upload-files");
+      const prompts = boundedQuery<HTMLElement>(document,
+        "#prompt-textarea, [data-testid='prompt-textarea']").filter(visible);
+      const anchors: Element[] = preferred.length === 1 ? preferred : prompts;
+      const composers = [...new Set(anchors.map(anchor =>
+        composerAncestor(anchor)
       ).filter((value): value is HTMLElement => value !== null))];
       if (composers.length !== 1) return { supported: false, count: 0, visibleAttachmentCount: 0 };
-      const inputs = boundedQuery<HTMLInputElement>(composers[0]!, "input[type='file']")
+      const scopedInputs = preferred.length === 1 ? preferred : boundedQuery<HTMLInputElement>(composers[0]!, "input[type='file']")
         .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+      const scopedPreferred = scopedInputs.filter(input => input.getAttribute("id") === "upload-files");
+      const nonImage = scopedInputs.filter(input => input.getAttribute("accept") !== "image/*");
+      const inputs = scopedPreferred.length === 1
+        ? scopedPreferred
+        : scopedInputs.length === 1
+          ? scopedInputs
+          : nonImage.length === 1
+            ? nonImage
+            : [];
       if (inputs.length !== 1) return { supported: false, count: 0, visibleAttachmentCount: 0 };
       const selectors = [
         "[data-testid*='attachment' i]",

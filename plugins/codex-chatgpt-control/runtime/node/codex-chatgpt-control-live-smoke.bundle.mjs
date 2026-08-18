@@ -14179,19 +14179,24 @@ var ACTIVE_COMPOSER_FILE_INPUT_CLICK_EXPRESSION = `(() => {
     return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
       && (rect.width > 0 || rect.height > 0);
   };
-  const textboxes = [...document.querySelectorAll("textarea, [contenteditable='true'], [role='textbox']")].filter(visible);
-  const composers = [...new Set(textboxes.map(textbox =>
-    textbox.closest("form")
-      ?? textbox.closest("[data-testid*='composer' i]")
-      ?? textbox.closest("[aria-label*='composer' i]")
-      ?? textbox.closest("[class*='composer' i]")
-  ).filter(Boolean))];
-  if (composers.length !== 1) return { ok: false, reason: "active composer was not unique" };
-  const all = [...composers[0].querySelectorAll("input[type='file']")]
+  const all = [...document.querySelectorAll("input[type='file']")]
     .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
   const preferred = all.filter(input => input.id === "upload-files");
-  const nonImage = all.filter(input => input.getAttribute("accept") !== "image/*");
-  const candidates = preferred.length ? preferred : nonImage.length ? nonImage : all;
+  let candidates = preferred;
+  if (preferred.length !== 1) {
+    const prompts = [...document.querySelectorAll("#prompt-textarea, [data-testid='prompt-textarea']")].filter(visible);
+    const composers = [...new Set(prompts.map(prompt =>
+      prompt.closest("form")
+        ?? prompt.closest("[data-testid*='composer' i]")
+        ?? prompt.closest("[aria-label*='composer' i]")
+        ?? prompt.closest("[class*='composer' i]")
+    ).filter(Boolean))];
+    if (composers.length !== 1) return { ok: false, reason: "active composer was not unique" };
+    const scoped = all.filter(input => composers[0].contains(input));
+    const scopedPreferred = scoped.filter(input => input.id === "upload-files");
+    const nonImage = scoped.filter(input => input.getAttribute("accept") !== "image/*");
+    candidates = scopedPreferred.length ? scopedPreferred : nonImage.length ? nonImage : scoped;
+  }
   if (candidates.length !== 1) return { ok: false, reason: "active composer file input was not unique" };
   candidates[0].click();
   return { ok: true };
@@ -14637,19 +14642,29 @@ async function readAttachmentEvidenceBaseline(page, timeoutMs) {
       const rect = element.getBoundingClientRect();
       return rect.width > 0 || rect.height > 0;
     };
-    const textboxes = Array.from(document.querySelectorAll(
-      "textarea, [contenteditable='true'], [role='textbox']"
-    )).filter(visible);
-    const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
-    if (composers.length !== 1) {
+    const allInputs = Array.from(document.querySelectorAll("input[type='file']")).filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+    const preferred = allInputs.filter((input) => input.id === "upload-files");
+    let composer = preferred.length === 1 ? preferred[0].closest("form") ?? preferred[0].closest("[data-testid*='composer' i]") ?? preferred[0].closest("[aria-label*='composer' i]") ?? preferred[0].closest("[class*='composer' i]") : null;
+    let inputs = preferred;
+    if (preferred.length !== 1) {
+      const prompts = Array.from(document.querySelectorAll(
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      )).filter(visible);
+      const composers = [...new Set(prompts.map((prompt) => prompt.closest("form") ?? prompt.closest("[data-testid*='composer' i]") ?? prompt.closest("[aria-label*='composer' i]") ?? prompt.closest("[class*='composer' i]")).filter((value) => value !== null))];
+      if (composers.length !== 1) {
+        return { supported: false, inputFiles: [], attachmentLabels: [] };
+      }
+      composer = composers[0];
+      const scoped = allInputs.filter((input) => composer.contains(input));
+      const scopedPreferred = scoped.filter((input) => input.id === "upload-files");
+      const nonImage = scoped.filter((input) => input.getAttribute("accept") !== "image/*");
+      inputs = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : scoped;
+    }
+    if (inputs.length !== 1) {
       return { supported: false, inputFiles: [], attachmentLabels: [] };
     }
-    const composer = composers[0];
-    const allInputs = Array.from(composer.querySelectorAll("input[type='file']")).filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
-    const preferred = allInputs.filter((input) => input.id === "upload-files");
-    const nonImage = allInputs.filter((input) => input.getAttribute("accept") !== "image/*");
-    const inputs = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : allInputs;
-    if (inputs.length !== 1) {
+    composer ??= inputs[0].parentElement;
+    if (composer === null) {
       return { supported: false, inputFiles: [], attachmentLabels: [] };
     }
     const attachmentSelector = [
@@ -14723,22 +14738,32 @@ async function readAttachmentReadiness(page, files, baseline, timeoutMs) {
       const rect = element.getBoundingClientRect();
       return rect.width > 0 || rect.height > 0;
     };
-    const textboxes = Array.from(document.querySelectorAll(
-      "textarea, [contenteditable='true'], [role='textbox']"
-    )).filter(visible);
-    const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
-    if (composers.length !== 1) {
-      return { supported: false, files: expectedFiles.map((file) => ({ name: file.name, visible: false })), processing: false };
-    }
-    const composer = composers[0];
-    const allInputs = Array.from(composer.querySelectorAll("input[type='file']")).filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
+    const allInputs = Array.from(document.querySelectorAll("input[type='file']")).filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
     const preferred = allInputs.filter((input2) => input2.id === "upload-files");
-    const nonImage = allInputs.filter((input2) => input2.getAttribute("accept") !== "image/*");
-    const inputs = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : allInputs;
+    let composer = preferred.length === 1 ? preferred[0].closest("form") ?? preferred[0].closest("[data-testid*='composer' i]") ?? preferred[0].closest("[aria-label*='composer' i]") ?? preferred[0].closest("[class*='composer' i]") : null;
+    let inputs = preferred;
+    if (preferred.length !== 1) {
+      const prompts = Array.from(document.querySelectorAll(
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      )).filter(visible);
+      const composers = [...new Set(prompts.map((prompt) => prompt.closest("form") ?? prompt.closest("[data-testid*='composer' i]") ?? prompt.closest("[aria-label*='composer' i]") ?? prompt.closest("[class*='composer' i]")).filter((value) => value !== null))];
+      if (composers.length !== 1) {
+        return { supported: false, files: expectedFiles.map((file) => ({ name: file.name, visible: false })), processing: false };
+      }
+      composer = composers[0];
+      const scoped = allInputs.filter((input2) => composer.contains(input2));
+      const scopedPreferred = scoped.filter((input2) => input2.id === "upload-files");
+      const nonImage = scoped.filter((input2) => input2.getAttribute("accept") !== "image/*");
+      inputs = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : scoped;
+    }
     if (inputs.length !== 1) {
       return { supported: false, files: expectedFiles.map((file) => ({ name: file.name, visible: false })), processing: false };
     }
     const input = inputs[0];
+    composer ??= input.parentElement;
+    if (composer === null) {
+      return { supported: false, files: expectedFiles.map((file) => ({ name: file.name, visible: false })), processing: false };
+    }
     const attachmentSelectors = [
       "[data-testid*='attachment' i]",
       "[data-testid*='file' i]",
@@ -15053,15 +15078,18 @@ async function validateChooserTarget(chooser, deadline, _triggerProof) {
       const rect = node.getBoundingClientRect();
       return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && style.pointerEvents !== "none" && (rect.width > 0 || rect.height > 0);
     };
-    const textboxes = Array.from(document.querySelectorAll(
-      "textarea, [contenteditable='true'], [role='textbox']"
-    )).filter(visible);
-    const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
-    if (composers.length !== 1 || !composers[0].contains(candidate)) return false;
-    const all = Array.from(composers[0].querySelectorAll("input[type='file']")).filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+    const all = Array.from(document.querySelectorAll("input[type='file']")).filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
     const preferred = all.filter((input) => input.id === "upload-files");
-    const nonImage = all.filter((input) => input.getAttribute("accept") !== "image/*");
-    const resolved = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : all;
+    if (preferred.length === 1) return preferred[0] === candidate;
+    const prompts = Array.from(document.querySelectorAll(
+      "#prompt-textarea, [data-testid='prompt-textarea']"
+    )).filter(visible);
+    const composers = [...new Set(prompts.map((prompt) => prompt.closest("form") ?? prompt.closest("[data-testid*='composer' i]") ?? prompt.closest("[aria-label*='composer' i]") ?? prompt.closest("[class*='composer' i]")).filter((value) => value !== null))];
+    if (composers.length !== 1 || !composers[0].contains(candidate)) return false;
+    const scoped2 = all.filter((input) => composers[0].contains(input));
+    const scopedPreferred = scoped2.filter((input) => input.id === "upload-files");
+    const nonImage = scoped2.filter((input) => input.getAttribute("accept") !== "image/*");
+    const resolved = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : scoped2;
     return resolved.length === 1 && resolved[0] === candidate;
   }, void 0, { timeoutMs }), "File-chooser active-composer identity check", 2e3);
   if (!scoped) {
@@ -15424,15 +15452,18 @@ async function resolveUniqueActiveComposerFileInput(page, deadline) {
         const rect = node.getBoundingClientRect();
         return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && (rect.width > 0 || rect.height > 0);
       };
-      const textboxes = Array.from(document.querySelectorAll(
-        "textarea, [contenteditable='true'], [role='textbox']"
-      )).filter(visible);
-      const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
-      if (composers.length !== 1 || !composers[0].contains(candidate)) return false;
-      const all = Array.from(composers[0].querySelectorAll("input[type='file']")).filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
+      const all = Array.from(document.querySelectorAll("input[type='file']")).filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
       const preferred = all.filter((input2) => input2.id === "upload-files");
-      const nonImage = all.filter((input2) => input2.getAttribute("accept") !== "image/*");
-      const resolved = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : all;
+      if (preferred.length === 1) return preferred[0] === candidate;
+      const prompts = Array.from(document.querySelectorAll(
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      )).filter(visible);
+      const composers = [...new Set(prompts.map((prompt) => prompt.closest("form") ?? prompt.closest("[data-testid*='composer' i]") ?? prompt.closest("[aria-label*='composer' i]") ?? prompt.closest("[class*='composer' i]")).filter((value) => value !== null))];
+      if (composers.length !== 1 || !composers[0].contains(candidate)) return false;
+      const scoped2 = all.filter((input2) => composers[0].contains(input2));
+      const scopedPreferred = scoped2.filter((input2) => input2.id === "upload-files");
+      const nonImage = scoped2.filter((input2) => input2.getAttribute("accept") !== "image/*");
+      const resolved = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : scoped2;
       return resolved.length === 1 && resolved[0] === candidate;
     }, void 0, { timeoutMs }), `File-input ${index + 1} scope check`, 2e3);
     if (scoped) eligible.push(input);
@@ -15453,10 +15484,16 @@ async function assertControlInUniqueActiveComposer(control, deadline, label) {
       const rect = node.getBoundingClientRect();
       return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && (rect.width > 0 || rect.height > 0);
     };
-    const textboxes = Array.from(document.querySelectorAll(
-      "textarea, [contenteditable='true'], [role='textbox']"
+    const allInputs = Array.from(document.querySelectorAll("input[type='file']")).filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+    const preferred = allInputs.filter((input) => input.id === "upload-files");
+    if (preferred.length === 1) {
+      const composer = preferred[0].closest("form") ?? preferred[0].closest("[data-testid*='composer' i]") ?? preferred[0].closest("[aria-label*='composer' i]") ?? preferred[0].closest("[class*='composer' i]");
+      if (composer?.contains(element)) return true;
+    }
+    const prompts = Array.from(document.querySelectorAll(
+      "#prompt-textarea, [data-testid='prompt-textarea']"
     )).filter(visible);
-    const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
+    const composers = [...new Set(prompts.map((prompt) => prompt.closest("form") ?? prompt.closest("[data-testid*='composer' i]") ?? prompt.closest("[aria-label*='composer' i]") ?? prompt.closest("[class*='composer' i]")).filter((value) => value !== null))];
     return composers.length === 1 && composers[0].contains(element);
   }, void 0, { timeoutMs }), `${label} scope check`, 2e3);
   if (!scoped) throw new Error(`${label} was outside the unique active composer.`);
@@ -15485,15 +15522,20 @@ async function readBrowserInputDiagnostic(page, timeoutMs) {
       const rect = element.getBoundingClientRect();
       return rect.width > 0 || rect.height > 0;
     };
-    const textboxes = Array.from(document.querySelectorAll(
-      "textarea, [contenteditable='true'], [role='textbox']"
-    )).filter(visible);
-    const composers = [...new Set(textboxes.map((textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")).filter((value) => value !== null))];
-    if (composers.length !== 1) return void 0;
-    const allInputs = Array.from(composers[0].querySelectorAll("input[type='file']")).filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
+    const allInputs = Array.from(document.querySelectorAll("input[type='file']")).filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
     const preferred = allInputs.filter((input2) => input2.id === "upload-files");
-    const nonImage = allInputs.filter((input2) => input2.getAttribute("accept") !== "image/*");
-    const inputs = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : allInputs;
+    let inputs = preferred;
+    if (preferred.length !== 1) {
+      const prompts = Array.from(document.querySelectorAll(
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      )).filter(visible);
+      const composers = [...new Set(prompts.map((prompt) => prompt.closest("form") ?? prompt.closest("[data-testid*='composer' i]") ?? prompt.closest("[aria-label*='composer' i]") ?? prompt.closest("[class*='composer' i]")).filter((value) => value !== null))];
+      if (composers.length !== 1) return void 0;
+      const scoped = allInputs.filter((input2) => composers[0].contains(input2));
+      const scopedPreferred = scoped.filter((input2) => input2.id === "upload-files");
+      const nonImage = scoped.filter((input2) => input2.getAttribute("accept") !== "image/*");
+      inputs = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : scoped;
+    }
     if (inputs.length !== 1) return void 0;
     const input = inputs[0];
     return {
@@ -35011,11 +35053,13 @@ function inspectChatGPTSendReadiness(argument) {
     const rect = element.getBoundingClientRect();
     return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && (rect.width > 0 || rect.height > 0);
   };
-  const textboxes = [...document.querySelectorAll(
-    "textarea, [contenteditable='true'], [role='textbox']"
+  const preferredInputs = [...document.querySelectorAll("input[type='file']")].filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true" && input.id === "upload-files");
+  const prompts = [...document.querySelectorAll(
+    "#prompt-textarea, [data-testid='prompt-textarea']"
   )].filter(visible);
-  const roots = [...new Set(textboxes.map(
-    (textbox) => textbox.closest("form") ?? textbox.closest("[data-testid*='composer' i]") ?? textbox.closest("[aria-label*='composer' i]") ?? textbox.closest("[class*='composer' i]")
+  const anchors = preferredInputs.length === 1 ? preferredInputs : prompts;
+  const roots = [...new Set(anchors.map(
+    (anchor) => anchor.closest("form") ?? anchor.closest("[data-testid*='composer' i]") ?? anchor.closest("[aria-label*='composer' i]") ?? anchor.closest("[class*='composer' i]")
   ).filter((root) => root !== null))];
   if (roots.length !== 1) return { status: "ambiguous" };
   const controls = [...roots[0].querySelectorAll("button, [role='button']")];
@@ -35339,13 +35383,9 @@ function inspectChatGPTComposer(argument) {
     }
     return { facts: facts2, regionCount: nodes.length, orderDeterministic: nodes.length > 0 };
   };
-  const textboxes = boundedQuery(
-    document,
-    "textarea, [contenteditable='true'], [role='textbox']"
-  ).filter(visible);
-  const composerAncestor = (textbox) => {
+  const composerAncestor = (anchor) => {
     let fallback = null;
-    let current = textbox;
+    let current = anchor;
     for (let depth = 0; current !== null && depth < 4096; depth += 1) {
       if (current.nodeType === 1) {
         const element = current;
@@ -35359,8 +35399,15 @@ function inspectChatGPTComposer(argument) {
     if (current !== null) throw new Error("probe limit exceeded");
     return fallback;
   };
+  const globalInputs = boundedQuery(document, "input[type='file']").filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
+  const preferred = globalInputs.filter((input2) => input2.getAttribute("id") === "upload-files");
+  const prompts = boundedQuery(
+    document,
+    "#prompt-textarea, [data-testid='prompt-textarea']"
+  ).filter(visible);
+  const anchors = preferred.length === 1 ? preferred : prompts;
   const roots = [...new Set(
-    textboxes.map(composerAncestor).filter((root2) => root2 !== null && visible(root2))
+    anchors.map(composerAncestor).filter((root2) => root2 !== null && visible(root2))
   )];
   if (roots.length !== 1) {
     return {
@@ -35377,10 +35424,10 @@ function inspectChatGPTComposer(argument) {
     };
   }
   const root = roots[0];
-  const allInputs = boundedQuery(root, "input[type='file']").filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
-  const preferred = allInputs.filter((input2) => input2.getAttribute("id") === "upload-files");
+  const allInputs = preferred.length === 1 ? preferred : boundedQuery(root, "input[type='file']").filter((input2) => !input2.disabled && input2.getAttribute("aria-disabled") !== "true");
+  const scopedPreferred = allInputs.filter((input2) => input2.getAttribute("id") === "upload-files");
   const nonImage = allInputs.filter((input2) => input2.getAttribute("accept") !== "image/*");
-  const inputs = preferred.length === 1 ? preferred : allInputs.length === 1 ? allInputs : nonImage.length === 1 ? nonImage : [];
+  const inputs = scopedPreferred.length === 1 ? scopedPreferred : allInputs.length === 1 ? allInputs : nonImage.length === 1 ? nonImage : [];
   if (inputs.length !== 1) {
     return {
       status: "ambiguous",
@@ -37333,13 +37380,9 @@ async function readEmptyAttachmentState(page) {
         }
         return matches;
       };
-      const textboxes = boundedQuery(
-        document,
-        "textarea, [contenteditable='true'], [role='textbox']"
-      ).filter(visible);
-      const composerAncestor = (textbox) => {
+      const composerAncestor = (anchor) => {
         let fallback = null;
-        let current = textbox;
+        let current = anchor;
         for (let depth = 0; current !== null && depth < 4096; depth += 1) {
           if (current.nodeType === 1) {
             const element = current;
@@ -37353,11 +37396,21 @@ async function readEmptyAttachmentState(page) {
         if (current !== null) throw new Error("node limit exceeded");
         return fallback;
       };
-      const composers = [...new Set(textboxes.map(
-        (textbox) => composerAncestor(textbox)
+      const allInputs = boundedQuery(document, "input[type='file']").filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+      const preferred = allInputs.filter((input) => input.getAttribute("id") === "upload-files");
+      const prompts = boundedQuery(
+        document,
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      ).filter(visible);
+      const anchors = preferred.length === 1 ? preferred : prompts;
+      const composers = [...new Set(anchors.map(
+        (anchor) => composerAncestor(anchor)
       ).filter((value) => value !== null))];
       if (composers.length !== 1) return { supported: false, count: 0, visibleAttachmentCount: 0 };
-      const inputs = boundedQuery(composers[0], "input[type='file']").filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+      const scopedInputs = preferred.length === 1 ? preferred : boundedQuery(composers[0], "input[type='file']").filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+      const scopedPreferred = scopedInputs.filter((input) => input.getAttribute("id") === "upload-files");
+      const nonImage = scopedInputs.filter((input) => input.getAttribute("accept") !== "image/*");
+      const inputs = scopedPreferred.length === 1 ? scopedPreferred : scopedInputs.length === 1 ? scopedInputs : nonImage.length === 1 ? nonImage : [];
       if (inputs.length !== 1) return { supported: false, count: 0, visibleAttachmentCount: 0 };
       const selectors = [
         "[data-testid*='attachment' i]",

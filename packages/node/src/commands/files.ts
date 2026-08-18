@@ -548,25 +548,40 @@ async function readAttachmentEvidenceBaseline(
       const rect = element.getBoundingClientRect();
       return rect.width > 0 || rect.height > 0;
     };
-    const textboxes = Array.from(document.querySelectorAll<HTMLElement>(
-      "textarea, [contenteditable='true'], [role='textbox']"
-    )).filter(visible);
-    const composers = [...new Set(textboxes
-      .map(textbox => textbox.closest<HTMLElement>("form")
-        ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
-      .filter((value): value is HTMLElement => value !== null))];
-    if (composers.length !== 1) {
-      return { supported: false, inputFiles: [], attachmentLabels: [] };
-    }
-    const composer = composers[0]!;
-    const allInputs = Array.from(composer.querySelectorAll<HTMLInputElement>("input[type='file']"))
+    const allInputs = Array.from(document.querySelectorAll<HTMLInputElement>("input[type='file']"))
       .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
     const preferred = allInputs.filter(input => input.id === "upload-files");
-    const nonImage = allInputs.filter(input => input.getAttribute("accept") !== "image/*");
-    const inputs = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : allInputs;
+    let composer = preferred.length === 1
+      ? preferred[0]!.closest<HTMLElement>("form")
+        ?? preferred[0]!.closest<HTMLElement>("[data-testid*='composer' i]")
+        ?? preferred[0]!.closest<HTMLElement>("[aria-label*='composer' i]")
+        ?? preferred[0]!.closest<HTMLElement>("[class*='composer' i]")
+      : null;
+    let inputs = preferred;
+    if (preferred.length !== 1) {
+      const prompts = Array.from(document.querySelectorAll<HTMLElement>(
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      )).filter(visible);
+      const composers = [...new Set(prompts
+        .map(prompt => prompt.closest<HTMLElement>("form")
+          ?? prompt.closest<HTMLElement>("[data-testid*='composer' i]")
+          ?? prompt.closest<HTMLElement>("[aria-label*='composer' i]")
+          ?? prompt.closest<HTMLElement>("[class*='composer' i]"))
+        .filter((value): value is HTMLElement => value !== null))];
+      if (composers.length !== 1) {
+        return { supported: false, inputFiles: [], attachmentLabels: [] };
+      }
+      composer = composers[0]!;
+      const scoped = allInputs.filter(input => composer!.contains(input));
+      const scopedPreferred = scoped.filter(input => input.id === "upload-files");
+      const nonImage = scoped.filter(input => input.getAttribute("accept") !== "image/*");
+      inputs = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : scoped;
+    }
     if (inputs.length !== 1) {
+      return { supported: false, inputFiles: [], attachmentLabels: [] };
+    }
+    composer ??= inputs[0]!.parentElement;
+    if (composer === null) {
       return { supported: false, inputFiles: [], attachmentLabels: [] };
     }
     const attachmentSelector = [
@@ -663,28 +678,43 @@ async function readAttachmentReadiness(
       const rect = element.getBoundingClientRect();
       return rect.width > 0 || rect.height > 0;
     };
-    const textboxes = Array.from(document.querySelectorAll<HTMLElement>(
-      "textarea, [contenteditable='true'], [role='textbox']"
-    )).filter(visible);
-    const composers = [...new Set(textboxes
-      .map(textbox => textbox.closest<HTMLElement>("form")
-        ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
-      .filter((value): value is HTMLElement => value !== null))];
-    if (composers.length !== 1) {
-      return { supported: false, files: expectedFiles.map(file => ({ name: file.name, visible: false })), processing: false };
-    }
-    const composer = composers[0]!;
-    const allInputs = Array.from(composer.querySelectorAll<HTMLInputElement>("input[type='file']"))
+    const allInputs = Array.from(document.querySelectorAll<HTMLInputElement>("input[type='file']"))
       .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
     const preferred = allInputs.filter(input => input.id === "upload-files");
-    const nonImage = allInputs.filter(input => input.getAttribute("accept") !== "image/*");
-    const inputs = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : allInputs;
+    let composer = preferred.length === 1
+      ? preferred[0]!.closest<HTMLElement>("form")
+        ?? preferred[0]!.closest<HTMLElement>("[data-testid*='composer' i]")
+        ?? preferred[0]!.closest<HTMLElement>("[aria-label*='composer' i]")
+        ?? preferred[0]!.closest<HTMLElement>("[class*='composer' i]")
+      : null;
+    let inputs = preferred;
+    if (preferred.length !== 1) {
+      const prompts = Array.from(document.querySelectorAll<HTMLElement>(
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      )).filter(visible);
+      const composers = [...new Set(prompts
+        .map(prompt => prompt.closest<HTMLElement>("form")
+          ?? prompt.closest<HTMLElement>("[data-testid*='composer' i]")
+          ?? prompt.closest<HTMLElement>("[aria-label*='composer' i]")
+          ?? prompt.closest<HTMLElement>("[class*='composer' i]"))
+        .filter((value): value is HTMLElement => value !== null))];
+      if (composers.length !== 1) {
+        return { supported: false, files: expectedFiles.map(file => ({ name: file.name, visible: false })), processing: false };
+      }
+      composer = composers[0]!;
+      const scoped = allInputs.filter(input => composer!.contains(input));
+      const scopedPreferred = scoped.filter(input => input.id === "upload-files");
+      const nonImage = scoped.filter(input => input.getAttribute("accept") !== "image/*");
+      inputs = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : scoped;
+    }
     if (inputs.length !== 1) {
       return { supported: false, files: expectedFiles.map(file => ({ name: file.name, visible: false })), processing: false };
     }
     const input = inputs[0]!;
+    composer ??= input.parentElement;
+    if (composer === null) {
+      return { supported: false, files: expectedFiles.map(file => ({ name: file.name, visible: false })), processing: false };
+    }
 
     const attachmentSelectors = [
       "[data-testid*='attachment' i]",
@@ -1085,21 +1115,24 @@ async function validateChooserTarget(
       return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
         && style.pointerEvents !== "none" && (rect.width > 0 || rect.height > 0);
     };
-    const textboxes = Array.from(document.querySelectorAll<HTMLElement>(
-      "textarea, [contenteditable='true'], [role='textbox']"
-    )).filter(visible);
-    const composers = [...new Set(textboxes
-      .map(textbox => textbox.closest<HTMLElement>("form")
-        ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
-      .filter((value): value is HTMLElement => value !== null))];
-    if (composers.length !== 1 || !composers[0]!.contains(candidate)) return false;
-    const all = Array.from(composers[0]!.querySelectorAll<HTMLInputElement>("input[type='file']"))
+    const all = Array.from(document.querySelectorAll<HTMLInputElement>("input[type='file']"))
       .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
     const preferred = all.filter(input => input.id === "upload-files");
-    const nonImage = all.filter(input => input.getAttribute("accept") !== "image/*");
-    const resolved = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : all;
+    if (preferred.length === 1) return preferred[0] === candidate;
+    const prompts = Array.from(document.querySelectorAll<HTMLElement>(
+      "#prompt-textarea, [data-testid='prompt-textarea']"
+    )).filter(visible);
+    const composers = [...new Set(prompts
+      .map(prompt => prompt.closest<HTMLElement>("form")
+        ?? prompt.closest<HTMLElement>("[data-testid*='composer' i]")
+        ?? prompt.closest<HTMLElement>("[aria-label*='composer' i]")
+        ?? prompt.closest<HTMLElement>("[class*='composer' i]"))
+      .filter((value): value is HTMLElement => value !== null))];
+    if (composers.length !== 1 || !composers[0]!.contains(candidate)) return false;
+    const scoped = all.filter(input => composers[0]!.contains(input));
+    const scopedPreferred = scoped.filter(input => input.id === "upload-files");
+    const nonImage = scoped.filter(input => input.getAttribute("accept") !== "image/*");
+    const resolved = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : scoped;
     return resolved.length === 1 && resolved[0] === candidate;
   }, undefined, { timeoutMs }), "File-chooser active-composer identity check", 2_000);
   if (!scoped) {
@@ -1555,21 +1588,24 @@ async function resolveUniqueActiveComposerFileInput(
         return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
           && (rect.width > 0 || rect.height > 0);
       };
-      const textboxes = Array.from(document.querySelectorAll<HTMLElement>(
-        "textarea, [contenteditable='true'], [role='textbox']"
-      )).filter(visible);
-    const composers = [...new Set(textboxes
-        .map(textbox => textbox.closest<HTMLElement>("form")
-          ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
-          ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
-          ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
-        .filter((value): value is HTMLElement => value !== null))];
-      if (composers.length !== 1 || !composers[0]!.contains(candidate)) return false;
-      const all = Array.from(composers[0]!.querySelectorAll<HTMLInputElement>("input[type='file']"))
+      const all = Array.from(document.querySelectorAll<HTMLInputElement>("input[type='file']"))
         .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
       const preferred = all.filter(input => input.id === "upload-files");
-      const nonImage = all.filter(input => input.getAttribute("accept") !== "image/*");
-      const resolved = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : all;
+      if (preferred.length === 1) return preferred[0] === candidate;
+      const prompts = Array.from(document.querySelectorAll<HTMLElement>(
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      )).filter(visible);
+      const composers = [...new Set(prompts
+        .map(prompt => prompt.closest<HTMLElement>("form")
+          ?? prompt.closest<HTMLElement>("[data-testid*='composer' i]")
+          ?? prompt.closest<HTMLElement>("[aria-label*='composer' i]")
+          ?? prompt.closest<HTMLElement>("[class*='composer' i]"))
+        .filter((value): value is HTMLElement => value !== null))];
+      if (composers.length !== 1 || !composers[0]!.contains(candidate)) return false;
+      const scoped = all.filter(input => composers[0]!.contains(input));
+      const scopedPreferred = scoped.filter(input => input.id === "upload-files");
+      const nonImage = scoped.filter(input => input.getAttribute("accept") !== "image/*");
+      const resolved = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : scoped;
       return resolved.length === 1 && resolved[0] === candidate;
     }, undefined, { timeoutMs }), `File-input ${index + 1} scope check`, 2_000);
     if (scoped) eligible.push(input);
@@ -1596,14 +1632,24 @@ async function assertControlInUniqueActiveComposer(
       return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
         && (rect.width > 0 || rect.height > 0);
     };
-    const textboxes = Array.from(document.querySelectorAll<HTMLElement>(
-      "textarea, [contenteditable='true'], [role='textbox']"
+    const allInputs = Array.from(document.querySelectorAll<HTMLInputElement>("input[type='file']"))
+      .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+    const preferred = allInputs.filter(input => input.id === "upload-files");
+    if (preferred.length === 1) {
+      const composer = preferred[0]!.closest<HTMLElement>("form")
+        ?? preferred[0]!.closest<HTMLElement>("[data-testid*='composer' i]")
+        ?? preferred[0]!.closest<HTMLElement>("[aria-label*='composer' i]")
+        ?? preferred[0]!.closest<HTMLElement>("[class*='composer' i]");
+      if (composer?.contains(element)) return true;
+    }
+    const prompts = Array.from(document.querySelectorAll<HTMLElement>(
+      "#prompt-textarea, [data-testid='prompt-textarea']"
     )).filter(visible);
-    const composers = [...new Set(textboxes
-      .map(textbox => textbox.closest<HTMLElement>("form")
-        ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
+    const composers = [...new Set(prompts
+      .map(prompt => prompt.closest<HTMLElement>("form")
+        ?? prompt.closest<HTMLElement>("[data-testid*='composer' i]")
+        ?? prompt.closest<HTMLElement>("[aria-label*='composer' i]")
+        ?? prompt.closest<HTMLElement>("[class*='composer' i]"))
       .filter((value): value is HTMLElement => value !== null))];
     return composers.length === 1 && composers[0]!.contains(element);
   }, undefined, { timeoutMs }), `${label} scope check`, 2_000);
@@ -1644,21 +1690,26 @@ async function readBrowserInputDiagnostic(
       const rect = element.getBoundingClientRect();
       return rect.width > 0 || rect.height > 0;
     };
-    const textboxes = Array.from(document.querySelectorAll<HTMLElement>(
-      "textarea, [contenteditable='true'], [role='textbox']"
-    )).filter(visible);
-    const composers = [...new Set(textboxes
-      .map(textbox => textbox.closest<HTMLElement>("form")
-        ?? textbox.closest<HTMLElement>("[data-testid*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[aria-label*='composer' i]")
-        ?? textbox.closest<HTMLElement>("[class*='composer' i]"))
-      .filter((value): value is HTMLElement => value !== null))];
-    if (composers.length !== 1) return undefined;
-    const allInputs = Array.from(composers[0]!.querySelectorAll<HTMLInputElement>("input[type='file']"))
+    const allInputs = Array.from(document.querySelectorAll<HTMLInputElement>("input[type='file']"))
       .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
     const preferred = allInputs.filter(input => input.id === "upload-files");
-    const nonImage = allInputs.filter(input => input.getAttribute("accept") !== "image/*");
-    const inputs = preferred.length > 0 ? preferred : nonImage.length > 0 ? nonImage : allInputs;
+    let inputs = preferred;
+    if (preferred.length !== 1) {
+      const prompts = Array.from(document.querySelectorAll<HTMLElement>(
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      )).filter(visible);
+      const composers = [...new Set(prompts
+        .map(prompt => prompt.closest<HTMLElement>("form")
+          ?? prompt.closest<HTMLElement>("[data-testid*='composer' i]")
+          ?? prompt.closest<HTMLElement>("[aria-label*='composer' i]")
+          ?? prompt.closest<HTMLElement>("[class*='composer' i]"))
+        .filter((value): value is HTMLElement => value !== null))];
+      if (composers.length !== 1) return undefined;
+      const scoped = allInputs.filter(input => composers[0]!.contains(input));
+      const scopedPreferred = scoped.filter(input => input.id === "upload-files");
+      const nonImage = scoped.filter(input => input.getAttribute("accept") !== "image/*");
+      inputs = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : scoped;
+    }
     if (inputs.length !== 1) return undefined;
     const input = inputs[0]!;
     return {

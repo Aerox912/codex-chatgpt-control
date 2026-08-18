@@ -613,14 +613,17 @@ function inspectChatGPTSendReadiness(argument: unknown): Readonly<{
     return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
       && (rect.width > 0 || rect.height > 0);
   };
-  const textboxes = [...document.querySelectorAll<HTMLElement>(
-    "textarea, [contenteditable='true'], [role='textbox']"
+  const preferredInputs = [...document.querySelectorAll<HTMLInputElement>("input[type='file']")]
+    .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true" && input.id === "upload-files");
+  const prompts = [...document.querySelectorAll<HTMLElement>(
+    "#prompt-textarea, [data-testid='prompt-textarea']"
   )].filter(visible);
-  const roots = [...new Set(textboxes.map(textbox =>
-    textbox.closest("form")
-      ?? textbox.closest("[data-testid*='composer' i]")
-      ?? textbox.closest("[aria-label*='composer' i]")
-      ?? textbox.closest("[class*='composer' i]")
+  const anchors: Element[] = preferredInputs.length === 1 ? preferredInputs : prompts;
+  const roots = [...new Set(anchors.map(anchor =>
+    anchor.closest("form")
+      ?? anchor.closest("[data-testid*='composer' i]")
+      ?? anchor.closest("[aria-label*='composer' i]")
+      ?? anchor.closest("[class*='composer' i]")
   ).filter((root): root is Element => root !== null))];
   if (roots.length !== 1) return { status: "ambiguous" };
   const controls = [...roots[0]!.querySelectorAll<HTMLElement>("button, [role='button']")];
@@ -986,11 +989,9 @@ export function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     }
     return { facts, regionCount: nodes.length, orderDeterministic: nodes.length > 0 };
   };
-  const textboxes = boundedQuery<HTMLElement>(document,
-    "textarea, [contenteditable='true'], [role='textbox']").filter(visible);
-  const composerAncestor = (textbox: Element): HTMLElement | null => {
+  const composerAncestor = (anchor: Element): HTMLElement | null => {
     let fallback: HTMLElement | null = null;
-    let current: Node | null = textbox;
+    let current: Node | null = anchor;
     for (let depth = 0; current !== null && depth < 4096; depth += 1) {
       if (current.nodeType === 1) {
         const element = current as HTMLElement;
@@ -1006,8 +1007,14 @@ export function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     if (current !== null) throw new Error("probe limit exceeded");
     return fallback;
   };
+  const globalInputs = boundedQuery<HTMLInputElement>(document, "input[type='file']")
+    .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+  const preferred = globalInputs.filter(input => input.getAttribute("id") === "upload-files");
+  const prompts = boundedQuery<HTMLElement>(document,
+    "#prompt-textarea, [data-testid='prompt-textarea']").filter(visible);
+  const anchors: Element[] = preferred.length === 1 ? preferred : prompts;
   const roots = [...new Set(
-    textboxes.map(composerAncestor).filter((root): root is HTMLElement => root !== null && visible(root))
+    anchors.map(composerAncestor).filter((root): root is HTMLElement => root !== null && visible(root))
   )];
   if (roots.length !== 1) {
     return {
@@ -1024,11 +1031,11 @@ export function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     };
   }
   const root = roots[0]!;
-  const allInputs = boundedQuery<HTMLInputElement>(root, "input[type='file']")
+  const allInputs = preferred.length === 1 ? preferred : boundedQuery<HTMLInputElement>(root, "input[type='file']")
     .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
-  const preferred = allInputs.filter(input => input.getAttribute("id") === "upload-files");
+  const scopedPreferred = allInputs.filter(input => input.getAttribute("id") === "upload-files");
   const nonImage = allInputs.filter(input => input.getAttribute("accept") !== "image/*");
-  const inputs = preferred.length === 1 ? preferred : allInputs.length === 1 ? allInputs : nonImage.length === 1 ? nonImage : [];
+  const inputs = scopedPreferred.length === 1 ? scopedPreferred : allInputs.length === 1 ? allInputs : nonImage.length === 1 ? nonImage : [];
   if (inputs.length !== 1) {
     return {
       status: "ambiguous",

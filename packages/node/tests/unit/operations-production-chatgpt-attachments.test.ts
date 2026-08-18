@@ -185,6 +185,9 @@ function makePage(initial: Partial<ProbeState> = {}): FakePage {
     if (fn.toString().includes("composer-submit-button")) {
       return { status: state.sendReady === false ? "not_ready" : "ready" } as T;
     }
+    expect(fn.toString()).toContain("#prompt-textarea");
+    expect(fn.toString()).toContain("upload-files");
+    expect(fn.toString()).not.toContain("textarea, [contenteditable='true'], [role='textbox']");
     expect(fn.toString()).not.toContain("querySelectorAll");
     expect(fn.toString()).not.toContain("Array.from");
     expect(fn.toString()).not.toContain('structural.includes("composer")');

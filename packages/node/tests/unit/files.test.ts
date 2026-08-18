@@ -303,6 +303,89 @@ describe("attachFiles", () => {
     });
   });
 
+  it("uses the unique upload input when historical code editors expose textbox forms", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-control-attach-long-chat-"));
+    const file = join(dir, "notes.txt");
+    await writeFile(file, "hello");
+
+    const composer = {
+      contains: (element: unknown) => element === uploadInput || element === prompt,
+      querySelectorAll: () => []
+    };
+    const historicalForms = [{}, {}];
+    const visibleTextbox = (form: object) => ({
+      hidden: false,
+      closest: (selector: string) => selector.includes("[hidden]") ? null : selector === "form" ? form : null,
+      getBoundingClientRect: () => ({ width: 100, height: 20 })
+    });
+    const prompt = visibleTextbox(composer);
+    const historicalEditors = historicalForms.map(visibleTextbox);
+    const uploadInput = {
+      id: "upload-files",
+      disabled: false,
+      hidden: false,
+      files: [] as Array<{ name: string; size: number; type: string; lastModified: number }>,
+      parentElement: composer,
+      getAttribute: (name: string) => name === "accept" ? "*/*" : null,
+      closest: (selector: string) => selector === "form" ? composer : null,
+      getBoundingClientRect: () => ({ width: 1, height: 1 })
+    };
+
+    const inLongConversation = async <T>(run: () => T | Promise<T>): Promise<T> => {
+      const previousDocument = globalThis.document;
+      const previousWindow = globalThis.window;
+      try {
+        globalThis.document = {
+          querySelectorAll: (selector: string) => {
+            if (selector === "input[type='file']") return [uploadInput];
+            if (selector.includes("#prompt-textarea")) return [prompt];
+            if (selector.includes("textarea")) return [prompt, ...historicalEditors];
+            return [];
+          }
+        } as unknown as Document;
+        globalThis.window = {
+          getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1", pointerEvents: "auto" })
+        } as unknown as Window & typeof globalThis;
+        return await run();
+      } finally {
+        globalThis.document = previousDocument;
+        globalThis.window = previousWindow;
+      }
+    };
+
+    const uploadLocator: LocatorLike = {
+      count: async () => 1,
+      isVisible: async () => true,
+      click: async () => {},
+      evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>): Promise<T> =>
+        inLongConversation(() => fn(uploadInput as A))
+    };
+    const missing: LocatorLike = { count: async () => 0 };
+    const page: PageLike = {
+      locator: selector => selector.includes("input[type='file']") ? uploadLocator : missing,
+      waitForEvent: async () => ({
+        element: () => ({
+          evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>): Promise<T> =>
+            inLongConversation(() => fn(uploadInput as A))
+        }),
+        isMultiple: async () => true,
+        setFiles: async () => {
+          uploadInput.files = [{ name: "notes.txt", size: 5, type: "text/plain", lastModified: 123 }];
+        }
+      }),
+      evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>, arg?: A): Promise<T> =>
+        inLongConversation(() => fn(arg as A)),
+      waitForTimeout: async () => {},
+      title: async () => "ChatGPT",
+      url: () => "https://chatgpt.com/c/long-conversation"
+    };
+
+    const result = await attachFiles({ page }, { paths: [file] });
+
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(uploadInput.files).toHaveLength(1);
+  });
+
   it("reads diagnostics only from the unique active-composer file input", async () => {
     const dir = await mkdtemp(join(tmpdir(), "chatgpt-control-attach-scoped-diagnostics-"));
     const file = join(dir, "notes.txt");
@@ -322,7 +405,10 @@ describe("attachFiles", () => {
         const source = String(fn);
         if (source.includes("file.lastModified")) {
           const staleInput = {
-            files: [{ name: "stale.txt", size: 99, type: "text/plain", lastModified: 1 }]
+            id: "stale-file-input",
+            disabled: false,
+            files: [{ name: "stale.txt", size: 99, type: "text/plain", lastModified: 1 }],
+            getAttribute: () => null
           };
           const composerInput = {
             id: "upload-files",
@@ -343,7 +429,12 @@ describe("attachFiles", () => {
           try {
             globalThis.document = {
               querySelector: () => staleInput,
-              querySelectorAll: (selector: string) => selector.includes("textarea") ? [textbox] : []
+              querySelectorAll: (selector: string) => {
+                if (selector === "input[type='file']") return [staleInput, composerInput];
+                if (selector.includes("#prompt-textarea")) return [textbox];
+                if (selector.includes("textarea")) return [textbox];
+                return [];
+              }
             } as unknown as Document;
             globalThis.window = {
               getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" })
@@ -449,9 +540,10 @@ describe("attachFiles", () => {
     expect(paletteClicked).toBe(true);
     expect(uploadedPaths).toEqual([file]);
     expect(palettePattern?.test("Añadir fotos y archivos")).toBe(true);
-    expect(plusScopeSource).toContain('textbox.closest("form")');
-    expect(plusScopeSource.indexOf('textbox.closest("form")'))
-      .toBeLessThan(plusScopeSource.indexOf("[class*='composer' i]"));
+    expect(plusScopeSource).toContain('prompt.closest("form")');
+    const promptClosestIndex = plusScopeSource.indexOf('prompt.closest("form")');
+    expect(promptClosestIndex)
+      .toBeLessThan(plusScopeSource.indexOf("[class*='composer' i]", promptClosestIndex));
   });
 
   it("refuses an unrelated palette chooser before handing it any file", async () => {
