@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "chatgpt.browser_control.operation_blocker.v1",
+  "code": "ambiguous_submit",
+  "recoverable": true,
+  "operationId": "11111111-1111-4111-8111-111111111111",
+  "requestDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "phase": "uncertain",
+  "mutationBoundary": "send_may_have_occurred",
+  "message": "The owned turn could not yet be proven. Collect may observe it without retrying Send."
+}

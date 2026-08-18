@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "chatgpt.browser_control.operation_recovery_observation.v1",
+  "target": {
+    "status": "matches"
+  },
+  "turn": {
+    "status": "owned_assistant_terminal",
+    "userTurnId": "user-turn-1",
+    "assistantTurnId": "assistant-turn-1",
+    "evidenceDigest": "hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  }
+}

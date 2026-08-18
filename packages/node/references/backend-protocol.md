@@ -108,6 +108,43 @@ The final event contains a normal runner result:
 
 Streaming is milestone streaming only. It does not promise token deltas or OpenAI API stream-event parity. Partial assistant text is emitted as `message_in_progress`; only completion-confirmed output is emitted as `message_completed`.
 
+Persistent clients perform one single-flight `backend.hello` negotiation before
+admitting multiplexed work. When the backend advertises request-ID-scoped unary
+and stream multiplexing, one lifecycle-owned reader routes every response and
+event to its exact `requestId`; compatible older backends remain single-flight.
+Cancellation and timeout retain a bounded late-output tombstone. A record for a
+known tombstone is drained, while an unknown request ID quarantines and recycles
+the connection rather than being guessed into an active route.
+
+The transport retains a bounded, redacted `backend_compatibility.v1` snapshot for
+the current backend generation. Protocol or capability incompatibility rejects
+the hello before any browser command is admitted. Compatible package, runtime,
+and build differences are warnings rather than an exact package-version gate;
+the report includes a `build_digest_mismatch` warning even when package versions
+match. Missing provenance is reported as `unknown`, never inferred, and the
+snapshot contains no command list, prompts, paths, secrets, or provider output.
+
+Backpressure is bounded by both event count and encoded UTF-8 bytes. Overflow
+fails only the affected stream route and leaves unrelated correlated routes
+usable. The Node and Python clients bound aggregate queued stdin frames by
+count and bytes, and both clients bound aggregate caller/control route
+admissions with `maxInFlight`/`max_in_flight` (default `256`, minimum `2`) across
+handshake probes, waiting legacy slots, pending unary routes, async
+pre-reservations, and streams. During negotiation gaps where the handshake is
+unknown/in progress and no control route is currently charged, caller
+reservations use at most `maxInFlight - 1` slots so the transport can always
+admit the next hello/legacy control probe. Once a control route is charged, it
+counts as one ordinary live route and callers can use the full configured
+bound; the virtual headroom returns between sequential legacy probes. Saturation
+is rejected before request-ID
+reservation and every terminal, cancellation, timeout, queued-never-started
+release, and recycle path releases its live slot. The client rechecks route
+ownership immediately before writing, so a request canceled while queued is never written later. If a started stdin write
+does not settle, the child is recycled; at most one unresolved generation may
+be detached, and a second unresolved generation fails closed until teardown
+settles. These are transport liveness guards, not proof that a browser mutation
+did or did not occur.
+
 ## Required Backend Commands
 
 The backend must support:
@@ -134,6 +171,42 @@ by resubmitting the original prompt. New Work tasks accept the same `project`
 target as `threads.new`; project routing is verified before prompt submission.
 
 `doctor` returns a normal `CommandResult` whose `data.checks` map is extensible. Scenario checks such as `existing_tab`, `artifacts`, `file_preflight`, `localization`, and `reports` may add optional `code`, `blockerKind`, `nextCommand`, and JSON `details` fields to individual check entries while preserving the existing `status`, `message`, and `remediation` fields.
+The additive `compatibility` check is browser-free and exposes the retained
+report in `details`; warning and unknown provenance map to an `unknown` check,
+while a rejected negotiation maps to `blocked` and makes the report not ready.
+
+## Transactional operations (v1)
+
+The additive operation surface uses four strict backend commands:
+`operations.submit`, `operations.collect`, `operations.inspect`, and
+`operations.control`. Their request and result schemas, caller-owned
+`operationId` rules, fresh-handle recovery, and privacy boundary are defined in
+[the transactional operations reference](2026-08-16-transactional-operations.md).
+
+These commands are not aliases for `messages.submit`, `messages.wait`, or the
+legacy workflow runner. `operations.submit` creates/reconciles one journal
+record and returns an accepted/completed/blocked/uncertain envelope;
+`operations.collect` observes only that operation's owned turn;
+`operations.inspect` is browser-free durable inspection; and `operations.control`
+binds one Stop or Work steer to a generating parent handle. `operations.run`
+is an SDK composition, not a fifth wire command.
+
+`operations.inspect` is browser-free and may include the same additive
+`compatibility` report projected from the lifecycle-owned transport. It does not
+reopen a tab or perform a browser read.
+
+Transactional wire validation rejects unsupported fields before browser use.
+The backend redacts adapter/journal failures at the protocol boundary so raw
+prompts, local paths, URLs, and provider-private diagnostics do not cross the
+NDJSON response. With no custom adapter seam, the default client constructs a
+lazy request-local ChatGPT adapter after journal admission and fails closed if
+the bridge, authenticated target evidence, or required provider primitive is
+unavailable. A custom adapter configuration must supply the complete adapter
+factory set; neither path falls back to a legacy sequence.
+
+`operations.collect` optionally accepts `pollIntervalMs`, an integer from `0`
+through `60000`. It controls only the interval between bounded observation
+attempts. Poll sleeps occur outside browser/tab transactions.
 
 ## Host-Local Attachment Paths
 

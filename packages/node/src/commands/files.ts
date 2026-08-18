@@ -3,8 +3,9 @@ import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { downloadLatestArtifact, locatorCountWithTimeout } from "./artifacts.js";
+import { ACTIVE_COMPOSER_FILE_INPUT_CLICK_EXPRESSION } from "../browser/active-composer-file-input.js";
 import { waitForDownloadFromClick } from "../browser/downloads.js";
-import { resultError, resultOk } from "../errors.js";
+import { nodeErrorCode, resultError, resultOk } from "../errors.js";
 import { addFilesButton, cssSelectors, requiredLocator } from "../dom/selectors.js";
 import { escapeRegExp, localeLabels } from "../dom/locale-labels.js";
 import {
@@ -529,7 +530,7 @@ function guessFileType(extension: string): { mimeType: string; category: FileCat
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
+  return nodeErrorCode(error) !== undefined;
 }
 
 async function readAttachmentEvidenceBaseline(
@@ -983,31 +984,7 @@ async function clickHiddenFileInputWithCdp(
   );
   try {
     const evaluation = await withinNativeAttachmentDeadline(deadline, timeoutMs => Promise.resolve(cdp.send!("Runtime.evaluate", {
-      expression: `(() => {
-        const visible = element => {
-          if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']")) return false;
-          const style = getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
-            && (rect.width > 0 || rect.height > 0);
-        };
-        const textboxes = [...document.querySelectorAll("textarea, [contenteditable='true'], [role='textbox']")].filter(visible);
-        const composers = [...new Set(textboxes.map(textbox =>
-          textbox.closest("form")
-            ?? textbox.closest("[data-testid*='composer' i]")
-            ?? textbox.closest("[aria-label*='composer' i]")
-            ?? textbox.closest("[class*='composer' i]")
-        ).filter(Boolean))];
-        if (composers.length !== 1) return { ok: false, reason: "active composer was not unique" };
-        const all = [...composers[0].querySelectorAll("input[type='file']")]
-          .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
-        const preferred = all.filter(input => input.id === "upload-files");
-        const nonImage = all.filter(input => input.getAttribute("accept") !== "image/*");
-        const candidates = preferred.length ? preferred : nonImage.length ? nonImage : all;
-        if (candidates.length !== 1) return { ok: false, reason: "active composer file input was not unique" };
-        candidates[0].click();
-        return { ok: true };
-      })()`,
+      expression: ACTIVE_COMPOSER_FILE_INPUT_CLICK_EXPRESSION,
       userGesture: true,
       awaitPromise: true,
       returnByValue: true

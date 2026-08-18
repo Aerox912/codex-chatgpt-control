@@ -23,9 +23,20 @@ describe("Responses adapter validation", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("rejects malformed caller-owned operation IDs before runner or browser use", () => {
+    const result = validateResponsesCreateArgs({
+      input: "hi",
+      operationId: "not-a-uuid"
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toContainEqual(expect.objectContaining({ path: "operationId" }));
+  });
+
   it("maps existing-tab fields into runner input", () => {
     const input = responsesCreateArgsToRunInput({
       input: "Continue.",
+      operationId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
       thread: { type: "url", url: "https://chatgpt.com/c/abc-123" },
       existingTab: true,
       preferExistingTab: true,
@@ -34,6 +45,7 @@ describe("Responses adapter validation", () => {
 
     expect(input).toMatchObject({
       input: "Continue.",
+      operationId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
       thread: { type: "url", url: "https://chatgpt.com/c/abc-123" },
       existingTab: true,
       preferExistingTab: true,

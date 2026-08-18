@@ -25,7 +25,9 @@ from codex_chatgpt_control.backend import BackendTransportError, StdioBackendTra
 def _make_transport(stderr_text: str = "") -> StdioBackendTransport:
     """Return a StdioBackendTransport with injected fake state (no real process)."""
     transport = StdioBackendTransport(command=["dummy"])
-    transport._stderr_buffer = stderr_text
+    # Production diagnostics deliberately retain counts, never raw stderr.
+    transport._stderr_bytes = len(stderr_text.encode("utf-8"))
+    transport._stderr_truncated = False
     return transport
 
 
@@ -63,7 +65,8 @@ class ProcessErrorReturncodeTests(unittest.TestCase):
         err = transport._process_error("boom")
 
         self.assertEqual(err.returncode, 7)
-        self.assertIn("something went wrong", err.stderr)
+        self.assertEqual(err.stderr, "stderr_present=true stderr_bytes=20")
+        self.assertNotIn("something went wrong", err.stderr)
         self.assertIn("7", str(err))
         # poll() must have been called exactly once
         transport._process.poll.assert_called_once()
@@ -87,7 +90,8 @@ class ProcessErrorReturncodeTests(unittest.TestCase):
 
         err = transport._process_error("backend died")
 
-        self.assertIn("fatal: crash log here", err.stderr)
+        self.assertEqual(err.stderr, "stderr_present=true stderr_bytes=21")
+        self.assertNotIn("fatal: crash log here", err.stderr)
 
     def test_poll_none_stderr_thread_is_joined_before_reading(self) -> None:
         """The stderr drain thread must be joined (timeout 0.5) before reading.
@@ -99,16 +103,16 @@ class ProcessErrorReturncodeTests(unittest.TestCase):
         transport = _make_transport(stderr_text="thread stderr")
         transport._process = _fake_process(poll_return=None, wait_return=3)
 
-        # A real thread that is already done — join() is instantaneous.
-        finished_thread = threading.Thread(target=lambda: None)
-        finished_thread.start()
-        finished_thread.join()  # ensure it's done before we inject it
-        transport._stderr_thread = finished_thread
+        stderr_thread = MagicMock(spec=threading.Thread)
+        stderr_thread.is_alive.return_value = True
+        transport._stderr_thread = stderr_thread
 
         err = transport._process_error("process ended")
 
         self.assertEqual(err.returncode, 3)
-        self.assertIn("thread stderr", err.stderr)
+        self.assertEqual(err.stderr, "stderr_present=true stderr_bytes=13")
+        self.assertNotIn("thread stderr", err.stderr)
+        stderr_thread.join.assert_called_once_with(timeout=0.5)
 
     # ------------------------------------------------------------------
     # Sanity-check: when poll() returns a code directly, use it as-is
@@ -122,7 +126,8 @@ class ProcessErrorReturncodeTests(unittest.TestCase):
         err = transport._process_error("process exited")
 
         self.assertEqual(err.returncode, 5)
-        self.assertIn("crash output", err.stderr)
+        self.assertEqual(err.stderr, "stderr_present=true stderr_bytes=12")
+        self.assertNotIn("crash output", err.stderr)
         self.assertIn("5", str(err))
         # wait() must not have been consulted
         transport._process.wait.assert_not_called()

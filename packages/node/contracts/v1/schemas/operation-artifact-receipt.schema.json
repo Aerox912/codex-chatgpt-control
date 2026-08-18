@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/operation-artifact-receipt.schema.json",
+  "title": "Transactional browser operation artifact receipt",
+  "description": "A redacted receipt for one operation-owned artifact and assistant turn. Output keys are opaque generated names, never caller-supplied paths.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operationId", "artifactKey", "assistantTurnId", "sourceIdentityDigest", "kind", "ordinal", "status"],
+  "properties": {
+    "schemaVersion": { "const": "chatgpt.browser_control.operation_artifact_receipt.v1" },
+    "operationId": { "$ref": "#/$defs/uuid" },
+    "artifactKey": { "$ref": "#/$defs/opaqueKey" },
+    "assistantTurnId": { "$ref": "#/$defs/opaqueId" },
+    "sourceIdentityDigest": { "$ref": "#/$defs/digest" },
+    "kind": { "enum": ["file", "image", "other"] },
+    "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "outputKey": { "$ref": "#/$defs/outputKey" },
+    "mimeType": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 127,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+/-]{0,126}$"
+    },
+    "bytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "sha256": { "$ref": "#/$defs/sha256" },
+    "status": { "enum": ["available", "transferred", "partial", "blocked"] },
+    "blockerCode": { "$ref": "#/$defs/code" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "transferred" } }, "required": ["status"] },
+      "then": {
+        "required": ["outputKey", "bytes", "sha256"],
+        "properties": {
+          "outputKey": { "$ref": "#/$defs/outputKey" },
+          "bytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+          "sha256": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "enum": ["partial", "blocked"] } }, "required": ["status"] },
+      "then": {
+        "required": ["blockerCode"],
+        "properties": { "blockerCode": { "$ref": "#/$defs/code" } }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "enum": ["available", "transferred"] } }, "required": ["status"] },
+      "then": { "not": { "required": ["blockerCode"] } }
+    }
+  ],
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001f\\u007f]{1,512}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "opaqueKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "outputKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

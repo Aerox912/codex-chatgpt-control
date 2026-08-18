@@ -311,58 +311,70 @@ describe("extractMessagesFromHtml", () => {
   });
 
   it("bounds a stalled generation-state probe with the single stop deadline", async () => {
-    const startedAt = Date.now();
-    let nativeTimeoutMs: number | undefined;
-    const result = await stopGeneration({
-      page: {
-        url: () => "https://chatgpt.com/c/test",
-        content: async (options?: BrowserOperationOptions) => {
-          nativeTimeoutMs = options?.timeoutMs;
-          return new Promise<string>((_resolve, reject) => setTimeout(
-            () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms reading page content.`)),
-            options?.timeoutMs ?? 0
-          ));
+    vi.useFakeTimers();
+    try {
+      let nativeTimeoutMs: number | undefined;
+      const resultPromise = stopGeneration({
+        page: {
+          url: () => "https://chatgpt.com/c/test",
+          content: async (options?: BrowserOperationOptions) => {
+            nativeTimeoutMs = options?.timeoutMs;
+            return new Promise<string>((_resolve, reject) => setTimeout(
+              () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms reading page content.`)),
+              options?.timeoutMs ?? 0
+            ));
+          }
         }
-      }
-    }, { confirmStop: true, timeoutMs: 250 });
+      }, { confirmStop: true, timeoutMs: 250 });
 
-    expect(result).toMatchObject({
-      ok: false,
-      status: "timeout",
-      blocker: { code: "stop_generation_deadline_exhausted" }
-    });
-    expect(nativeTimeoutMs).toBeGreaterThan(0);
-    expect(nativeTimeoutMs).toBeLessThanOrEqual(250);
-    expect(Date.now() - startedAt).toBeLessThan(1_000);
+      await vi.advanceTimersByTimeAsync(250);
+      const result = await resultPromise;
+
+      expect(result).toMatchObject({
+        ok: false,
+        status: "timeout",
+        blocker: { code: "stop_generation_deadline_exhausted" }
+      });
+      expect(nativeTimeoutMs).toBeGreaterThan(0);
+      expect(nativeTimeoutMs).toBeLessThanOrEqual(250);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never clicks after an explicit sub-250ms stop deadline expires", async () => {
-    let clicks = 0;
-    const candidate: LocatorLike = {
-      count: async () => 1,
-      isVisible: async () => true,
-      evaluate: async <T>(): Promise<T> => true as T,
-      click: async () => { clicks += 1; }
-    };
-    const startedAt = Date.now();
-    const result = await stopGeneration({
-      page: {
-        url: () => "https://chatgpt.com/c/test",
-        content: async options => new Promise<string>((_resolve, reject) => setTimeout(
-          () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms reading page content.`)),
-          options?.timeoutMs ?? 0
-        )),
-        getByRole: () => candidate
-      }
-    }, { confirmStop: true, timeoutMs: 10 });
+    vi.useFakeTimers();
+    try {
+      let clicks = 0;
+      const candidate: LocatorLike = {
+        count: async () => 1,
+        isVisible: async () => true,
+        evaluate: async <T>(): Promise<T> => true as T,
+        click: async () => { clicks += 1; }
+      };
+      const resultPromise = stopGeneration({
+        page: {
+          url: () => "https://chatgpt.com/c/test",
+          content: async options => new Promise<string>((_resolve, reject) => setTimeout(
+            () => reject(new Error(`Timed out after ${options?.timeoutMs ?? 0}ms reading page content.`)),
+            options?.timeoutMs ?? 0
+          )),
+          getByRole: () => candidate
+        }
+      }, { confirmStop: true, timeoutMs: 10 });
 
-    expect(result).toMatchObject({
-      ok: false,
-      status: "timeout",
-      blocker: { code: "stop_generation_deadline_exhausted" }
-    });
-    expect(clicks).toBe(0);
-    expect(Date.now() - startedAt).toBeLessThan(50);
+      await vi.advanceTimersByTimeAsync(10);
+      const result = await resultPromise;
+
+      expect(result).toMatchObject({
+        ok: false,
+        status: "timeout",
+        blocker: { code: "stop_generation_deadline_exhausted" }
+      });
+      expect(clicks).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("times out when generation remains active after one confirmed click", async () => {

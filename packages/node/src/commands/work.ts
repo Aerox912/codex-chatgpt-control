@@ -41,6 +41,9 @@ export async function startWork(
   env: RuntimeEnv,
   args: StartWorkArgs
 ): Promise<CommandResult<StartWorkData>> {
+  if (args.operationId !== undefined) {
+    return transactionalWorkRoutingBlocker(args.operationId, "start");
+  }
   const prompt = args.prompt.trim();
   if (prompt.length === 0) {
     return {
@@ -268,6 +271,9 @@ export async function steerWork(
   env: RuntimeEnv,
   args: SteerWorkArgs
 ): Promise<CommandResult<SteerWorkData>> {
+  if (args.operationId !== undefined || args.handle !== undefined || args.controlActionId !== undefined || args.expectedAssistantTurnId !== undefined) {
+    return transactionalWorkRoutingBlocker(args.operationId ?? args.handle?.operationId, "steer");
+  }
   const ready = await requireWork(env);
   if (!ready.ok) return forwardCommandFailure(ready);
   return markWorkResult(await askMessage(env, {
@@ -276,6 +282,43 @@ export async function steerWork(
     read: args.read ?? false,
     ...(args.timeoutMs === undefined ? {} : { timeoutMs: args.timeoutMs })
   }), ready.data?.selectorProfile);
+}
+
+function transactionalWorkRoutingBlocker(
+  operationId: string | undefined,
+  action: "start"
+): CommandResult<StartWorkData>;
+function transactionalWorkRoutingBlocker(
+  operationId: string | undefined,
+  action: "steer"
+): CommandResult<SteerWorkData>;
+function transactionalWorkRoutingBlocker(
+  operationId: string | undefined,
+  action: "start" | "steer"
+): CommandResult<StartWorkData> | CommandResult<SteerWorkData> {
+  const message = `Transactional Work ${action} must be invoked through chatgpt.work.${action}; the low-level command has no operations facade.`;
+  const data = action === "start"
+    ? {
+        task: {},
+        submitted: { submitted: false, submissionState: "not_submitted" as const },
+        ...(operationId === undefined ? {} : { operationId })
+      }
+    : operationId === undefined ? {} : { operationId };
+  return {
+    ok: false,
+    status: "unsupported",
+    data,
+    warnings: [],
+    error: { name: "OperationRoutingError", message, recoverable: false },
+    blocker: {
+      kind: "unknown",
+      code: "transactional_work_requires_client",
+      fieldPath: action === "start" ? "operationId" : "handle",
+      message,
+      resumable: false
+    },
+    context: { timestamp: new Date().toISOString(), experience: "work" }
+  } as CommandResult<StartWorkData> | CommandResult<SteerWorkData>;
 }
 
 export async function readLatestWork(

@@ -5,6 +5,26 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "contracts", "v1");
 const manifest = readJson(join(root, "manifest.json"));
+const operationSchemas = new Set([
+  "operationAction",
+  "operationArtifactReceipt",
+  "operationBlocker",
+  "operationCollectRequest",
+  "operationControlReceipt",
+  "operationControlRequest",
+  "operationEvent",
+  "operationHandle",
+  "operationInspectRequest",
+  "operationReceipt",
+  "operationRecovery",
+  "operationRequest",
+  "operationState",
+  "operationSubmissionWitness",
+  "operationSubmitResult",
+  "operationCollectResult",
+  "operationInspectResult",
+  "operationControlResult"
+]);
 
 const snakeCaseFields = [
   "active_agent_name",
@@ -134,6 +154,15 @@ function assertCapabilities(capabilities, fixtureFile) {
   assertNoPythonSnakeCase(capabilities, fixtureFile);
 }
 
+function assertBackendCompatibility(report, fixtureFile) {
+  assert(report && typeof report === "object", `${fixtureFile} missing compatibility report.`);
+  assert(report.schemaVersion === "chatgpt.browser_control.backend_compatibility.v1", `${fixtureFile} invalid compatibility schemaVersion.`);
+  assert(["compatible", "warning", "unknown", "blocked"].includes(report.status), `${fixtureFile} invalid compatibility status.`);
+  assert(["multiplexed", "single-flight", "legacy", "unknown"].includes(report.mode), `${fixtureFile} invalid compatibility mode.`);
+  assert(Array.isArray(report.warnings) && report.warnings.length <= 16, `${fixtureFile} compatibility warnings must be bounded.`);
+  assertNoPythonSnakeCase(report, fixtureFile);
+}
+
 function assertSurfaceProfile(profile, fixtureFile) {
   assert(profile && typeof profile === "object", `${fixtureFile} missing surface profile.`);
   assert(profile.schemaVersion === "chatgpt.browser_control.surface_profile.v1", `${fixtureFile} invalid surface profile schemaVersion.`);
@@ -216,6 +245,8 @@ for (const fixture of manifest.fixtures) {
     assertAgent(payload, fixture.file);
   } else if (fixture.schema === "capabilities") {
     assertCapabilities(payload, fixture.file);
+  } else if (fixture.schema === "backendCompatibility") {
+    assertBackendCompatibility(payload, fixture.file);
   } else if (fixture.schema === "surfaceProfile") {
     assertSurfaceProfile(payload, fixture.file);
   } else if (fixture.schema === "backendResponse") {
@@ -224,6 +255,9 @@ for (const fixture of manifest.fixtures) {
     assert(payload.schemaVersion === "chatgpt.browser_control.backend_request.v1", `${fixture.file} invalid backend request schemaVersion.`);
   } else if (fixture.schema === "backendEvent") {
     assertBackendEvents([payload], fixture.file);
+  } else if (operationSchemas.has(fixture.schema)) {
+    assert(payload && typeof payload === "object" && !Array.isArray(payload), `${fixture.file} missing operation contract object.`);
+    assertNoPythonSnakeCase(payload, fixture.file);
   } else {
     throw new Error(`${fixture.file} uses unsupported fixture schema ${fixture.schema}.`);
   }

@@ -41,3 +41,12 @@ export * from "./runner/index.js";
 export * from "./backend/client.js";
 export * from "./backend/protocol.js";
 export * from "./backend/session.js";
+export * from "./runtime/runtime-session.js";
+// Public adapter options accept injected coordinator/context instances. Keep
+// their constructors and factories available alongside the facades so custom
+// integrations do not need an undocumented private-subpath import.
+export * from "./runtime/tab-coordinator.js";
+export * from "./runtime/operation-context.js";
+export * from "./runtime/coordinated-page.js";
+export * from "./runtime/coordinated-browser.js";
+export * from "./operations/index.js";

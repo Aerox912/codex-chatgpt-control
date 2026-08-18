@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/operation-action.schema.json",
+  "title": "Transactional browser operation action record",
+  "description": "A redacted, append-only action intent and postcondition record. It contains no user prompt, response, file content, or filesystem path.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "actionId",
+    "kind",
+    "repeatPolicy",
+    "requestDigest",
+    "intentRevision",
+    "intentAt"
+  ],
+  "properties": {
+    "actionId": { "$ref": "#/$defs/uuid" },
+    "kind": { "$ref": "#/$defs/actionKind" },
+    "repeatPolicy": { "$ref": "#/$defs/repeatPolicy" },
+    "requestDigest": { "$ref": "#/$defs/digest" },
+    "parentActionId": { "$ref": "#/$defs/uuid" },
+    "targetDigest": { "$ref": "#/$defs/digest" },
+    "intentRevision": { "$ref": "#/$defs/revision" },
+    "intentAt": { "$ref": "#/$defs/instant" },
+    "outcome": { "enum": ["satisfied", "not_satisfied", "uncertain"] },
+    "receiptRevision": { "$ref": "#/$defs/revision" },
+    "receiptAt": { "$ref": "#/$defs/instant" },
+    "evidenceDigest": { "$ref": "#/$defs/digest" },
+    "blockerCode": { "$ref": "#/$defs/code" }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["outcome"], "properties": { "outcome": { "enum": ["satisfied", "not_satisfied", "uncertain"] } } },
+      "then": {
+        "required": ["receiptRevision", "receiptAt"],
+        "properties": {
+          "receiptRevision": { "$ref": "#/$defs/revision" },
+          "receiptAt": { "$ref": "#/$defs/instant" }
+        }
+      }
+    },
+    {
+      "if": { "required": ["receiptRevision"], "properties": { "receiptRevision": { "$ref": "#/$defs/revision" } } },
+      "then": {
+        "required": ["outcome", "receiptAt"],
+        "properties": {
+          "outcome": { "enum": ["satisfied", "not_satisfied", "uncertain"] },
+          "receiptAt": { "$ref": "#/$defs/instant" }
+        }
+      }
+    },
+    {
+      "if": { "required": ["receiptAt"] },
+      "then": {
+        "required": ["outcome", "receiptRevision"],
+        "properties": {
+          "outcome": { "enum": ["satisfied", "not_satisfied", "uncertain"] },
+          "receiptRevision": { "$ref": "#/$defs/revision" }
+        }
+      }
+    },
+    {
+      "if": { "required": ["evidenceDigest"], "properties": { "evidenceDigest": { "$ref": "#/$defs/digest" } } },
+      "then": {
+        "required": ["outcome"],
+        "properties": { "outcome": { "enum": ["satisfied", "not_satisfied", "uncertain"] } }
+      }
+    },
+    {
+      "if": { "required": ["blockerCode"], "properties": { "blockerCode": { "$ref": "#/$defs/code" } } },
+      "then": {
+        "required": ["outcome"],
+        "properties": { "outcome": { "enum": ["not_satisfied", "uncertain"] } }
+      }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "satisfied" } }, "required": ["outcome"] },
+      "then": {
+        "required": ["evidenceDigest"],
+        "properties": { "evidenceDigest": { "$ref": "#/$defs/digest" } }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "not": { "const": "status_read" } } }, "required": ["kind"] },
+      "then": {
+        "required": ["targetDigest"],
+        "properties": { "targetDigest": { "$ref": "#/$defs/digest" } }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "enum": ["status_read", "power_discovery"] } }, "required": ["kind"] },
+      "then": { "properties": { "repeatPolicy": { "const": "read_only" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "enum": ["configuration_set", "tool_set", "composer_set", "power_select"] } }, "required": ["kind"] },
+      "then": { "properties": { "repeatPolicy": { "const": "reconcile_set_to_value" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "enum": ["file_handoff", "send", "work_steer", "stop"] } }, "required": ["kind"] },
+      "then": { "properties": { "repeatPolicy": { "const": "observe_only_after_intent" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "enum": ["download", "local_output_commit", "clipboard_capture_restore"] } }, "required": ["kind"] },
+      "then": { "properties": { "repeatPolicy": { "const": "reconcile_local_effect" } } }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "instant": {
+      "type": "string",
+      "pattern": "^(?!\\d{4}-02-(?:30|31)T)(?!\\d{4}-(?:04|06|09|11)-31T)\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "actionKind": {
+      "enum": [
+        "status_read",
+        "configuration_set",
+        "tool_set",
+        "composer_set",
+        "power_discovery",
+        "power_select",
+        "file_handoff",
+        "send",
+        "work_steer",
+        "stop",
+        "download",
+        "local_output_commit",
+        "clipboard_capture_restore"
+      ]
+    },
+    "repeatPolicy": {
+      "enum": [
+        "read_only",
+        "reconcile_set_to_value",
+        "reconcile_local_effect",
+        "observe_only_after_intent"
+      ]
+    }
+  }
+}

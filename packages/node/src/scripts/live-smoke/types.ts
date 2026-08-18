@@ -5,6 +5,7 @@ export type LiveSmokeStatus = "pass" | "fail" | "skip";
 export type LiveSmokeCleanupResult = {
   attempted: boolean;
   ok: boolean;
+  closedTabCount?: number;
   reason?: string;
   error?: {
     name: string;
@@ -37,6 +38,8 @@ export type LiveSmokeBrowser = BrowserLike & {
 export type LiveSmokeContext = {
   agent: unknown;
   browser?: LiveSmokeBrowser;
+  /** Optional tool-scoped browser that owns tab finalization but is not used for behavior. */
+  cleanupBrowser?: LiveSmokeBrowser;
   env?: Record<string, string | undefined>;
   reportDir: string;
   knownThreadQuery?: string;

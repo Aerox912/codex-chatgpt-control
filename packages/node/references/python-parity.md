@@ -30,6 +30,78 @@ Wire fields stay TypeScript-compatible. Python exposes idiomatic aliases:
 | `newTask` | `new_task` |
 | `includeArtifacts` | `include_artifacts` |
 
+Negotiated compatibility is also shared contract behavior. The Node and Python
+transports retain a bounded `BackendCompatibilityReport` for the current
+backend generation and expose it through `compatibility_report()` (or the
+TypeScript equivalent). Protocol/capability rejection blocks before browser
+commands; package, runtime, and build differences are precise warnings, not an
+exact package-version requirement. A matching package version with a different
+build digest remains a `build_digest_mismatch` warning. Unknown provenance stays
+unknown. The report is redacted and contains no command list, prompt, path,
+secret, or provider output.
+
+## Transactional operations parity
+
+The direct v1 operation surface is shared by TypeScript and Python through the
+same strict wire schemas and backend commands:
+
+- `operations.submit`
+- `operations.collect`
+- `operations.inspect`
+- `operations.control`
+
+Python exposes sync `OperationsClient` and async `AsyncOperationsClient` on the
+`ChatGPT`/`AsyncChatGPT` facades. Their keyword aliases are idiomatic
+snake_case (`operation_id`, `response_content`, `timeout_ms`,
+`control_action_id`), but `to_wire()` always emits the TypeScript-compatible
+camelCase fields. Every envelope validates operation ID, request digest, fresh
+handle, target binding, receipt/blocker identity, and mutation-boundary
+monotonicity before returning to the caller. `run()` is local composition of
+one submit and at most one collect; it is not a fifth backend command.
+`operations.inspect` projects the transport compatibility snapshot into its
+additive `compatibility` field without browser access. `doctor` exposes the same
+report in its browser-free `compatibility` check; a warning or unknown
+provenance is diagnostic and does not block readiness, while rejected
+negotiation is blocked.
+
+The immutable submit capture contract is exposed as
+`OperationDurableCapturePolicy` (with the `OperationCapturePolicyState` alias)
+and is serialized as the path-free `capturePolicy` object on created/state
+records. It contains only `responseContent`, `responseFormat` (defaulting to
+`markdown`), and `artifacts`; request-local `outputDirectory` is never accepted
+on a durable model. A recovered `transfer` policy remains a transfer
+obligation until a new request-local destination is explicitly authorized.
+
+This direct parity does not make Python a second browser runtime. The current
+backend remains Node-backed and, with no custom seam, creates the same lazy
+request-local ChatGPT adapter as the TypeScript client. Browser-touching calls
+still require a bridge-enabled runtime, authenticated target evidence, and the
+required provider primitives. `inspect` is browser-free; an ordinary
+Python-spawned Node process cannot inherit Codex's in-process bridge, so
+ordinary-shell checks can exercise request/result validation and structured
+blockers without claiming live ChatGPT control. Raw
+`liveResponse` content is explicitly ephemeral and is never accepted into a
+durable receipt or operation state.
+
+The TypeScript and Python high-level Runner and Responses adapters now have an
+explicit caller-owned operation-ID opt-in. Python accepts the idiomatic
+`operation_id` keyword (or the `operation_id`/`operationId` member of the
+runner input), validates it and all supported combinations before backend
+traffic, then routes exactly one submit followed by at most one collect through
+the shared operation facade. Legacy calls with no operation ID retain their
+existing `runner.run`/`responses.create` transport path. Returned run/response
+data carries the validated operation ID and fresh handle; pending, blocked, and
+uncertain operation envelopes remain partial/blocked results with their
+contract blocker, while identity mismatches fail closed. The full request,
+recovery, coordinator, privacy, and compatibility boundary is documented in
+[Transactional browser operations](2026-08-16-transactional-operations.md).
+
+Direct Python `collect`/`run` expose `poll_interval_ms`; transactional Runner
+wait objects additionally accept `pollMs`, `poll_ms`, `pollIntervalMs`, or
+`poll_interval_ms` when aliases agree. The wire field is `pollIntervalMs`, its
+range is the inclusive integer interval `0..60000`, and sleeping never holds a
+browser/tab coordinator transaction.
+
 Incomplete response capture is also shared contract behavior. Python must preserve `status == "partial"`, `output_text`, warnings, and any nested `data.captureLimit` dictionaries exactly as the TypeScript backend returns them. `partial` is not a protocol error: callers should inspect `data.complete` and run another wait/read on the same thread when they need final output.
 
 For long-answer polling, Python forwards `response_content="metadata"` to the shared wire field `responseContent: "metadata"` on `messages.wait`. The TypeScript backend then omits assistant text from wait results and returns compact metadata such as `data.responseChars` and `data.responseSha256`; Python must preserve those fields without trying to reconstruct omitted content.

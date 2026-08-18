@@ -13,10 +13,53 @@ from codex_chatgpt_control.models import (
     SequencePlan,
     SurfaceProfile,
 )
+from codex_chatgpt_control.operation_models import (
+    BackendCompatibilityReport,
+    OperationActionRecord,
+    OperationArtifactReceipt,
+    OperationBlocker,
+    OperationCollectRequest,
+    OperationControlReceipt,
+    OperationControlRequest,
+    OperationEventEnvelope,
+    OperationHandle,
+    OperationInspectRequest,
+    OperationReceipt,
+    OperationState,
+    OperationSubmissionWitness,
+    OperationSubmitRequest,
+    validate_recovery_payload,
+)
+from codex_chatgpt_control.operations import (
+    OperationCollectResult,
+    OperationControlResult,
+    OperationInspectResult,
+    OperationSubmitResult,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "node" / "contracts" / "v1"
+
+OPERATION_FIXTURE_MODELS = {
+    "operationAction": OperationActionRecord,
+    "operationArtifactReceipt": OperationArtifactReceipt,
+    "operationBlocker": OperationBlocker,
+    "operationCollectRequest": OperationCollectRequest,
+    "operationCollectResult": OperationCollectResult,
+    "operationControlReceipt": OperationControlReceipt,
+    "operationControlRequest": OperationControlRequest,
+    "operationControlResult": OperationControlResult,
+    "operationEvent": OperationEventEnvelope,
+    "operationHandle": OperationHandle,
+    "operationInspectRequest": OperationInspectRequest,
+    "operationInspectResult": OperationInspectResult,
+    "operationReceipt": OperationReceipt,
+    "operationRequest": OperationSubmitRequest,
+    "operationState": OperationState,
+    "operationSubmissionWitness": OperationSubmissionWitness,
+    "operationSubmitResult": OperationSubmitResult,
+}
 
 
 class PythonParitySnapshotTests(unittest.TestCase):
@@ -45,6 +88,8 @@ class PythonParitySnapshotTests(unittest.TestCase):
                     model = ChatGPTAgentModel.from_wire(payload)
                 elif fixture["schema"] == "capabilities":
                     model = BackendCapabilities.from_wire(payload)
+                elif fixture["schema"] == "backendCompatibility":
+                    model = BackendCompatibilityReport.from_wire(payload)
                 elif fixture["schema"] == "backendResponse":
                     model = BackendResponse.from_wire(payload)
                 elif fixture["schema"] == "backendEvent":
@@ -59,6 +104,10 @@ class PythonParitySnapshotTests(unittest.TestCase):
                     continue
                 elif fixture["schema"] == "surfaceProfile":
                     model = SurfaceProfile.from_wire(payload)
+                elif fixture["schema"] == "operationRecovery":
+                    model = validate_recovery_payload(payload)
+                elif fixture["schema"] in OPERATION_FIXTURE_MODELS:
+                    model = OPERATION_FIXTURE_MODELS[fixture["schema"]].from_wire(payload)
                 else:
                     self.fail(f"Unhandled JSON fixture schema {fixture['schema']} for {fixture['file']}")
 

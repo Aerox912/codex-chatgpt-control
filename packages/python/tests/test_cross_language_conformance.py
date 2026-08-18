@@ -112,6 +112,7 @@ class CrossLanguageConformanceTests(unittest.TestCase):
     def test_python_backend_client_matches_backend_response_fixtures(self) -> None:
         transport = StdioBackendTransport(command=["node", str(BACKEND_BUNDLE)])
         try:
+            version_result: dict[str, Any] | None = None
             raw_cases = [
                 ("backend-version.json", "backend.version", {}),
                 ("command-descriptors.json", "commands", {}),
@@ -122,9 +123,23 @@ class CrossLanguageConformanceTests(unittest.TestCase):
                     expected = load_fixture_file(fixture_file)
                     response = transport.request(backend_envelope(command, payload, expected.get("requestId")))
                     self.assertFixtureEqual(response, expected)
+                    if command == "backend.version":
+                        self.assertIsInstance(response.get("result"), dict)
+                        version_result = cast(dict[str, Any], response["result"])
 
             client = BackendClient(transport)
-            self.assertFixtureEqual(client.capabilities(), load_fixture_file("backend-capabilities.json"))
+            capabilities = client.capabilities()
+            self.assertFixtureEqual(capabilities, load_fixture_file("backend-capabilities.json"))
+            self.assertIsNotNone(version_result)
+            assert version_result is not None
+            for field in ("backendSessionId", "packageVersion", "runtimeVersion", "buildDigest"):
+                self.assertIsInstance(version_result.get(field), str)
+                self.assertTrue(version_result[field])
+                self.assertEqual(capabilities[field], version_result[field])
+            self.assertRegex(
+                version_result["buildDigest"],
+                r"^(?:unknown|sha256:[0-9a-f]{64})$",
+            )
             self.assertFixtureEqual(
                 client.request("describe", {"name": "runner.run"}),
                 load_fixture_file("describe-runner-run.json"),
@@ -274,6 +289,18 @@ def normalize_dynamic(value: Any, key: str | None = None) -> Any:
             for item_key, item_value in sorted(value.items())
         }
     if isinstance(value, str):
+        # Backend identity deliberately changes between the generated fixture,
+        # workspace bundle, installed package, runtime version, and every
+        # process start. This conformance test owns wire shape/semantics; the
+        # dedicated runtime-identity tests own exact value/pattern assertions.
+        dynamic_identity = {
+            "backendSessionId": "<backend-session-id>",
+            "packageVersion": "<package-version>",
+            "runtimeVersion": "<runtime-version>",
+            "buildDigest": "<build-digest>",
+        }
+        if key in dynamic_identity:
+            return dynamic_identity[key]
         if key in {"timestamp", "startedAt", "endedAt", "createdAt"} and ISO_RE.fullmatch(value):
             return "<iso-timestamp>"
         if key == "id" and value.startswith("chatgpt-browser-"):

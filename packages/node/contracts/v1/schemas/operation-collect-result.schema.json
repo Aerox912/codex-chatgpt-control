@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex-chatgpt-control/contracts/v1/schemas/operation-collect-result.schema.json",
+  "title": "Transactional browser operation collect result",
+  "description": "A strict versioned collect envelope. Durable receipts contain metadata only; optional liveResponse is explicitly ephemeral and non-durable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "operationId", "requestDigest", "handle"],
+  "properties": {
+    "schemaVersion": { "const": "chatgpt.browser_control.operation_collect_result.v1" },
+    "status": { "enum": ["completed", "pending", "blocked", "uncertain"] },
+    "operationId": { "$ref": "#/$defs/uuid" }, "requestDigest": { "$ref": "#/$defs/digest" }, "handle": { "$ref": "#/$defs/handle" },
+    "receipt": { "$ref": "#/$defs/receipt" }, "liveResponse": { "$ref": "#/$defs/liveResponse" }, "blocker": { "$ref": "#/$defs/blocker" }
+  },
+  "allOf": [
+    { "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] }, "then": { "required": ["receipt"], "properties": { "receipt": { "$ref": "#/$defs/receipt" }, "blocker": false } } },
+    { "if": { "properties": { "status": { "const": "pending" } }, "required": ["status"] }, "then": { "properties": { "receipt": false, "blocker": false, "liveResponse": false } } },
+    { "if": { "properties": { "status": { "enum": ["blocked", "uncertain"] } }, "required": ["status"] }, "then": { "required": ["blocker"], "properties": { "blocker": { "$ref": "#/$defs/blocker" }, "receipt": false, "liveResponse": false } } }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "digest": { "type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "instant": { "type": "string", "pattern": "^(?!\\d{4}-02-(?:30|31)T)(?!\\d{4}-(?:04|06|09|11)-31T)\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$" },
+    "opaqueId": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?=.*\\S)[^\\u0000-\\u001f\\u007f]{1,512}$" },
+    "phase": { "enum": ["prepared", "handoff_pending", "ready", "send_pending", "submitted", "generating", "capturing", "completed", "uncertain"] },
+    "boundary": { "enum": ["none", "handoff_may_have_occurred", "send_may_have_occurred", "control_may_have_occurred"] },
+    "handle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "requestDigest", "surface", "revision", "phase", "mutationBoundary"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_handle.v1" }, "operationId": { "$ref": "#/$defs/uuid" }, "requestDigest": { "$ref": "#/$defs/digest" },
+        "surface": { "enum": ["chat", "work"] }, "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }, "phase": { "$ref": "#/$defs/phase" }, "mutationBoundary": { "$ref": "#/$defs/boundary" }, "targetBindingDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "artifactKey", "assistantTurnId", "sourceIdentityDigest", "kind", "ordinal", "status"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_artifact_receipt.v1" }, "operationId": { "$ref": "#/$defs/uuid" }, "artifactKey": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" }, "assistantTurnId": { "$ref": "#/$defs/opaqueId" }, "sourceIdentityDigest": { "$ref": "#/$defs/digest" }, "kind": { "enum": ["file", "image", "other"] }, "ordinal": { "type": "integer", "minimum": 0, "maximum": 31 }, "outputKey": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }, "mimeType": { "type": "string", "minLength": 1, "maxLength": 127, "pattern": "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+/-]{0,126}$" }, "bytes": { "type": "integer", "minimum": 0, "maximum": 8388608 }, "sha256": { "$ref": "#/$defs/sha256" }, "status": { "enum": ["available", "transferred", "partial", "blocked"] }, "blockerCode": { "$ref": "#/$defs/code" }
+      },
+      "allOf": [
+        { "if": { "properties": { "status": { "const": "transferred" } }, "required": ["status"] }, "then": { "required": ["outputKey", "bytes", "sha256"], "properties": { "outputKey": { "type": "string" }, "bytes": { "type": "integer" }, "sha256": { "$ref": "#/$defs/sha256" } } } },
+        { "if": { "properties": { "status": { "enum": ["partial", "blocked"] } }, "required": ["status"] }, "then": { "required": ["blockerCode"], "properties": { "blockerCode": { "$ref": "#/$defs/code" } } } },
+        { "if": { "properties": { "status": { "enum": ["available", "transferred"] } }, "required": ["status"] }, "then": { "properties": { "blockerCode": false } } }
+      ]
+    },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "requestDigest", "targetBindingDigest", "userTurnId", "userTurnEvidenceDigest", "assistantTurnId", "ownershipEvidenceDigest", "finishReason", "contentAvailable", "artifacts", "completedAt"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_receipt.v1" }, "operationId": { "$ref": "#/$defs/uuid" }, "requestDigest": { "$ref": "#/$defs/digest" }, "targetBindingDigest": { "$ref": "#/$defs/digest" }, "userTurnId": { "$ref": "#/$defs/opaqueId" }, "userTurnEvidenceDigest": { "$ref": "#/$defs/digest" }, "assistantTurnId": { "$ref": "#/$defs/opaqueId" }, "ownershipEvidenceDigest": { "$ref": "#/$defs/digest" }, "responseDigest": { "$ref": "#/$defs/digest" }, "responseBytes": { "type": "integer", "minimum": 0, "maximum": 8388608 }, "responseFormat": { "enum": ["markdown", "text"] }, "finishReason": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" }, "contentAvailable": { "type": "boolean" }, "artifacts": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/artifact" } }, "completedAt": { "$ref": "#/$defs/instant" }
+      },
+      "dependentRequired": { "responseDigest": ["responseBytes"], "responseBytes": ["responseDigest"] },
+      "allOf": [{ "if": { "properties": { "contentAvailable": { "const": true } }, "required": ["contentAvailable"] }, "then": { "required": ["responseDigest", "responseBytes"], "properties": { "responseDigest": { "$ref": "#/$defs/digest" }, "responseBytes": { "type": "integer", "minimum": 0, "maximum": 8388608 } } } }]
+    },
+    "liveResponse": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "durability", "durable", "content", "bytes", "chars"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_live_response.v1" }, "durability": { "const": "ephemeral" }, "durable": { "const": false },
+        "content": { "type": "string", "maxLength": 8388608 }, "responseFormat": { "enum": ["markdown", "text"] }, "bytes": { "type": "integer", "minimum": 0, "maximum": 8388608 }, "chars": { "type": "integer", "minimum": 0, "maximum": 8388608 }
+      }
+    },
+    "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+    "blocker": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "code", "recoverable", "operationId", "requestDigest", "phase", "mutationBoundary", "message"],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_blocker.v1" }, "code": { "$ref": "#/$defs/code" }, "recoverable": { "type": "boolean" }, "operationId": { "$ref": "#/$defs/uuid" }, "requestDigest": { "$ref": "#/$defs/digest" }, "phase": { "$ref": "#/$defs/phase" }, "mutationBoundary": { "$ref": "#/$defs/boundary" }, "message": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[A-Za-z0-9][A-Za-z0-9 .,:;'()\\-]{0,511}$" }
+      }
+    }
+  }
+}

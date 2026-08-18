@@ -34,6 +34,42 @@ describe("backend protocol", () => {
     });
   });
 
+  it("parses the additive backend hello command", () => {
+    const request = parseBackendRequest({
+      schemaVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+      requestId: "req_hello",
+      command: "backend.hello",
+      payload: {
+        protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+        capabilities: {
+          requestIds: { required: true, scope: "connection" }
+        }
+      }
+    });
+
+    expect(request.command).toBe("backend.hello");
+    expect(request.payload).toMatchObject({
+      protocolVersion: BACKEND_REQUEST_SCHEMA_VERSION
+    });
+  });
+
+  it("parses the additive transactional operation commands", () => {
+    for (const command of [
+      "operations.submit",
+      "operations.collect",
+      "operations.inspect",
+      "operations.control"
+    ] as const) {
+      const request = parseBackendRequest({
+        schemaVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+        requestId: `req_${command}`,
+        command,
+        payload: {}
+      });
+      expect(request.command).toBe(command);
+    }
+  });
+
   it("rejects unknown schema versions", () => {
     expect(() => parseBackendRequest({
       schemaVersion: "chatgpt.browser_control.backend_request.v0",
@@ -56,6 +92,21 @@ describe("backend protocol", () => {
     })).toThrow(new ProtocolError("unknown_command", "Unknown backend command: runner.nope", false));
   });
 
+  it("bounds request ids and rejects control characters", () => {
+    for (const requestId of ["x".repeat(4097), "req\nunsafe", "  req"]) {
+      expect(() => parseBackendRequest({
+        schemaVersion: BACKEND_REQUEST_SCHEMA_VERSION,
+        requestId,
+        command: "backend.health",
+        payload: {}
+      })).toThrow(new ProtocolError(
+        "invalid_request",
+        "Backend request requestId must be a non-empty string when provided.",
+        false
+      ));
+    }
+  });
+
   it("serializes successful responses with request id", () => {
     expect(backendResponseOk("req_123", { status: "ok" })).toEqual({
       schemaVersion: BACKEND_RESPONSE_SCHEMA_VERSION,
@@ -76,6 +127,18 @@ describe("backend protocol", () => {
         recoverable: false
       }
     });
+  });
+
+  it("redacts arbitrary error messages at the backend boundary", () => {
+    const secret = "private prompt and /private/local/path";
+    const response = backendResponseError("req_123", new Error(secret));
+
+    expect(response.error).toEqual({
+      code: "invalid_request",
+      message: "Backend command failed safely.",
+      recoverable: false
+    });
+    expect(JSON.stringify(response)).not.toContain(secret);
   });
 
   it("serializes stream milestone events", () => {

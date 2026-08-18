@@ -95,4 +95,47 @@ describe("runSequence", () => {
       blocker: { code: "stop_generation_confirmation_required" }
     });
   });
+
+  it("fails closed when a runtime caller supplies an unclassified command", async () => {
+    const result = await executeStep(
+      { id: "future", command: "future.command" } as unknown as Parameters<typeof executeStep>[0],
+      {},
+      new Map()
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "error",
+      error: {
+        name: "CommandRoutingError",
+        message: "The command has no explicit browser-routing classification."
+      }
+    });
+  });
+
+  it("fails closed before a legacy sequence handler sees an operation identity", async () => {
+    const sensitivePrompt = "sequence prompt must stay out of routing errors";
+    const result = await executeStep(
+      {
+        id: "status",
+        command: "messages.status",
+        args: {
+          operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          prompt: sensitivePrompt
+        }
+      } as unknown as Parameters<typeof executeStep>[0],
+      {},
+      new Map()
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "error",
+      error: {
+        name: "CommandRoutingError",
+        message: "An operation identity was supplied to a legacy browser command without an operation-aware dispatch seam."
+      }
+    });
+    expect(JSON.stringify(result)).not.toContain(sensitivePrompt);
+  });
 });

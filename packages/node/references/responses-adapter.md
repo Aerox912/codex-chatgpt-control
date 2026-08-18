@@ -5,6 +5,7 @@
 Accepted fields:
 
 - `input`
+- `operationId` (TypeScript transactional opt-in; caller-owned canonical UUID)
 - `thread`
 - `existingTab`
 - `preferExistingTab`
@@ -22,6 +23,7 @@ Rejected API-only fields return `status: "unsupported"` before any prompt is sub
 
 ```ts
 const response = await chatgpt.responses.create({
+  operationId: "123e4567-e89b-42d3-a456-426614174000",
   input: "Summarize the latest plan.",
   thread: { type: "conversationId", conversationId: "abc-123" },
   experience: "chat",
@@ -30,6 +32,23 @@ const response = await chatgpt.responses.create({
   stream: false
 });
 ```
+
+In the TypeScript adapter, supplying `operationId` selects the additive
+transactional runner path and returns the operation ID and fresh handle in
+`response.browser_control` when the mapper reaches the operation boundary.
+Omitting it retains the legacy Responses/runner path. The transactional path
+still accepts only visible-prefix instructions, rejects API-only fields before
+browser use, and does not provide token-delta streaming. With no custom seam,
+the client creates a lazy request-local ChatGPT adapter; it fails closed when
+the bridge, target evidence, or required provider primitive is unavailable.
+Use
+[Transactional browser operations](2026-08-16-transactional-operations.md) for
+submit/collect/inspect/control recovery and capability rules.
+
+The Python `ResponsesClient` accepts the idiomatic `operation_id` alias and
+returns the same operation ID and fresh handle in `browser_control`. It validates
+transactional combinations before transport and never resubmits an accepted
+operation.
 
 `experience` and `configuration` represent visible product controls, not API
 model selection. Configuration is strict through the runner plan and must

@@ -136,7 +136,13 @@ class RelayHarness:
                 request = json.loads(self.rfile.read(length).decode("utf-8"))
                 self.send_response(200)
                 self.send_header("content-type", "application/x-ndjson")
+                # Empty bodies have no write to flush the response headers.
+                # Make EOF framing explicit so Node's fetch observes completion
+                # promptly on Windows as well as POSIX hosts.
+                self.send_header("connection", "close")
                 self.end_headers()
+                self.wfile.flush()
+                self.close_connection = True
 
                 def write(text: str) -> None:
                     if text:

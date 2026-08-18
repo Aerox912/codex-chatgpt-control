@@ -1,12 +1,13 @@
 {
   "schemaVersion": "chatgpt.browser_control.parity_suite.v1",
-  "contractVersion": "0.1.0",
+  "contractVersion": "0.2.0",
   "surfaces": [
     {
       "id": "backend-protocol",
       "summary": "Backend request, response, event, capability, and protocol-error envelopes.",
       "fixtures": [
         "backend-capabilities.json",
+        "backend-compatibility.json",
         "backend-error-event-missing-stream-input.json",
         "backend-error-missing-run-input.json",
         "backend-runner-plan-request.json",
@@ -310,6 +311,66 @@
         "references/2026-07-16-chat-work-surfaces.md",
         "../../README.md"
       ]
+    },
+    {
+      "id": "transactional-operations-contract",
+      "summary": "Versioned transactional operation requests, handles, state, action intent, recovery, blockers, terminal ownership, artifact receipts, and strict result envelopes.",
+      "fixtures": [
+        "operation-action.json",
+        "operation-artifact-receipt.json",
+        "operation-artifact-transfer-intent-event.json",
+        "operation-artifact-transfer-receipt-event.json",
+        "operation-artifact-transfer-state.json",
+        "operation-blocker.json",
+        "operation-collect-request.json",
+        "operation-control-receipt.json",
+        "operation-control-request.json",
+        "operation-collect-result.json",
+        "operation-control-result.json",
+        "operation-action-prepared-event.json",
+        "operation-event.json",
+        "operation-ownership-baseline-event.json",
+        "operation-handle.json",
+        "operation-inspect-request.json",
+        "operation-inspect-result.json",
+        "operation-receipt.json",
+        "operation-recovery-decision.json",
+        "operation-recovery-observation.json",
+        "operation-request.json",
+        "operation-state.json",
+        "operation-submission-witness.json",
+        "operation-submission-witness-event.json",
+        "operation-target-established-event.json",
+        "operation-submit-result.json"
+      ],
+      "sourceFiles": [
+        "src/operations/types.ts",
+        "src/operations/state-machine.ts",
+        "src/operations/artifact-transfer.ts",
+        "src/operations/turn-ownership.ts",
+        "src/operations/submission.ts",
+        "src/operations/journal.ts",
+        "src/operations/handle.ts",
+        "src/operations/recovery.ts",
+        "src/operations/wire-results.ts"
+      ],
+      "nodeTests": [
+        "tests/unit/operations-state-machine.test.ts",
+        "tests/unit/operations-artifact-transfer.test.ts",
+        "tests/unit/operations-turn-ownership.test.ts",
+        "tests/unit/operations-durable-baseline.test.ts",
+        "tests/unit/operations-submission.test.ts",
+        "tests/unit/operations-handle.test.ts",
+        "tests/unit/operations-recovery.test.ts",
+        "tests/unit/operations-wire-results.test.ts"
+      ],
+      "pythonTests": [
+        "tests/test_operation_models.py"
+      ],
+      "docs": [
+        "references/2026-08-16-transactional-operations.md",
+        "references/backend-protocol.md"
+      ]
     }
   ],
   "backendCommands": {
@@ -331,6 +392,12 @@
       "surface": "backend-protocol",
       "fixtures": ["backend-capabilities.json"],
       "nodeTests": ["tests/unit/backend-dispatch.test.ts", "tests/unit/backend-client.test.ts"],
+      "pythonTests": ["tests/test_cross_language_conformance.py", "tests/test_backend_client.py"],
+      "docs": ["references/backend-protocol.md", "references/python-parity.md"]
+    },
+    "backend.hello": {
+      "surface": "backend-protocol",
+      "nodeTests": ["tests/unit/backend-dispatch.test.ts", "tests/unit/backend-protocol.test.ts", "tests/unit/backend-client.test.ts"],
       "pythonTests": ["tests/test_cross_language_conformance.py", "tests/test_backend_client.py"],
       "docs": ["references/backend-protocol.md", "references/python-parity.md"]
     },
@@ -627,6 +694,34 @@
       "nodeTests": ["tests/unit/messages.test.ts", "tests/unit/client.test.ts", "tests/unit/sequence.test.ts", "tests/unit/backend-conformance.test.ts"],
       "pythonTests": ["tests/test_primitives.py", "tests/test_async_client.py"],
       "docs": ["references/backend-protocol.md", "references/troubleshooting.md", "references/python-parity.md"]
+    },
+    "operations.submit": {
+      "surface": "transactional-operations-contract",
+      "fixtures": ["operation-request.json", "operation-submit-result.json"],
+      "nodeTests": ["tests/unit/backend-client.test.ts", "tests/unit/backend-dispatch.test.ts", "tests/unit/operations-wire-results.test.ts"],
+      "pythonTests": ["tests/test_operations_client.py", "tests/test_backend_client.py"],
+      "docs": ["references/backend-protocol.md", "references/python-parity.md", "references/2026-08-16-transactional-operations.md"]
+    },
+    "operations.collect": {
+      "surface": "transactional-operations-contract",
+      "fixtures": ["operation-collect-request.json", "operation-collect-result.json"],
+      "nodeTests": ["tests/unit/backend-client.test.ts", "tests/unit/backend-dispatch.test.ts", "tests/unit/operations-wire-requests.test.ts", "tests/unit/operations-wire-results.test.ts"],
+      "pythonTests": ["tests/test_operations_client.py", "tests/test_operation_models.py", "tests/test_backend_client.py"],
+      "docs": ["references/backend-protocol.md", "references/python-parity.md", "references/2026-08-16-transactional-operations.md"]
+    },
+    "operations.inspect": {
+      "surface": "transactional-operations-contract",
+      "fixtures": ["operation-inspect-request.json", "operation-inspect-result.json"],
+      "nodeTests": ["tests/unit/backend-client.test.ts", "tests/unit/backend-dispatch.test.ts", "tests/unit/operations-wire-results.test.ts"],
+      "pythonTests": ["tests/test_operations_client.py", "tests/test_backend_client.py"],
+      "docs": ["references/backend-protocol.md", "references/python-parity.md", "references/2026-08-16-transactional-operations.md"]
+    },
+    "operations.control": {
+      "surface": "transactional-operations-contract",
+      "fixtures": ["operation-control-request.json", "operation-control-result.json"],
+      "nodeTests": ["tests/unit/backend-client.test.ts", "tests/unit/backend-dispatch.test.ts", "tests/unit/operations-wire-results.test.ts"],
+      "pythonTests": ["tests/test_operations_client.py", "tests/test_backend_client.py"],
+      "docs": ["references/backend-protocol.md", "references/python-parity.md", "references/2026-08-16-transactional-operations.md"]
     },
     "messages.waitAndRead": {
       "surface": "workflows-primitives-diagnostics",

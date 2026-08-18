@@ -508,6 +508,20 @@ await writeGeneratedNdjsonFixture(
   })
 );
 
+// Result envelopes are generated from the checked-in redacted examples until
+// the operation backend adapters own their fixture builders. Keeping them in
+// this generator still makes the manifest/fixture set deterministic and gives
+// contract generation an explicit registration point for the versioned wire
+// surface. These values contain handles, digests, and bounded metadata only.
+for (const [file, schema, caseName] of [
+  ["operation-submit-result.json", "operationSubmitResult", "operation_submit_result"],
+  ["operation-collect-result.json", "operationCollectResult", "operation_collect_result"],
+  ["operation-inspect-result.json", "operationInspectResult", "operation_inspect_result"],
+  ["operation-control-result.json", "operationControlResult", "operation_control_result"]
+]) {
+  await writeGeneratedFixture(file, schema, caseName, JSON.parse(readFileSync(join(fixturesDir, file), "utf8")));
+}
+
 writeManifest();
 
 console.log(`Generated ${generatedFixtures.length} contract fixtures.`);
@@ -535,7 +549,7 @@ async function loadBuiltSdk() {
 }
 
 async function backendResponse(command, payload = {}, options = {}) {
-  const session = new BackendSession({ now: () => FIXED_DATE, ...options });
+  const session = new BackendSession(fixtureBackendSessionOptions(options));
   return normalizeFixtureValue(await session.dispatch(backendRequest(command, payload)));
 }
 
@@ -548,12 +562,28 @@ async function backendResult(command, payload = {}, options = {}) {
 }
 
 async function backendStream(command, payload = {}, options = {}) {
-  const session = new BackendSession({ now: () => FIXED_DATE, ...options });
+  const session = new BackendSession(fixtureBackendSessionOptions(options));
   const events = [];
   for await (const event of session.stream(backendRequest(command, payload))) {
     events.push(normalizeFixtureValue(event));
   }
   return events;
+}
+
+function fixtureBackendSessionOptions(options = {}) {
+  const { backendIdentity, ...rest } = options;
+  return {
+    now: () => FIXED_DATE,
+    ...rest,
+    backendIdentity: {
+      backendSessionId: "fixture-backend-session",
+      packageName: "codex-chatgpt-control",
+      packageVersion: "unknown",
+      runtimeVersion: "fixture-runtime",
+      buildDigest: "unknown",
+      ...backendIdentity
+    }
+  };
 }
 
 function backendRequest(command, payload) {

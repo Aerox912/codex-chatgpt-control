@@ -15,6 +15,7 @@ import type {
 
 const acceptedTopLevelFields = new Set([
   "input",
+  "operationId",
   "thread",
   "existingTab",
   "preferExistingTab",
@@ -55,8 +56,12 @@ const responseFormats = new Set<ResponseFormat>([
   "all"
 ]);
 
+const operationIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
 export type ChatGPTResponsesCreateArgs = {
   input: string | ChatGPTInputItem[];
+  /** Caller-owned durable identity; opts this invocation into operations.run. */
+  operationId?: string;
   thread?: ChatGPTThreadSelector;
   existingTab?: BootstrapArgs["existingTab"];
   preferExistingTab?: boolean;
@@ -100,6 +105,14 @@ export function validateResponsesCreateArgs(args: Record<string, unknown>): Resp
       path: "input",
       reason: "Responses adapter calls must include visible input text or input items.",
       alternative: "Provide input: \"your visible prompt\"."
+    });
+  }
+
+  if (args.operationId !== undefined && (typeof args.operationId !== "string" || !operationIdPattern.test(args.operationId))) {
+    unsupported.push({
+      path: "operationId",
+      reason: "operationId must be a canonical UUID when provided.",
+      alternative: "Provide a caller-owned UUID, or omit operationId to retain the legacy runner path."
     });
   }
 
@@ -155,6 +168,7 @@ export function responsesCreateArgsToRunInput(args: ChatGPTResponsesCreateArgs):
     input: args.input,
     response: { format: args.text?.format ?? "markdown" }
   };
+  if (args.operationId !== undefined) runInput.operationId = args.operationId;
   if (args.thread !== undefined) runInput.thread = args.thread;
   if (args.existingTab !== undefined) runInput.existingTab = args.existingTab;
   if (args.preferExistingTab !== undefined) runInput.preferExistingTab = args.preferExistingTab;
@@ -185,6 +199,10 @@ export function responseFromRunResult<TOutput>(
   if (submissionState !== undefined) browserControl.submissionState = submissionState;
   if (completionState !== undefined) browserControl.completionState = completionState;
   if (generationActive !== undefined) browserControl.generationActive = generationActive;
+  const operationId = result.data?.operationId;
+  if (operationId !== undefined) browserControl.operationId = operationId;
+  const handle = result.data?.handle;
+  if (handle !== undefined) browserControl.handle = handle;
   if (result.output_text.length > 0) {
     const envelopeArgs: Parameters<typeof renderUntrustedOutputReturnEnvelope>[0] = {
       outputText: result.output_text,
@@ -211,7 +229,11 @@ export function responseFromRunResult<TOutput>(
   };
 }
 
-export function unsupportedResponse(unsupported: UnsupportedField[], now: Date = new Date()): ChatGPTResponse {
+export function unsupportedResponse(
+  unsupported: UnsupportedField[],
+  now: Date = new Date(),
+  operationId?: string
+): ChatGPTResponse {
   return {
     id: responseId(now),
     object: "chatgpt.browser.response",
@@ -222,6 +244,7 @@ export function unsupportedResponse(unsupported: UnsupportedField[], now: Date =
     browser_control: {
       visibleUi: true,
       resultStatus: "unsupported",
+      ...(operationId === undefined ? {} : { operationId }),
       unsupported
     }
   };

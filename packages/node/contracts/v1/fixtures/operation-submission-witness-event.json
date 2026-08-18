@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "chatgpt.browser_control.operation_event.v1",
+  "revision": 8,
+  "previousEventDigest": "hmac-sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "eventDigest": "hmac-sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "event": {
+    "type": "submission_witness",
+    "witness": {
+      "schemaVersion": "chatgpt.browser_control.operation_submission_witness.v1",
+      "actionId": "33333333-3333-4333-8333-333333333333",
+      "actionKind": "send",
+      "targetBindingDigest": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "baselineSnapshotDigest": "hmac-sha256:1212121212121212121212121212121212121212121212121212121212121212",
+      "postSendDeltaDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "operationUserEvidenceDigest": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "userTurnId": "user-turn-1",
+      "observedAt": "2026-08-16T00:00:02.000Z"
+    }
+  }
+}

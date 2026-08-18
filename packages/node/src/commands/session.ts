@@ -1,6 +1,7 @@
 import { attachChatGPTBrowser, isChatGPTUrl, tabIdFromPage } from "../browser/attach.js";
 import { readPageState } from "../browser/page-state.js";
 import { resultError, resultOk } from "../errors.js";
+import { unwrapCoordinatedPage } from "../runtime/coordinated-page.js";
 import type { BootstrapArgs, BootstrapData, CommandResult, RuntimeEnv } from "../types.js";
 import { contextFromPage } from "./context.js";
 
@@ -94,7 +95,11 @@ export async function verifyTabAffinity(env: RuntimeEnv): Promise<CommandResult<
     return undefined;
   }
 
-  const actualTabId = tabIdFromPage(env.page);
+  // The coordinated facade intentionally snapshots its public identity when
+  // it is created so its coordinator key cannot drift underneath queued work.
+  // Affinity verification has a different job: it must inspect the provider
+  // page that the facade protects and detect a changed/reused tab claim.
+  const actualTabId = tabIdFromPage(unwrapCoordinatedPage(env.page));
   if (actualTabId === env.expectedTabId) {
     return undefined;
   }
@@ -125,7 +130,10 @@ export async function verifyTabAffinity(env: RuntimeEnv): Promise<CommandResult<
   };
 }
 
-function tabContext(env: RuntimeEnv, actualTabId = tabIdFromPage(env.page!)): { tabId?: string } {
+function tabContext(
+  env: RuntimeEnv,
+  actualTabId = tabIdFromPage(unwrapCoordinatedPage(env.page!))
+): { tabId?: string } {
   const tabId = actualTabId ?? env.expectedTabId;
   return tabId === undefined ? {} : { tabId };
 }

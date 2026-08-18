@@ -254,6 +254,33 @@ await chatgpt.askInThread({
 
 If you run browser-required commands from an ordinary shell, the safe expected result is a structured `browser_bridge_unavailable` blocker. That means the protocol path is working, but no visible browser bridge was available to the process.
 
+### Transactional operation preview
+
+The additive v1 operation surface gives callers a durable, caller-owned
+`operationId`, submit-once recovery, exact-turn collection, browser-free
+inspection, and operation-bound Stop/Work steer control. Supplying a canonical
+UUID to supported high-level Chat, Work, Runner, or Responses calls opts that
+invocation into the transactional mapper; omitting it preserves the legacy
+path.
+
+```ts
+const result = await chatgpt.ask({
+  operationId: "123e4567-e89b-42d3-a456-426614174000",
+  prompt: "Summarize the visible thread.",
+  thread: { type: "conversationId", conversationId: "caller-owned-conversation-id" },
+  wait: false,
+  read: false
+});
+```
+
+Persist and reuse the returned operation handle after a partial or uncertain
+result; do not create a new ID and resubmit the same logical Send. Live safety
+still depends on negotiated bridge/target capabilities, and different-tab
+overlap is advertised only after provider conformance. See
+[Transactional browser operations](packages/node/references/2026-08-16-transactional-operations.md)
+for the recovery, privacy, transport, coordinator, and artifact-provider
+boundaries.
+
 Stop a running Chat response only after an explicit caller decision:
 
 ```ts

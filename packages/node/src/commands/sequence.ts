@@ -1,3 +1,10 @@
+import { resultError } from "../errors.js";
+import {
+  assertOperationAwareDispatchAllowed,
+  CommandRoutingError,
+  classifyCommandRouting,
+  routeCommandRuntimeEnv
+} from "../runtime/command-routing.js";
 import type { CommandResult, RuntimeEnv, SequencePlan, SequencePolicy, SequenceStep, SequenceStepResult } from "../types.js";
 import { downloadLatestArtifact, listLatestArtifacts, waitForArtifact } from "./artifacts.js";
 import { applyConfiguration, inspectConfiguration } from "./configuration.js";
@@ -69,71 +76,96 @@ export async function executeStep(
   env: RuntimeEnv,
   previousResults: Map<string, CommandResult<unknown>>
 ): Promise<CommandResult<unknown>> {
+  // The sequence executor is a direct dispatch seam as well as a helper for
+  // backend workflows. Keep it fail-closed if a runtime caller supplies a
+  // command outside the explicit inventory. This guard does not acquire a
+  // coordinator: legacy commands retain their existing behavior, while an
+  // operation-aware request may use only an explicitly migrated facade seam.
+  if (classifyCommandRouting(step.command) === undefined) {
+    return resultError(new CommandRoutingError("unclassified_command"));
+  }
+  try {
+    assertOperationAwareDispatchAllowed(step.command, step.args);
+  } catch (error) {
+    return resultError(error instanceof Error ? error : new Error(String(error)));
+  }
+
+  let routedEnv: RuntimeEnv;
+  try {
+    // Legacy sequence steps receive a fresh coordinated facade. The facade
+    // routes each browser/page method through the process-scoped coordinator;
+    // this function never wraps the complete step, so waits, polling, report
+    // work, and caller callbacks do not retain a tab actor.
+    routedEnv = routeCommandRuntimeEnv(step.command, env);
+  } catch (error) {
+    return resultError(error instanceof Error ? error : new Error(String(error)));
+  }
+
   switch (step.command) {
     case "session.bootstrap":
-      return bootstrap(env, step.args);
+      return bootstrap(routedEnv, step.args);
     case "experience.detect":
-      return detectExperience(env, step.args);
+      return detectExperience(routedEnv, step.args);
     case "experience.open":
-      return openExperience(env, step.args);
+      return openExperience(routedEnv, step.args);
     case "configuration.inspect":
-      return inspectConfiguration(env, step.args);
+      return inspectConfiguration(routedEnv, step.args);
     case "configuration.apply":
-      return applyConfiguration(env, step.args);
+      return applyConfiguration(routedEnv, step.args);
     case "work.start":
-      return startWork(env, step.args);
+      return startWork(routedEnv, step.args);
     case "work.status":
-      return workStatus(env, step.args);
+      return workStatus(routedEnv, step.args);
     case "work.wait":
-      return waitForWork(env, step.args);
+      return waitForWork(routedEnv, step.args);
     case "work.steer":
-      return steerWork(env, step.args);
+      return steerWork(routedEnv, step.args);
     case "work.readLatest":
-      return readLatestWork(env, step.args);
+      return readLatestWork(routedEnv, step.args);
     case "threads.search":
-      return searchThreads(env, step.args);
+      return searchThreads(routedEnv, step.args);
     case "threads.open":
-      return openThread(env, step.args, previousResults);
+      return openThread(routedEnv, step.args, previousResults);
     case "threads.new":
-      return newThread(env, step.args);
+      return newThread(routedEnv, step.args);
     case "messages.compose":
-      return composeMessage(env, step.args);
+      return composeMessage(routedEnv, step.args);
     case "messages.submit":
-      return submitMessage(env, step.args);
+      return submitMessage(routedEnv, step.args);
     case "messages.ask":
-      return askMessage(env, step.args);
+      return askMessage(routedEnv, step.args);
     case "messages.wait":
-      return waitForMessage(env, step.args);
+      return waitForMessage(routedEnv, step.args);
     case "messages.readLatest":
-      return readLatest(env, step.args);
+      return readLatest(routedEnv, step.args);
     case "messages.status":
-      return messageStatus(env, step.args);
+      return messageStatus(routedEnv, step.args);
     case "messages.stop":
-      return stopGeneration(env, step.args);
+      return stopGeneration(routedEnv, step.args);
     case "messages.waitAndRead":
-      return waitAndRead(env, step.args);
+      return waitAndRead(routedEnv, step.args);
     case "artifacts.listLatest":
-      return listLatestArtifacts(env, step.args);
+      return listLatestArtifacts(routedEnv, step.args);
     case "artifacts.wait":
-      return waitForArtifact(env, step.args);
+      return waitForArtifact(routedEnv, step.args);
     case "artifacts.downloadLatest":
-      return downloadLatestArtifact(env, step.args);
+      return downloadLatestArtifact(routedEnv, step.args);
     case "files.attach":
-      return attachFiles(env, step.args);
+      return attachFiles(routedEnv, step.args);
     case "files.downloadLatest":
-      return downloadLatestFile(env, step.args);
+      return downloadLatestFile(routedEnv, step.args);
     case "projects.sources.list":
-      return listProjectSources(env, step.args);
+      return listProjectSources(routedEnv, step.args);
     case "projects.sources.planAdd":
-      return buildProjectSourceAddPlan(env, step.args);
+      return buildProjectSourceAddPlan(routedEnv, step.args);
     case "projects.sources.add":
-      return addProjectSources(env, step.args);
+      return addProjectSources(routedEnv, step.args);
     case "response.copy":
-      return copyResponse(env, step.args);
+      return copyResponse(routedEnv, step.args);
     case "modes.set":
-      return setMode(env, step.args);
+      return setMode(routedEnv, step.args);
     case "tools.select":
-      return selectTool(env, step.args);
+      return selectTool(routedEnv, step.args);
   }
 }
 
