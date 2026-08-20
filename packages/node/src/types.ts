@@ -238,6 +238,8 @@ export type ChatGPTProjectRef = {
 export type NewThreadArgs = {
   timeoutMs?: number;
   project?: ChatGPTProjectTarget | false;
+  /** Confirm that this new thread should bypass workspace Project routing. */
+  confirmGlobal?: boolean;
 };
 
 export type SearchThreadsArgs = {
@@ -892,8 +894,10 @@ export type StartWorkArgs = {
   operationId?: string;
   /** Start from a blank Work task when possible. Defaults to true. */
   newTask?: boolean;
-  /** Route a new Work task through this visible ChatGPT Project. False keeps the task global. */
+  /** Route a new Work task through this visible ChatGPT Project. */
   project?: ChatGPTProjectTarget | false;
+  /** Confirm that project: false should bypass workspace Project routing. */
+  confirmGlobal?: boolean;
   files?: string[];
   configuration?: ConfigurationSelection;
   wait?: boolean | WaitArgs;

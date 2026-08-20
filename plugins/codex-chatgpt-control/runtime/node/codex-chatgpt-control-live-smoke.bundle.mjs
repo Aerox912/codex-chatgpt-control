@@ -8417,6 +8417,7 @@ var CHATGPT_HOME3 = "https://chatgpt.com/";
 var PROJECT_ICON_SELECTOR = '[data-testid="project-folder-icon"]';
 var PROJECT_PAGE_PATTERN = /\/g\/(g-p-[^/]+)\/project(?:[/?#]|$)/i;
 var PROJECT_EXPANSION_LIMIT = 100;
+var PROJECT_MISSING_STABILITY_PASSES = 8;
 var COLOR_LABELS = {
   default: "Default color, black in light mode, white in dark mode",
   red: "Red",
@@ -8517,6 +8518,28 @@ function projectContextMatches(projectUrl, candidateUrl) {
   const candidate = projectHandleFromUrl(candidateUrl);
   if (expected === void 0 || candidate === void 0) return false;
   return expected === candidate || candidate.startsWith(`${expected}-`) || expected.startsWith(`${candidate}-`);
+}
+function globalProjectOptOutConfirmationRequired() {
+  return {
+    ok: false,
+    status: "needs_confirmation",
+    warnings: [],
+    blocker: {
+      kind: "confirmation",
+      code: "chatgpt_global_project_opt_out_confirmation_required",
+      fieldPath: "confirmGlobal",
+      message: "Opening a global ChatGPT conversation bypasses workspace Project routing. Re-run with confirmGlobal: true only after the user explicitly requests a global conversation.",
+      remediation: [
+        {
+          label: "Confirm global ChatGPT conversation",
+          instruction: "Ask the user to confirm that this new Chat or Work conversation should remain outside the workspace Project.",
+          userActionRequired: true
+        }
+      ],
+      resumable: true
+    },
+    context: { timestamp: (/* @__PURE__ */ new Date()).toISOString() }
+  };
 }
 async function openOrCreateProjectForNewThread(env, input, timeoutMs = 3e4) {
   const page = env.page;
@@ -8633,40 +8656,56 @@ async function revealProjectList(page) {
   return await locatorCount(newProject) > 0;
 }
 async function findProjectRow(page, name) {
-  for (let pass2 = 0; pass2 < PROJECT_EXPANSION_LIMIT; pass2 += 1) {
-    const row2 = await findVisibleProjectRow(page, name);
-    if (row2 !== void 0) return row2;
-    const showMore2 = page.getByRole?.("button", { name: "Show more", exact: true });
-    if (await locatorCount(showMore2) === 0) return void 0;
-    await showMore2?.last?.().click?.();
-    await page.waitForTimeout?.(200);
+  let expansions = 0;
+  let stableMissingPasses = 0;
+  while (true) {
+    const row = await findVisibleProjectRow(page, name);
+    if (row !== void 0) return row;
+    const showMore = page.getByRole?.("button", { name: "Show more", exact: true });
+    if (await locatorCount(showMore) > 0) {
+      if (expansions >= PROJECT_EXPANSION_LIMIT) {
+        throw new ProjectSelectorError(
+          `ChatGPT still exposed Show more after ${PROJECT_EXPANSION_LIMIT} Project-list expansions; stopped before treating "${name}" as missing.`
+        );
+      }
+      await showMore?.last?.().click?.();
+      await page.waitForTimeout?.(200);
+      expansions += 1;
+      stableMissingPasses = 0;
+      continue;
+    }
+    stableMissingPasses += 1;
+    if (stableMissingPasses >= PROJECT_MISSING_STABILITY_PASSES) return void 0;
+    await page.waitForTimeout?.(250);
   }
-  const row = await findVisibleProjectRow(page, name);
-  if (row !== void 0) return row;
-  const showMore = page.getByRole?.("button", { name: "Show more", exact: true });
-  if (await locatorCount(showMore) > 0) {
-    throw new ProjectSelectorError(
-      `ChatGPT still exposed Show more after ${PROJECT_EXPANSION_LIMIT} Project-list expansions; stopped before treating "${name}" as missing.`
-    );
-  }
-  return void 0;
 }
 async function findVisibleProjectRow(page, name) {
   const icons = page.locator?.(PROJECT_ICON_SELECTOR);
   const iconCount = await locatorCount(icons);
+  const iconMatches = [];
   for (let index = 0; index < iconCount; index += 1) {
     const row = icons?.nth?.(index).locator?.("xpath=ancestor::*[@role='button'][1]");
     const text = (await row?.innerText?.())?.trim();
-    if (text !== void 0 && projectNamesMatch(name, text)) return row;
+    if (row !== void 0 && text !== void 0 && projectNamesMatch(name, text)) iconMatches.push(row);
   }
+  if (iconMatches.length > 1) throw ambiguousProjectNameError(name, iconMatches.length);
+  if (iconMatches.length === 1) return iconMatches[0];
   const buttons = page.getByRole?.("button", { name: new RegExp(escapeRegex(name), "i") });
   const buttonCount = await locatorCount(buttons);
+  const buttonMatches = [];
   for (let index = 0; index < buttonCount; index += 1) {
     const button = buttons?.nth?.(index);
     const text = (await button?.innerText?.())?.trim();
-    if (text !== void 0 && projectNamesMatch(name, text)) return button;
+    if (button !== void 0 && text !== void 0 && projectNamesMatch(name, text)) buttonMatches.push(button);
   }
+  if (buttonMatches.length > 1) throw ambiguousProjectNameError(name, buttonMatches.length);
+  if (buttonMatches.length === 1) return buttonMatches[0];
   return void 0;
+}
+function ambiguousProjectNameError(name, count) {
+  return new ProjectSelectorError(
+    `Found ${count} visible Projects that normalize to "${name}"; rename or remove the duplicate before routing a new thread.`
+  );
 }
 async function resolveProjectPageUrl(page, row, timeoutMs) {
   await row.click?.({ force: true });
@@ -8902,6 +8941,9 @@ async function searchThreads(env, args) {
   }
 }
 async function newThread(env, args = {}) {
+  if (args.project === false && args.confirmGlobal !== true) {
+    return globalProjectOptOutConfirmationRequired();
+  }
   const boot2 = await ensurePage(env);
   if (!boot2.ok) {
     return boot2;
@@ -16583,6 +16625,9 @@ function mergeResponseMetadata(data, latest) {
 // src/commands/work.ts
 var NEW_WORK_LABELS = localeLabels.newWork;
 async function startWork(env, args) {
+  if (args.project === false && args.confirmGlobal !== true) {
+    return globalProjectOptOutConfirmationRequired();
+  }
   if (args.operationId !== void 0) {
     return transactionalWorkRoutingBlocker(args.operationId, "start");
   }
@@ -18035,7 +18080,8 @@ function workflowArgs(name) {
     return {
       prompt: "visible Work task prompt",
       newTask: "start from a blank Work task; defaults to true",
-      project: "optional Project name, icon, color, and confirmCreation flag; false keeps the new task global",
+      project: "optional Project name, icon, color, and confirmCreation flag; false requests a global task",
+      confirmGlobal: "must be true with project: false after the user explicitly confirms a global task",
       files: "optional absolute local file paths",
       configuration: "optional Work model, effort, and speed values",
       wait: "optional wait behavior",
@@ -18110,7 +18156,8 @@ function primitiveArgs(name) {
   if (name === "response.copy") return { prefer: "clipboard or dom", format: "markdown, normalized_text, visible_text, html, blocks, or all" };
   if (name.startsWith("threads.search")) return { query: "history search query" };
   if (name === "threads.new") return {
-    project: "optional Project name, icon, color, and confirmCreation flag; false opts out of a configured workspace Project",
+    project: "optional Project name, icon, color, and confirmCreation flag; false requests a global thread",
+    confirmGlobal: "must be true with project: false after the user explicitly confirms a global thread",
     timeoutMs: "optional Project lookup and navigation timeout"
   };
   if (name === "files.preflight") return {
@@ -18171,7 +18218,8 @@ function primitiveExamples(name) {
   if (name === "threads.new") {
     return [
       `await chatgpt.threads.new({ project: { name: "Codex ChatGPT Control" } });`,
-      `await chatgpt.threads.new({ project: { name: "Codex ChatGPT Control", icon: "Code Brackets", color: "purple", confirmCreation: true } });`
+      `await chatgpt.threads.new({ project: { name: "Codex ChatGPT Control", icon: "Code Brackets", color: "purple", confirmCreation: true } });`,
+      `await chatgpt.threads.new({ project: false, confirmGlobal: true });`
     ];
   }
   if (name === "files.preflight") {
@@ -47664,7 +47712,7 @@ function createChatGPT(options = {}) {
       apply: (args) => runtime.run((env) => applyConfiguration(env, args))
     },
     work: {
-      start: (args) => runtime.run((env) => operationRuntime.run(env, () => args.operationId === void 0 ? startWork(env, workStartArgs(args, defaults?.project)) : runTransactionalWorkStart(args, defaults, operations))),
+      start: (args) => runtime.run((env) => operationRuntime.run(env, () => args.operationId === void 0 ? startWork(env, workStartArgs(args, defaults?.project, defaults?.confirmGlobal)) : runTransactionalWorkStart(args, defaults, operations))),
       status: (args) => runtime.run((env) => workStatus(env, args)),
       wait: (args) => runtime.run((env) => waitForWork(env, args)),
       steer: (args) => runtime.run((env) => operationRuntime.run(env, () => hasTransactionalWorkControl(args) ? runTransactionalWorkSteer(args, operations) : steerWork(env, args))),
@@ -47676,7 +47724,7 @@ function createChatGPT(options = {}) {
       }
     },
     threads: {
-      new: (args) => runtime.run((env) => newThread(env, newThreadArgs(args, defaults?.project))),
+      new: (args) => runtime.run((env) => newThread(env, newThreadArgs(args, defaults?.project, defaults?.confirmGlobal))),
       search: (args) => runtime.run((env) => searchThreads(env, args)),
       open: (args) => runtime.run((env) => openThread(env, args))
     },
@@ -47963,7 +48011,7 @@ function planAgentWorkflowFromNormalized(agent, input, defaults = {}) {
       input.existingTab ?? agent.defaults.existingTab ?? defaults.existingTab,
       input.preferExistingTab ?? agent.defaults.preferExistingTab ?? defaults.preferExistingTab
     ),
-    ...threadSteps(thread, defaults.project)
+    ...threadSteps(thread, defaults.project, defaults.confirmGlobal)
   ];
   appendSurfaceConfigurationSteps(steps, {
     experience: input.experience ?? agent.defaults.experience ?? defaults.experience,
@@ -49074,7 +49122,7 @@ function planAskWorkflow(args, defaults = {}) {
       args.existingTab ?? defaults.existingTab,
       args.preferExistingTab ?? defaults.preferExistingTab
     ),
-    ...threadSteps(thread, defaults.project)
+    ...threadSteps(thread, defaults.project, defaults.confirmGlobal)
   ];
   appendSurfaceConfigurationSteps(steps, {
     experience: args.experience ?? defaults.experience,
@@ -49147,7 +49195,7 @@ function planRunMessages(args, defaults = {}) {
       args.existingTab ?? defaults.existingTab,
       args.preferExistingTab ?? defaults.preferExistingTab
     ),
-    ...threadSteps(thread, defaults.project)
+    ...threadSteps(thread, defaults.project, defaults.confirmGlobal)
   ];
   appendSurfaceConfigurationSteps(steps, {
     experience: args.experience ?? defaults.experience,
@@ -49173,7 +49221,7 @@ function planOpenThread(thread, defaults = {}) {
     policy: { stopOnError: true, returnPartial: true },
     steps: [
       { id: "bootstrap", command: "session.bootstrap" },
-      ...threadSteps(thread, defaults.project)
+      ...threadSteps(thread, defaults.project, defaults.confirmGlobal)
     ]
   };
 }
@@ -49301,37 +49349,57 @@ function existingTabTargetFromThread(thread) {
 }
 function resolveClientDefaults(options) {
   const defaults = { ...options.defaults ?? {} };
-  if (defaults.project !== void 0 || options.workspaceProject === void 0 || options.workspaceProject === false) {
+  if (options.workspaceProject === void 0 || options.workspaceProject === false) {
+    return defaults;
+  }
+  if (defaults.project !== void 0 && (defaults.project !== false || defaults.confirmGlobal === true)) {
     return defaults;
   }
   return { ...defaults, project: workspaceProjectTarget(options.workspaceProject) };
 }
-function newThreadArgs(args, defaultProject) {
-  if (args?.project === false) {
-    const withoutProject = { ...args };
-    delete withoutProject.project;
-    return withoutProject;
-  }
-  if (args?.project !== void 0 || defaultProject === void 0 || defaultProject === false) {
+function newThreadArgs(args, defaultProject, defaultConfirmGlobal) {
+  if (args?.project !== void 0 || defaultProject === void 0) {
     return args ?? {};
   }
-  return { ...args ?? {}, project: defaultProject };
+  return {
+    ...args ?? {},
+    project: defaultProject,
+    ...defaultProject === false && defaultConfirmGlobal !== void 0 ? { confirmGlobal: defaultConfirmGlobal } : {}
+  };
 }
-function workStartArgs(args, defaultProject) {
-  if (args.project !== void 0 || args.newTask === false || defaultProject === void 0 || defaultProject === false) {
+function workStartArgs(args, defaultProject, defaultConfirmGlobal) {
+  if (args.project !== void 0 || args.newTask === false || defaultProject === void 0) {
     return args;
   }
-  return { ...args, project: defaultProject };
+  return {
+    ...args,
+    project: defaultProject,
+    ...defaultProject === false && defaultConfirmGlobal !== void 0 ? { confirmGlobal: defaultConfirmGlobal } : {}
+  };
 }
-function newThreadStepArgs(project, defaultProject) {
-  const resolved = project === false ? void 0 : project ?? (defaultProject === false ? void 0 : defaultProject);
-  return resolved === void 0 ? {} : { args: { project: resolved } };
+function newThreadStepArgs(project, confirmGlobal, defaultProject, defaultConfirmGlobal) {
+  const resolved = project ?? defaultProject;
+  if (resolved === void 0) return {};
+  if (resolved === false) {
+    const confirmed = project === false ? confirmGlobal : defaultConfirmGlobal;
+    return {
+      args: {
+        project: false,
+        ...confirmed === void 0 ? {} : { confirmGlobal: confirmed }
+      }
+    };
+  }
+  return { args: { project: resolved } };
 }
-function threadSteps(thread, defaultProject) {
+function threadSteps(thread, defaultProject, defaultConfirmGlobal) {
   if (isTypedThread(thread)) {
     switch (thread.type) {
       case "new":
-        return [{ id: "new", command: "threads.new", ...newThreadStepArgs(thread.project, defaultProject) }];
+        return [{
+          id: "new",
+          command: "threads.new",
+          ...newThreadStepArgs(thread.project, thread.confirmGlobal, defaultProject, defaultConfirmGlobal)
+        }];
       case "current":
         return [];
       case "url":

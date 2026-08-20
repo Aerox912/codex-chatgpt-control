@@ -157,6 +157,16 @@ field. Python does not duplicate workspace naming, matching, or DOM logic.
 Project discovery, confirmation blockers, visible creation, and postcondition
 verification remain owned by the TypeScript backend.
 
+Global opt-out uses the same confirmation gate as Node:
+
+```python
+result = chatgpt.threads.new(project=False, confirm_global=True)
+```
+
+`confirm_global` is normalized to `confirmGlobal`. Omitting it while passing
+`project=False` returns the resumable global-opt-out confirmation blocker before
+the backend touches the browser.
+
 Python also preserves a post-handoff attachment uncertainty as `status == "partial"`, blocker code `attachment_outcome_indeterminate`, and `resumable == False`. Callers must inspect the current composer, must not submit, and must not automatically repeat the file handoff.
 
 ## Project Sources

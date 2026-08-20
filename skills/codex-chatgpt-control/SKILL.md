@@ -86,7 +86,8 @@ const chatgpt = createChatGPT({
 This routes new Chat threads and new Work tasks into a matching workspace-named ChatGPT Project.
 If the Project is missing, stop on the creation confirmation blocker. Set
 `confirmCreation: true` only after the user explicitly approves creating it.
-Use `project: false` on a new-thread selector when the user wants a global chat.
+Use `project: false` with `confirmGlobal: true` only when the user explicitly
+requests a global conversation. Unconfirmed opt-outs must remain blocked.
 
 The installed plugin loader can persist an explicit blanket approval in
 `~/.codex/codex-chatgpt-control/preferences.json` as

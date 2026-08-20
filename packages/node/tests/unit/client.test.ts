@@ -813,15 +813,19 @@ describe("createChatGPT", () => {
     });
   });
 
-  it("routes new workflows into a workspace-named Project with an explicit opt-out", () => {
+  it("routes new workflows into a workspace-named Project and preserves confirmed global opt-out evidence", () => {
     const chatgpt = createChatGPT({
       workspaceProject: { path: String.raw`C:\Users\you\codex-chatgpt-control` }
     });
     const plan = chatgpt.plan("new-ask-read", { prompt: "reply with hi" });
     const agent = chatgpt.agent({ name: "project-agent" });
-    const optedOut = chatgpt.runner.plan(agent, {
+    const unconfirmedOptOut = chatgpt.runner.plan(agent, {
       input: "reply with hi",
       thread: { type: "new", project: false }
+    });
+    const confirmedOptOut = chatgpt.runner.plan(agent, {
+      input: "reply with hi",
+      thread: { type: "new", project: false, confirmGlobal: true }
     });
 
     expect(plan?.steps[1]).toEqual({
@@ -835,7 +839,36 @@ describe("createChatGPT", () => {
         }
       }
     });
-    expect(optedOut.steps[1]).toEqual({ id: "new", command: "threads.new" });
+    expect(unconfirmedOptOut.steps[1]).toEqual({
+      id: "new",
+      command: "threads.new",
+      args: { project: false }
+    });
+    expect(confirmedOptOut.steps[1]).toEqual({
+      id: "new",
+      command: "threads.new",
+      args: { project: false, confirmGlobal: true }
+    });
+  });
+
+  it("does not let an unconfirmed global client default override workspace routing", () => {
+    const guarded = createChatGPT({
+      workspaceProject: { path: String.raw`C:\Users\you\codex-chatgpt-control` },
+      defaults: { project: false }
+    });
+    const confirmed = createChatGPT({
+      workspaceProject: { path: String.raw`C:\Users\you\codex-chatgpt-control` },
+      defaults: { project: false, confirmGlobal: true }
+    });
+
+    expect(guarded.plan("new-ask-read", { prompt: "reply with hi" })?.steps[1]).toMatchObject({
+      args: { project: { name: "Codex ChatGPT Control" } }
+    });
+    expect(confirmed.plan("new-ask-read", { prompt: "reply with hi" })?.steps[1]).toEqual({
+      id: "new",
+      command: "threads.new",
+      args: { project: false, confirmGlobal: true }
+    });
   });
 
   it("preserves visible mode by default but honors explicit client mode defaults", () => {

@@ -153,6 +153,7 @@ export type ChatGPTClientOptions = RuntimeEnv & {
     existingTab?: BootstrapArgs["existingTab"];
     preferExistingTab?: boolean;
     project?: ChatGPTProjectTarget | false;
+    confirmGlobal?: boolean;
   };
   limits?: Partial<RunLimits>;
   reporting?: RunReportOptions;
@@ -206,7 +207,7 @@ export type RunLimits = {
 };
 
 export type ThreadSelector =
-  | { type: "new"; project?: ChatGPTProjectTarget | false }
+  | { type: "new"; project?: ChatGPTProjectTarget | false; confirmGlobal?: boolean }
   | { type: "current" }
   | { type: "url"; url: string }
   | { type: "conversationId"; conversationId: string }
@@ -510,7 +511,7 @@ export function createChatGPT(options: ChatGPTClientOptions = {}): ChatGPTClient
     },
     work: {
       start: args => runtime.run(env => operationRuntime.run(env, () => args.operationId === undefined
-        ? startWork(env, workStartArgs(args, defaults?.project))
+        ? startWork(env, workStartArgs(args, defaults?.project, defaults?.confirmGlobal))
         : runTransactionalWorkStart(args, defaults, operations))),
       status: args => runtime.run(env => workStatus(env, args)),
       wait: args => runtime.run(env => waitForWork(env, args)),
@@ -525,7 +526,7 @@ export function createChatGPT(options: ChatGPTClientOptions = {}): ChatGPTClient
       }
     },
     threads: {
-      new: args => runtime.run(env => newThread(env, newThreadArgs(args, defaults?.project))),
+      new: args => runtime.run(env => newThread(env, newThreadArgs(args, defaults?.project, defaults?.confirmGlobal))),
       search: args => runtime.run(env => searchThreads(env, args)),
       open: args => runtime.run(env => openThread(env, args))
     },
@@ -914,7 +915,7 @@ function planAgentWorkflowFromNormalized<TOutput>(
       input.existingTab ?? agent.defaults.existingTab ?? defaults.existingTab,
       input.preferExistingTab ?? agent.defaults.preferExistingTab ?? defaults.preferExistingTab
     ),
-    ...threadSteps(thread, defaults.project)
+    ...threadSteps(thread, defaults.project, defaults.confirmGlobal)
   ];
 
   appendSurfaceConfigurationSteps(steps, {
@@ -2371,7 +2372,7 @@ function planAskWorkflow(args: AskWorkflowArgs, defaults: ChatGPTClientOptions["
       args.existingTab ?? defaults.existingTab,
       args.preferExistingTab ?? defaults.preferExistingTab
     ),
-    ...threadSteps(thread, defaults.project)
+    ...threadSteps(thread, defaults.project, defaults.confirmGlobal)
   ];
 
   appendSurfaceConfigurationSteps(steps, {
@@ -2453,7 +2454,7 @@ function planRunMessages(args: RunMessagesArgs, defaults: ChatGPTClientOptions["
       args.existingTab ?? defaults.existingTab,
       args.preferExistingTab ?? defaults.preferExistingTab
     ),
-    ...threadSteps(thread, defaults.project)
+    ...threadSteps(thread, defaults.project, defaults.confirmGlobal)
   ];
 
   appendSurfaceConfigurationSteps(steps, {
@@ -2483,7 +2484,7 @@ function planOpenThread(thread: WorkflowThread, defaults: ChatGPTClientOptions["
     policy: { stopOnError: true, returnPartial: true },
     steps: [
       { id: "bootstrap", command: "session.bootstrap" },
-      ...threadSteps(thread, defaults.project)
+      ...threadSteps(thread, defaults.project, defaults.confirmGlobal)
     ]
   };
 }
@@ -2634,7 +2635,10 @@ function existingTabTargetFromThread(thread: WorkflowThread): ExistingTabPolicy[
 
 function resolveClientDefaults(options: ChatGPTClientOptions): NonNullable<ChatGPTClientOptions["defaults"]> {
   const defaults = { ...(options.defaults ?? {}) };
-  if (defaults.project !== undefined || options.workspaceProject === undefined || options.workspaceProject === false) {
+  if (options.workspaceProject === undefined || options.workspaceProject === false) {
+    return defaults;
+  }
+  if (defaults.project !== undefined && (defaults.project !== false || defaults.confirmGlobal === true)) {
     return defaults;
   }
   return { ...defaults, project: workspaceProjectTarget(options.workspaceProject) };
@@ -2642,52 +2646,75 @@ function resolveClientDefaults(options: ChatGPTClientOptions): NonNullable<ChatG
 
 function newThreadArgs(
   args: NewThreadArgs | undefined,
-  defaultProject?: ChatGPTProjectTarget | false
+  defaultProject?: ChatGPTProjectTarget | false,
+  defaultConfirmGlobal?: boolean
 ): NewThreadArgs {
-  if (args?.project === false) {
-    const withoutProject = { ...args };
-    delete withoutProject.project;
-    return withoutProject;
-  }
-  if (args?.project !== undefined || defaultProject === undefined || defaultProject === false) {
+  if (args?.project !== undefined || defaultProject === undefined) {
     return args ?? {};
   }
-  return { ...(args ?? {}), project: defaultProject };
+  return {
+    ...(args ?? {}),
+    project: defaultProject,
+    ...(defaultProject === false && defaultConfirmGlobal !== undefined
+      ? { confirmGlobal: defaultConfirmGlobal }
+      : {})
+  };
 }
 
 function workStartArgs(
   args: StartWorkArgs,
-  defaultProject?: ChatGPTProjectTarget | false
+  defaultProject?: ChatGPTProjectTarget | false,
+  defaultConfirmGlobal?: boolean
 ): StartWorkArgs {
   if (
     args.project !== undefined
     || args.newTask === false
     || defaultProject === undefined
-    || defaultProject === false
   ) {
     return args;
   }
-  return { ...args, project: defaultProject };
+  return {
+    ...args,
+    project: defaultProject,
+    ...(defaultProject === false && defaultConfirmGlobal !== undefined
+      ? { confirmGlobal: defaultConfirmGlobal }
+      : {})
+  };
 }
 
 function newThreadStepArgs(
   project: ChatGPTProjectTarget | false | undefined,
-  defaultProject: ChatGPTProjectTarget | false | undefined
+  confirmGlobal: boolean | undefined,
+  defaultProject: ChatGPTProjectTarget | false | undefined,
+  defaultConfirmGlobal: boolean | undefined
 ): { args: NewThreadArgs } | Record<string, never> {
-  const resolved = project === false
-    ? undefined
-    : project ?? (defaultProject === false ? undefined : defaultProject);
-  return resolved === undefined ? {} : { args: { project: resolved } };
+  const resolved = project ?? defaultProject;
+  if (resolved === undefined) return {};
+  if (resolved === false) {
+    const confirmed = project === false ? confirmGlobal : defaultConfirmGlobal;
+    return {
+      args: {
+        project: false,
+        ...(confirmed === undefined ? {} : { confirmGlobal: confirmed })
+      }
+    };
+  }
+  return { args: { project: resolved } };
 }
 
 function threadSteps(
   thread: WorkflowThread,
-  defaultProject?: ChatGPTProjectTarget | false
+  defaultProject?: ChatGPTProjectTarget | false,
+  defaultConfirmGlobal?: boolean
 ): SequencePlan["steps"] {
   if (isTypedThread(thread)) {
     switch (thread.type) {
       case "new":
-        return [{ id: "new", command: "threads.new", ...newThreadStepArgs(thread.project, defaultProject) }];
+        return [{
+          id: "new",
+          command: "threads.new",
+          ...newThreadStepArgs(thread.project, thread.confirmGlobal, defaultProject, defaultConfirmGlobal)
+        }];
       case "current":
         return [];
       case "url":

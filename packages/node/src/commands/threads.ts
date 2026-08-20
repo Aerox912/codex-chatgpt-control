@@ -15,7 +15,7 @@ import type {
 } from "../types.js";
 import { contextFromPage } from "./context.js";
 import { ensureConversationTarget } from "./conversation.js";
-import { openOrCreateProjectForNewThread } from "./projects.js";
+import { globalProjectOptOutConfirmationRequired, openOrCreateProjectForNewThread } from "./projects.js";
 import { ensurePage } from "./session.js";
 
 const CHATGPT_HOME = "https://chatgpt.com/";
@@ -83,6 +83,9 @@ export async function searchThreads(
 }
 
 export async function newThread(env: RuntimeEnv, args: NewThreadArgs = {}): Promise<CommandResult<OpenThreadData>> {
+  if (args.project === false && args.confirmGlobal !== true) {
+    return globalProjectOptOutConfirmationRequired();
+  }
   const boot = await ensurePage(env);
   if (!boot.ok) {
     return boot as CommandResult<OpenThreadData>;

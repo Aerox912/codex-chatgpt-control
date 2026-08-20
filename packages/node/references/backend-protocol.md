@@ -236,8 +236,11 @@ direct new Work tasks
 with `createChatGPT({ workspaceProject: { path } })`. Workspace paths are
 converted locally to a display name before the visible browser flow. Existing
 Projects are matched by normalized name equality, opened through their visible
-sidebar entry, and verified by the Project new-chat composer. The implementation
-does not use fuzzy matching or private ChatGPT endpoints.
+sidebar entry, and verified by the Project new-chat composer. A bounded stable
+absence check prevents a temporarily unhydrated sidebar from being treated as
+proof that the Project is missing. Multiple normalized matches fail closed
+instead of choosing one ambiguously. The implementation does not use fuzzy
+matching or private ChatGPT endpoints.
 
 When a match is absent, `threads.new` returns a resumable `needs_confirmation`
 result with blocker code `chatgpt_project_creation_confirmation_required`.
@@ -252,9 +255,11 @@ the icon and color selected by the visible creation flow.
 
 `work.start({ project })` opens or creates the target Project, switches to Work,
 ensures a blank task, and verifies the Project context remains selected before
-submitting. `project: false` keeps a new Work task global. `newTask: false`
-continues the currently loaded task and does not inherit a client-level
-workspace Project default.
+submitting. `project: false` requests a global Chat thread or Work task and must
+be paired with `confirmGlobal: true`; otherwise the backend returns the
+resumable `chatgpt_global_project_opt_out_confirmation_required` blocker before
+browser interaction. `newTask: false` continues the currently loaded task and
+does not inherit a client-level workspace Project default.
 
 The Codex plugin loader can consume the user-scoped
 `~/.codex/codex-chatgpt-control/preferences.json` setting
@@ -262,6 +267,10 @@ The Codex plugin loader can consume the user-scoped
 preapproval applied only by the plugin wrapper. The public Node and Python
 surfaces remain confirmation-gated unless callers explicitly pass
 `confirmCreation: true`.
+In a bridge-hosted Codex runtime, the plugin loader derives `workspaceProject`
+from the current workspace when the caller omits it. An explicit
+`workspaceProject: false` remains the dedicated-client opt-out for a workflow
+that the user asked to keep global.
 
 Once the native file handoff starts, any timeout, bridge error, or missing post-handoff composer evidence is indeterminate: `files.attach` returns `status: "partial"`, blocker code `attachment_outcome_indeterminate`, and `resumable: false`. Browser-native deadlines terminate the handoff request before the command returns, so it cannot mutate later; the file may already be present. Inspect the current composer, do not submit, and never retry the attachment automatically.
 

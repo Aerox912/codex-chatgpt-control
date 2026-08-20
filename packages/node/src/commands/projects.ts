@@ -16,6 +16,7 @@ const CHATGPT_HOME = "https://chatgpt.com/";
 const PROJECT_ICON_SELECTOR = '[data-testid="project-folder-icon"]';
 const PROJECT_PAGE_PATTERN = /\/g\/(g-p-[^/]+)\/project(?:[/?#]|$)/i;
 const PROJECT_EXPANSION_LIMIT = 100;
+const PROJECT_MISSING_STABILITY_PASSES = 8;
 
 const COLOR_LABELS: Record<ChatGPTProjectColor, string> = {
   default: "Default color, black in light mode, white in dark mode",
@@ -139,6 +140,29 @@ export function projectContextMatches(projectUrl: string, candidateUrl: string |
   return expected === candidate
     || candidate.startsWith(`${expected}-`)
     || expected.startsWith(`${candidate}-`);
+}
+
+export function globalProjectOptOutConfirmationRequired(): CommandResult<never> {
+  return {
+    ok: false,
+    status: "needs_confirmation",
+    warnings: [],
+    blocker: {
+      kind: "confirmation",
+      code: "chatgpt_global_project_opt_out_confirmation_required",
+      fieldPath: "confirmGlobal",
+      message: "Opening a global ChatGPT conversation bypasses workspace Project routing. Re-run with confirmGlobal: true only after the user explicitly requests a global conversation.",
+      remediation: [
+        {
+          label: "Confirm global ChatGPT conversation",
+          instruction: "Ask the user to confirm that this new Chat or Work conversation should remain outside the workspace Project.",
+          userActionRequired: true
+        }
+      ],
+      resumable: true
+    },
+    context: { timestamp: new Date().toISOString() }
+  };
 }
 
 export async function openOrCreateProjectForNewThread(
@@ -284,44 +308,61 @@ async function revealProjectList(page: PageLike): Promise<boolean> {
 }
 
 async function findProjectRow(page: PageLike, name: string): Promise<LocatorLike | undefined> {
-  for (let pass = 0; pass < PROJECT_EXPANSION_LIMIT; pass += 1) {
+  let expansions = 0;
+  let stableMissingPasses = 0;
+  while (true) {
     const row = await findVisibleProjectRow(page, name);
     if (row !== undefined) return row;
 
     const showMore = page.getByRole?.("button", { name: "Show more", exact: true });
-    if (await locatorCount(showMore) === 0) return undefined;
-    await showMore?.last?.().click?.();
-    await page.waitForTimeout?.(200);
-  }
+    if (await locatorCount(showMore) > 0) {
+      if (expansions >= PROJECT_EXPANSION_LIMIT) {
+        throw new ProjectSelectorError(
+          `ChatGPT still exposed Show more after ${PROJECT_EXPANSION_LIMIT} Project-list expansions; stopped before treating "${name}" as missing.`
+        );
+      }
+      await showMore?.last?.().click?.();
+      await page.waitForTimeout?.(200);
+      expansions += 1;
+      stableMissingPasses = 0;
+      continue;
+    }
 
-  const row = await findVisibleProjectRow(page, name);
-  if (row !== undefined) return row;
-  const showMore = page.getByRole?.("button", { name: "Show more", exact: true });
-  if (await locatorCount(showMore) > 0) {
-    throw new ProjectSelectorError(
-      `ChatGPT still exposed Show more after ${PROJECT_EXPANSION_LIMIT} Project-list expansions; stopped before treating "${name}" as missing.`
-    );
+    stableMissingPasses += 1;
+    if (stableMissingPasses >= PROJECT_MISSING_STABILITY_PASSES) return undefined;
+    await page.waitForTimeout?.(250);
   }
-  return undefined;
 }
 
 async function findVisibleProjectRow(page: PageLike, name: string): Promise<LocatorLike | undefined> {
   const icons = page.locator?.(PROJECT_ICON_SELECTOR);
   const iconCount = await locatorCount(icons);
+  const iconMatches: LocatorLike[] = [];
   for (let index = 0; index < iconCount; index += 1) {
     const row = icons?.nth?.(index).locator?.("xpath=ancestor::*[@role='button'][1]");
     const text = (await row?.innerText?.())?.trim();
-    if (text !== undefined && projectNamesMatch(name, text)) return row;
+    if (row !== undefined && text !== undefined && projectNamesMatch(name, text)) iconMatches.push(row);
   }
+  if (iconMatches.length > 1) throw ambiguousProjectNameError(name, iconMatches.length);
+  if (iconMatches.length === 1) return iconMatches[0];
 
   const buttons = page.getByRole?.("button", { name: new RegExp(escapeRegex(name), "i") });
   const buttonCount = await locatorCount(buttons);
+  const buttonMatches: LocatorLike[] = [];
   for (let index = 0; index < buttonCount; index += 1) {
     const button = buttons?.nth?.(index);
     const text = (await button?.innerText?.())?.trim();
-    if (text !== undefined && projectNamesMatch(name, text)) return button;
+    if (button !== undefined && text !== undefined && projectNamesMatch(name, text)) buttonMatches.push(button);
   }
+  if (buttonMatches.length > 1) throw ambiguousProjectNameError(name, buttonMatches.length);
+  if (buttonMatches.length === 1) return buttonMatches[0];
   return undefined;
+}
+
+function ambiguousProjectNameError(name: string, count: number): ProjectSelectorError {
+  return new ProjectSelectorError(
+    `Found ${count} visible Projects that normalize to "${name}"; rename or remove the duplicate before routing a new thread.`
+  );
 }
 
 async function resolveProjectPageUrl(page: PageLike, row: LocatorLike, timeoutMs: number): Promise<string | undefined> {

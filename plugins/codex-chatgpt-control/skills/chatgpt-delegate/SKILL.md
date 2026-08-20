@@ -21,20 +21,18 @@ const loaderUrl = new URL(
 const { importChatGPTControl } = await import(`${loaderUrl.href}?t=${Date.now()}`);
 const { createChatGPT } = await importChatGPTControl();
 
-const workspacePath = typeof globalThis.nodeRepl?.cwd === "string"
-  ? globalThis.nodeRepl.cwd
-  : undefined;
 const chatgpt = createChatGPT({
   agent: globalThis.agent,
-  ...(workspacePath === undefined ? {} : { workspaceProject: { path: workspacePath } }),
   reporting: { enabled: true, includeContent: false }
 });
 ```
 
-New Chat threads and new Work tasks use the matching workspace-named ChatGPT Project when Codex
-provides a workspace path. A missing Project must return a creation confirmation
+The plugin loader derives the current Codex workspace automatically. New Chat
+threads and new Work tasks use the matching workspace-named ChatGPT Project. A
+missing Project must return a creation confirmation
 blocker. Set `confirmCreation: true` only after explicit user approval. Use
-`project: false` when the user specifically requests a global chat.
+`project: false` with `confirmGlobal: true` only when the user specifically
+requests a global conversation. Unconfirmed opt-outs must remain blocked.
 
 The plugin loader may persist an explicit blanket approval in
 `~/.codex/codex-chatgpt-control/preferences.json` as

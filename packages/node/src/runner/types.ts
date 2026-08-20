@@ -26,7 +26,7 @@ import type { ChatGPTRunStream } from "./stream.js";
 import type { OperationHandleV1 } from "../operations/types.js";
 
 export type ChatGPTThreadSelector =
-  | { type: "new"; project?: ChatGPTProjectTarget | false }
+  | { type: "new"; project?: ChatGPTProjectTarget | false; confirmGlobal?: boolean }
   | { type: "current" }
   | { type: "url"; url: string }
   | { type: "conversationId"; conversationId: string }

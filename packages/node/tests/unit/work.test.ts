@@ -3,6 +3,22 @@ import { startWork, workStatus } from "../../src/commands/work.js";
 import type { LocatorLike, PageLike } from "../../src/types.js";
 
 describe("Work task orchestration", () => {
+  it("blocks an unconfirmed global Work task before touching the browser", async () => {
+    const result = await startWork({}, {
+      prompt: "Keep this task global.",
+      project: false
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "needs_confirmation",
+      blocker: {
+        code: "chatgpt_global_project_opt_out_confirmation_required",
+        fieldPath: "confirmGlobal"
+      }
+    });
+  });
+
   it("fills the Work composer and submits a new task exactly once", async () => {
     const page = workPage();
 

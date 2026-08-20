@@ -242,9 +242,10 @@
     {
       "args": {
         "configuration": "optional Work model, effort, and speed values",
+        "confirmGlobal": "must be true with project: false after the user explicitly confirms a global task",
         "files": "optional absolute local file paths",
         "newTask": "start from a blank Work task; defaults to true",
-        "project": "optional Project name, icon, color, and confirmCreation flag; false keeps the new task global",
+        "project": "optional Project name, icon, color, and confirmCreation flag; false requests a global task",
         "prompt": "visible Work task prompt",
         "read": "optional response capture behavior",
         "wait": "optional wait behavior"
@@ -774,7 +775,8 @@
     },
     {
       "args": {
-        "project": "optional Project name, icon, color, and confirmCreation flag; false opts out of a configured workspace Project",
+        "confirmGlobal": "must be true with project: false after the user explicitly confirms a global thread",
+        "project": "optional Project name, icon, color, and confirmCreation flag; false requests a global thread",
         "timeoutMs": "optional Project lookup and navigation timeout"
       },
       "blockers": [
@@ -787,7 +789,8 @@
       "defaultTimeoutMs": 30000,
       "examples": [
         "await chatgpt.threads.new({ project: { name: \"Codex ChatGPT Control\" } });",
-        "await chatgpt.threads.new({ project: { name: \"Codex ChatGPT Control\", icon: \"Code Brackets\", color: \"purple\", confirmCreation: true } });"
+        "await chatgpt.threads.new({ project: { name: \"Codex ChatGPT Control\", icon: \"Code Brackets\", color: \"purple\", confirmCreation: true } });",
+        "await chatgpt.threads.new({ project: false, confirmGlobal: true });"
       ],
       "layer": "primitive",
       "name": "threads.new",

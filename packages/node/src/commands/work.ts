@@ -33,7 +33,11 @@ import {
   waitForMessage
 } from "./messages.js";
 import { ensurePage } from "./session.js";
-import { openOrCreateProjectForNewThread, projectContextMatches } from "./projects.js";
+import {
+  globalProjectOptOutConfirmationRequired,
+  openOrCreateProjectForNewThread,
+  projectContextMatches
+} from "./projects.js";
 
 const NEW_WORK_LABELS = localeLabels.newWork;
 
@@ -41,6 +45,9 @@ export async function startWork(
   env: RuntimeEnv,
   args: StartWorkArgs
 ): Promise<CommandResult<StartWorkData>> {
+  if (args.project === false && args.confirmGlobal !== true) {
+    return globalProjectOptOutConfirmationRequired();
+  }
   if (args.operationId !== undefined) {
     return transactionalWorkRoutingBlocker(args.operationId, "start");
   }

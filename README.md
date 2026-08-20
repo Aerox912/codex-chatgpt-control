@@ -168,9 +168,12 @@ If no matching Project exists, `threads.new` or `work.start` returns a resumable
 `chatgpt_project_creation_confirmation_required` blocker. It does not create
 account state until the user approves and the caller retries with
 `workspaceProject: { path: workspacePath, confirmCreation: true }`. Pass
-`thread: { type: "new", project: false }` or `threads.new({ project: false })`
-to opt out for one new Chat thread, or `work.start({ ..., project: false })` for
-one global Work task. A `newTask: false` continuation keeps the currently loaded
+`thread: { type: "new", project: false, confirmGlobal: true }` or
+`threads.new({ project: false, confirmGlobal: true })` to opt out for one new
+Chat thread, or `work.start({ ..., project: false, confirmGlobal: true })` for
+one global Work task. Without `confirmGlobal: true`, the SDK returns the
+resumable `chatgpt_global_project_opt_out_confirmation_required` blocker before
+touching the browser. A `newTask: false` continuation keeps the currently loaded
 Work task and does not apply the workspace default.
 
 The Codex plugin can record a user's explicit blanket approval without changing
@@ -184,10 +187,13 @@ the public SDK default. Create `~/.codex/codex-chatgpt-control/preferences.json`
 }
 ```
 
-The plugin loader then adds `confirmCreation: true` to derived workspace targets
-for current and future Codex projects. Explicit per-run `confirmCreation` and
-`project: false` choices still win. The same deterministic appearance resolver
-chooses the fitting icon and color for each newly created Project.
+The plugin loader derives the current bridge-hosted Codex workspace when the
+caller omits `workspaceProject`, then adds `confirmCreation: true` to that target
+for current and future Codex projects. Explicit per-run `confirmCreation`
+choices still win. A global workflow requires either the confirmed per-run
+opt-out above or a dedicated client created with `workspaceProject: false`. The
+same deterministic appearance resolver chooses the fitting icon and color for
+each newly created Project.
 
 Inspect and apply visible configuration:
 

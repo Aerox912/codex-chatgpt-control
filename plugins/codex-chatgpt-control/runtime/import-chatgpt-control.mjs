@@ -17,7 +17,13 @@ export async function loadPluginPreferences({ path = pluginPreferencesPath() } =
 }
 
 export function applyPluginPreferences(options = {}, preferences = {}) {
-  const workspaceProject = options.workspaceProject;
+  const workspacePath = globalThis.nodeRepl?.cwd;
+  const inferred = options.workspaceProject !== undefined
+    || typeof workspacePath !== "string"
+    || workspacePath.trim().length === 0
+    ? options
+    : { ...options, workspaceProject: { path: workspacePath } };
+  const workspaceProject = inferred.workspaceProject;
   if (
     workspaceProject === undefined
     || workspaceProject === false
@@ -26,10 +32,10 @@ export function applyPluginPreferences(options = {}, preferences = {}) {
     || workspaceProject.confirmCreation !== undefined
     || preferences.workspaceProjects?.autoCreate !== true
   ) {
-    return options;
+    return inferred;
   }
   return {
-    ...options,
+    ...inferred,
     workspaceProject: { ...workspaceProject, confirmCreation: true }
   };
 }

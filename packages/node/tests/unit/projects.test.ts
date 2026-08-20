@@ -7,6 +7,7 @@ import {
   suggestProjectAppearance,
   workspaceProjectTarget
 } from "../../src/commands/projects.js";
+import { newThread } from "../../src/commands/threads.js";
 import type { LocatorLike, PageLike } from "../../src/types.js";
 
 describe("ChatGPT Project routing", () => {
@@ -35,6 +36,21 @@ describe("ChatGPT Project routing", () => {
     expect(projectContextMatches(project, "https://chatgpt.com/g/g-p-abc123-codex-control/c/conversation")).toBe(true);
     expect(projectContextMatches(project, "https://chatgpt.com/g/g-p-abc1234/project")).toBe(false);
     expect(projectContextMatches(project, "https://chatgpt.com/work")).toBe(false);
+  });
+
+  it("blocks an unconfirmed global Chat thread before touching the browser", async () => {
+    const result = await newThread({}, { project: false });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "needs_confirmation",
+      blocker: {
+        kind: "confirmation",
+        code: "chatgpt_global_project_opt_out_confirmation_required",
+        fieldPath: "confirmGlobal",
+        resumable: true
+      }
+    });
   });
 
   it("opens an existing matching project without creating account state", async () => {
@@ -93,6 +109,46 @@ describe("ChatGPT Project routing", () => {
 
     expect(result).toMatchObject({ ok: true, data: { created: false } });
     expect(fake.actions).toEqual(["open-sidebar", "show-more", "show-more"]);
+    expect(fake.actions).not.toContain("create-project");
+  });
+
+  it("waits for a hydrating matching project before considering creation", async () => {
+    const fake = projectPage({
+      directProjectSection: true,
+      existingProject: true,
+      projectHydratesAfter: 3
+    });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Codex ChatGPT Control", confirmCreation: true },
+      250
+    );
+
+    expect(result).toMatchObject({ ok: true, data: { created: false } });
+    expect(fake.actions).not.toContain("create-project");
+  });
+
+  it("blocks instead of choosing between duplicate normalized Project names", async () => {
+    const fake = projectPage({
+      directProjectSection: true,
+      existingProject: true,
+      matchingProjectCount: 2
+    });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Codex ChatGPT Control", confirmCreation: true },
+      250
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "unsupported",
+      blocker: {
+        kind: "selector_drift",
+        code: "chatgpt_project_routing_selector_drift"
+      }
+    });
+    expect(result.blocker?.message).toContain("2 visible Projects");
     expect(fake.actions).not.toContain("create-project");
   });
 
@@ -167,6 +223,8 @@ describe("ChatGPT Project routing", () => {
 function projectPage(options: {
   directProjectSection?: boolean;
   existingProject?: boolean;
+  matchingProjectCount?: number;
+  projectHydratesAfter?: number;
   projectRevealAfter?: number;
   sidebarHidden?: boolean;
 } = {}): { page: PageLike; actions: string[] } {
@@ -177,10 +235,12 @@ function projectPage(options: {
   let projectName = "Codex ChatGPT Control";
   let sidebarOpen = options.sidebarHidden !== true;
   let showMoreClicks = 0;
+  let waits = 0;
 
   const projectVisible = (): boolean =>
     sidebarOpen &&
     options.existingProject === true &&
+    waits >= (options.projectHydratesAfter ?? 0) &&
     showMoreClicks >= (options.projectRevealAfter ?? 0);
 
   const empty = locator({ count: 0 });
@@ -195,7 +255,7 @@ function projectPage(options: {
     locator: selector => selector.includes("ancestor::li") ? projectItem : projectRow
   });
   const projectIcons = locator({
-    count: () => projectVisible() ? 1 : 0,
+    count: () => projectVisible() ? (options.matchingProjectCount ?? 1) : 0,
     nth: () => locator({ count: 1, locator: () => projectRow })
   });
 
@@ -245,7 +305,7 @@ function projectPage(options: {
     url: () => currentUrl,
     title: async () => "ChatGPT",
     goto: async url => { currentUrl = url; },
-    waitForTimeout: async () => undefined,
+    waitForTimeout: async () => { waits += 1; },
     locator: selector => {
       if (selector === '[data-testid="project-folder-icon"]') return projectIcons;
       return empty;

@@ -226,7 +226,8 @@ function workflowArgs(name: string): Record<string, string> {
     return {
       prompt: "visible Work task prompt",
       newTask: "start from a blank Work task; defaults to true",
-      project: "optional Project name, icon, color, and confirmCreation flag; false keeps the new task global",
+      project: "optional Project name, icon, color, and confirmCreation flag; false requests a global task",
+      confirmGlobal: "must be true with project: false after the user explicitly confirms a global task",
       files: "optional absolute local file paths",
       configuration: "optional Work model, effort, and speed values",
       wait: "optional wait behavior",
@@ -305,7 +306,8 @@ function primitiveArgs(name: string): Record<string, string> {
   if (name === "response.copy") return { prefer: "clipboard or dom", format: "markdown, normalized_text, visible_text, html, blocks, or all" };
   if (name.startsWith("threads.search")) return { query: "history search query" };
   if (name === "threads.new") return {
-    project: "optional Project name, icon, color, and confirmCreation flag; false opts out of a configured workspace Project",
+    project: "optional Project name, icon, color, and confirmCreation flag; false requests a global thread",
+    confirmGlobal: "must be true with project: false after the user explicitly confirms a global thread",
     timeoutMs: "optional Project lookup and navigation timeout"
   };
   if (name === "files.preflight") return {
@@ -367,7 +369,8 @@ function primitiveExamples(name: string): string[] {
   if (name === "threads.new") {
     return [
       `await chatgpt.threads.new({ project: { name: "Codex ChatGPT Control" } });`,
-      `await chatgpt.threads.new({ project: { name: "Codex ChatGPT Control", icon: "Code Brackets", color: "purple", confirmCreation: true } });`
+      `await chatgpt.threads.new({ project: { name: "Codex ChatGPT Control", icon: "Code Brackets", color: "purple", confirmCreation: true } });`,
+      `await chatgpt.threads.new({ project: false, confirmGlobal: true });`
     ];
   }
   if (name === "files.preflight") {

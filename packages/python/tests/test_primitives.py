@@ -82,6 +82,11 @@ class PrimitiveFacadeTests(unittest.TestCase):
                     "configuration": {"model": "GPT-5.6 Sol", "effort": "High"},
                 },
             ),
+            (
+                lambda: chatgpt.work.start(prompt="Analyze globally.", project=False, confirm_global=True),
+                "work.start",
+                {"prompt": "Analyze globally.", "project": False, "confirmGlobal": True},
+            ),
             (lambda: chatgpt.work.status(include_artifacts=True), "work.status", {"includeArtifacts": True}),
             (lambda: chatgpt.work.wait(timeout_ms=100), "work.wait", {"timeoutMs": 100}),
             (lambda: chatgpt.work.steer(prompt="Focus on deployment."), "work.steer", {"prompt": "Focus on deployment."}),
@@ -107,6 +112,11 @@ class PrimitiveFacadeTests(unittest.TestCase):
                         "confirmCreation": True,
                     },
                 },
+            ),
+            (
+                lambda: chatgpt.threads.new(project=False, confirm_global=True),
+                "threads.new",
+                {"project": False, "confirmGlobal": True},
             ),
             (lambda: chatgpt.threads.search(query="sdk", limit=5), "threads.search", {"query": "sdk", "limit": 5}),
             (lambda: chatgpt.threads.open(conversation_id="abc"), "threads.open", {"conversationId": "abc"}),
