@@ -72,10 +72,45 @@ describe("ChatGPT Project routing", () => {
     expect(result.data).not.toHaveProperty("icon");
     expect(result.data).not.toHaveProperty("color");
     expect(fake.actions).not.toContain("create-project");
+    expect(fake.navigations[0]).toBe("https://chatgpt.com/projects");
+  });
+
+  it("resolves a full-list Project card link directly from the Projects index", async () => {
+    const fake = projectPage({ existingProject: true, projectCardIsLink: true });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Codex ChatGPT Control" },
+      250
+    );
+
+    expect(result).toMatchObject({ ok: true, data: { created: false } });
+    expect(fake.navigations).toEqual([
+      "https://chatgpt.com/projects",
+      "https://chatgpt.com/g/g-p-test/project"
+    ]);
+  });
+
+  it("matches and opens a full-list Project grid row without opening the sidebar", async () => {
+    const fake = projectPage({ existingProject: true, projectsIndexGrid: true });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Codex ChatGPT Control" },
+      250
+    );
+
+    expect(result).toMatchObject({ ok: true, data: { created: false } });
+    expect(fake.navigations).toEqual(["https://chatgpt.com/projects"]);
+    expect(fake.actions).toContain("open-project-row");
+    expect(fake.actions).not.toContain("open-sidebar");
   });
 
   it("opens the compact sidebar before locating an existing project", async () => {
-    const fake = projectPage({ existingProject: true, sidebarHidden: true, directProjectSection: true });
+    const fake = projectPage({
+      existingProject: true,
+      sidebarHidden: true,
+      directProjectSection: true,
+      projectsIndexRedirectsHome: true
+    });
     const result = await openOrCreateProjectForNewThread(
       { page: fake.page },
       { name: "Codex ChatGPT Control" },
@@ -99,6 +134,7 @@ describe("ChatGPT Project routing", () => {
       existingProject: true,
       sidebarHidden: true,
       directProjectSection: true,
+      projectsIndexRedirectsHome: true,
       projectRevealAfter: 2
     });
     const result = await openOrCreateProjectForNewThread(
@@ -110,6 +146,22 @@ describe("ChatGPT Project routing", () => {
     expect(result).toMatchObject({ ok: true, data: { created: false } });
     expect(fake.actions).toEqual(["open-sidebar", "show-more", "show-more"]);
     expect(fake.actions).not.toContain("create-project");
+  });
+
+  it("waits for hydrating Project controls instead of clicking a transient More control", async () => {
+    const fake = projectPage({
+      directProjectSection: true,
+      existingProject: true,
+      projectControlsHydrateAfter: 3
+    });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Codex ChatGPT Control" },
+      250
+    );
+
+    expect(result).toMatchObject({ ok: true, data: { created: false } });
+    expect(fake.actions).not.toContain("open-more");
   });
 
   it("waits for a hydrating matching project before considering creation", async () => {
@@ -132,7 +184,8 @@ describe("ChatGPT Project routing", () => {
     const fake = projectPage({
       directProjectSection: true,
       existingProject: true,
-      matchingProjectCount: 2
+      matchingProjectCount: 2,
+      projectsIndexGrid: true
     });
     const result = await openOrCreateProjectForNewThread(
       { page: fake.page },
@@ -153,7 +206,11 @@ describe("ChatGPT Project routing", () => {
   });
 
   it("blocks instead of creating a duplicate when Show more cannot be exhausted", async () => {
-    const fake = projectPage({ directProjectSection: true, projectRevealAfter: 101 });
+    const fake = projectPage({
+      directProjectSection: true,
+      projectsIndexRedirectsHome: true,
+      projectRevealAfter: 101
+    });
     const result = await openOrCreateProjectForNewThread(
       { page: fake.page },
       { name: "Codex ChatGPT Control", confirmCreation: true },
@@ -224,11 +281,16 @@ function projectPage(options: {
   directProjectSection?: boolean;
   existingProject?: boolean;
   matchingProjectCount?: number;
+  projectControlsHydrateAfter?: number;
+  projectCardIsLink?: boolean;
   projectHydratesAfter?: number;
   projectRevealAfter?: number;
+  projectsIndexRedirectsHome?: boolean;
+  projectsIndexGrid?: boolean;
   sidebarHidden?: boolean;
-} = {}): { page: PageLike; actions: string[] } {
+} = {}): { page: PageLike; actions: string[]; navigations: string[] } {
   const actions: string[] = [];
+  const navigations: string[] = [];
   let currentUrl = "https://chatgpt.com/";
   let createDialogOpen = false;
   let customizeDialogOpen = false;
@@ -239,6 +301,7 @@ function projectPage(options: {
 
   const projectVisible = (): boolean =>
     sidebarOpen &&
+    waits >= (options.projectControlsHydrateAfter ?? 0) &&
     options.existingProject === true &&
     waits >= (options.projectHydratesAfter ?? 0) &&
     showMoreClicks >= (options.projectRevealAfter ?? 0);
@@ -252,11 +315,35 @@ function projectPage(options: {
   const projectRow = locator({
     count: () => projectVisible() ? 1 : 0,
     text: "Codex ChatGPT Control",
+    ...(options.projectCardIsLink === true ? { href: "/g/g-p-test/project" } : {}),
     locator: selector => selector.includes("ancestor::li") ? projectItem : projectRow
   });
   const projectIcons = locator({
-    count: () => projectVisible() ? (options.matchingProjectCount ?? 1) : 0,
+    count: () => projectVisible() && options.projectsIndexGrid !== true ? (options.matchingProjectCount ?? 1) : 0,
     nth: () => locator({ count: 1, locator: () => projectRow })
+  });
+  const projectNameCell = locator({ count: 1, text: "Codex ChatGPT Control" });
+  const otherGridCell = locator({ count: 1, text: "Yesterday" });
+  const projectGridCells = locator({
+    count: 3,
+    text: "Codex ChatGPT Control",
+    nth: index => index === 0 ? projectNameCell : otherGridCell
+  });
+  const projectGridRow = locator({
+    count: 1,
+    text: "Codex ChatGPT Control Yesterday",
+    click: () => {
+      currentUrl = "https://chatgpt.com/g/g-p-test/project";
+      actions.push("open-project-row");
+    },
+    getByRole: role => role === "gridcell" ? projectGridCells : empty
+  });
+  const projectGridHeader = locator({ count: 1, text: "Name Modified" });
+  const projectGridRows = locator({
+    count: () => options.projectsIndexGrid === true && projectVisible()
+      ? 1 + (options.matchingProjectCount ?? 1)
+      : 0,
+    nth: index => index === 0 ? projectGridHeader : projectGridRow
   });
 
   const customizeDialog = locator({
@@ -304,7 +391,12 @@ function projectPage(options: {
   const page: PageLike = {
     url: () => currentUrl,
     title: async () => "ChatGPT",
-    goto: async url => { currentUrl = url; },
+    goto: async url => {
+      currentUrl = url === "https://chatgpt.com/projects" && options.projectsIndexRedirectsHome === true
+        ? "https://chatgpt.com/"
+        : url;
+      navigations.push(url);
+    },
     waitForTimeout: async () => { waits += 1; },
     locator: selector => {
       if (selector === '[data-testid="project-folder-icon"]') return projectIcons;
@@ -312,10 +404,16 @@ function projectPage(options: {
     },
     getByText: text => {
       if (text === "Projects" && options.directProjectSection === true) {
-        return locator({ count: () => sidebarOpen ? 1 : 0, text: "Projects" });
+        return locator({
+          count: () => sidebarOpen && waits >= (options.projectControlsHydrateAfter ?? 0) ? 1 : 0,
+          text: "Projects"
+        });
       }
       if (text === "More" && options.directProjectSection === true) {
-        return locator({ count: () => sidebarOpen ? 1 : 0, click: () => actions.push("open-more") });
+        return locator({
+          count: () => sidebarOpen && waits < (options.projectControlsHydrateAfter ?? 0) ? 1 : 0,
+          click: () => actions.push("open-more")
+        });
       }
       return empty;
     },
@@ -332,10 +430,20 @@ function projectPage(options: {
       }
       if (role === "button" && name === "New project") {
         return locator({
-          count: () => sidebarOpen ? 1 : 0,
+          count: () => sidebarOpen && waits >= (options.projectControlsHydrateAfter ?? 0) ? 1 : 0,
           click: () => { createDialogOpen = true; }
         });
       }
+      if (role === "button" && name === "New") {
+        return locator({
+          count: () => currentUrl === "https://chatgpt.com/projects" ? 1 : 0,
+          click: () => { createDialogOpen = true; }
+        });
+      }
+      if (role === "heading" && name === "Projects") {
+        return locator({ count: () => currentUrl === "https://chatgpt.com/projects" ? 1 : 0 });
+      }
+      if (role === "row") return projectGridRows;
       if (role === "button" && name === "Show more") {
         return locator({
           count: () => sidebarOpen && showMoreClicks < (options.projectRevealAfter ?? 0) ? 1 : 0,
@@ -353,7 +461,7 @@ function projectPage(options: {
     }
   };
 
-  return { page, actions };
+  return { page, actions, navigations };
 }
 
 type LocatorOptions = {

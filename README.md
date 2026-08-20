@@ -195,6 +195,9 @@ opt-out above or a dedicated client created with `workspaceProject: false`. The
 same deterministic appearance resolver chooses the fitting icon and color for
 each newly created Project.
 
+Project-routed starts use `https://chatgpt.com/projects` for complete, fast
+Project discovery. Global starts continue to use the normal ChatGPT home page.
+
 Inspect and apply visible configuration:
 
 ```ts

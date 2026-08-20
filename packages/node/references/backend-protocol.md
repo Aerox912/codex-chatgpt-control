@@ -236,11 +236,13 @@ direct new Work tasks
 with `createChatGPT({ workspaceProject: { path } })`. Workspace paths are
 converted locally to a display name before the visible browser flow. Existing
 Projects are matched by normalized name equality, opened through their visible
-sidebar entry, and verified by the Project new-chat composer. A bounded stable
-absence check prevents a temporarily unhydrated sidebar from being treated as
-proof that the Project is missing. Multiple normalized matches fail closed
-instead of choosing one ambiguously. The implementation does not use fuzzy
-matching or private ChatGPT endpoints.
+entry, and verified by the Project new-chat composer. Project-routed starts
+begin at the visible `https://chatgpt.com/projects` index so the complete list
+is available without incremental sidebar expansion; global starts use the
+normal home page. A bounded stable-absence check prevents a temporarily
+unhydrated list from being treated as proof that the Project is missing.
+Multiple normalized matches fail closed instead of choosing one ambiguously.
+The implementation does not use fuzzy matching or private ChatGPT endpoints.
 
 When a match is absent, `threads.new` returns a resumable `needs_confirmation`
 result with blocker code `chatgpt_project_creation_confirmation_required`.

@@ -10290,6 +10290,7 @@ function isRecord(value) {
 
 // src/commands/projects.ts
 var CHATGPT_HOME2 = "https://chatgpt.com/";
+var CHATGPT_PROJECTS = "https://chatgpt.com/projects";
 var PROJECT_ICON_SELECTOR = '[data-testid="project-folder-icon"]';
 var PROJECT_PAGE_PATTERN = /\/g\/(g-p-[^/]+)\/project(?:[/?#]|$)/i;
 var PROJECT_EXPANSION_LIMIT = 100;
@@ -10433,10 +10434,10 @@ async function openOrCreateProjectForNewThread(env, input, timeoutMs = 3e4) {
     if (currentUrl !== void 0 && PROJECT_PAGE_PATTERN.test(currentUrl) && await projectComposerVisible(page, project.name)) {
       return resultOk(projectRef(project, normalizeProjectPageUrl(currentUrl), false), await contextFromPage(page));
     }
-    await page.goto?.(CHATGPT_HOME2, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await page.goto?.(CHATGPT_PROJECTS, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     await page.waitForTimeout?.(500);
     if (!await revealProjectList(page)) {
-      throw new ProjectSelectorError("ChatGPT Projects were not available in the visible sidebar.");
+      throw new ProjectSelectorError("ChatGPT Projects were not available in the visible UI.");
     }
     const row = await findProjectRow(page, project.name);
     if (row !== void 0) {
@@ -10502,6 +10503,15 @@ function resolveProjectTarget(input) {
   };
 }
 async function revealProjectList(page) {
+  const currentUrl = await pageUrl(page);
+  if (currentUrl?.startsWith(CHATGPT_PROJECTS)) {
+    const heading = page.getByRole?.("heading", { name: "Projects", exact: true });
+    for (let pass = 0; pass < PROJECT_MISSING_STABILITY_PASSES; pass += 1) {
+      if (await locatorCount3(heading) > 0) return true;
+      await page.waitForTimeout?.(250);
+    }
+    return false;
+  }
   const openSidebar = page.getByRole?.("button", { name: "Open sidebar", exact: true });
   if (await locatorCount3(openSidebar) > 0) {
     await openSidebar?.first?.().click?.();
@@ -10509,17 +10519,31 @@ async function revealProjectList(page) {
   }
   const projects = page.getByRole?.("button", { name: "Projects", exact: true });
   const directProjects = page.getByText?.("Projects", { exact: true });
+  const newProject = page.getByRole?.("button", { name: "New project", exact: true });
+  for (let pass = 0; pass < PROJECT_MISSING_STABILITY_PASSES; pass += 1) {
+    if (await locatorCount3(projects) > 0 || await locatorCount3(directProjects) > 0 || await locatorCount3(newProject) > 0) break;
+    await page.waitForTimeout?.(250);
+  }
   if (await locatorCount3(directProjects) > 0 && await locatorCount3(projects) === 0) {
     return true;
   }
-  const newProject = page.getByRole?.("button", { name: "New project", exact: true });
-  if (await locatorCount3(newProject) === 0) {
+  if (await locatorCount3(projects) === 0 && await locatorCount3(directProjects) === 0 && await locatorCount3(newProject) === 0) {
     const more = page.getByText?.("More", { exact: true });
     if (await locatorCount3(more) > 0) {
-      await more?.first?.().click?.();
+      try {
+        await more?.first?.().click?.();
+      } catch {
+        await page.waitForTimeout?.(250);
+        if (await locatorCount3(projects) === 0 && await locatorCount3(directProjects) === 0 && await locatorCount3(newProject) === 0) {
+          throw new ProjectSelectorError("The visible More control disappeared before ChatGPT exposed its Project controls.");
+        }
+      }
       await page.waitForTimeout?.(200);
       await page.locator?.("body").press?.("Escape");
     }
+  }
+  if (await locatorCount3(directProjects) > 0 && await locatorCount3(projects) === 0) {
+    return true;
   }
   if (await locatorCount3(projects) > 0) {
     const projectsButton = projects?.first?.();
@@ -10529,6 +10553,10 @@ async function revealProjectList(page) {
       await page.waitForTimeout?.(150);
     }
   }
+  for (let pass = 0; pass < PROJECT_MISSING_STABILITY_PASSES; pass += 1) {
+    if (await locatorCount3(newProject) > 0) return true;
+    await page.waitForTimeout?.(250);
+  }
   return await locatorCount3(newProject) > 0;
 }
 async function findProjectRow(page, name) {
@@ -10537,7 +10565,8 @@ async function findProjectRow(page, name) {
   while (true) {
     const row = await findVisibleProjectRow(page, name);
     if (row !== void 0) return row;
-    const showMore = page.getByRole?.("button", { name: "Show more", exact: true });
+    const currentUrl = await pageUrl(page);
+    const showMore = currentUrl?.startsWith(CHATGPT_PROJECTS) ? void 0 : page.getByRole?.("button", { name: "Show more", exact: true });
     if (await locatorCount3(showMore) > 0) {
       if (expansions >= PROJECT_EXPANSION_LIMIT) {
         throw new ProjectSelectorError(
@@ -10556,11 +10585,23 @@ async function findProjectRow(page, name) {
   }
 }
 async function findVisibleProjectRow(page, name) {
+  const rows = page.getByRole?.("row");
+  const rowCount = await locatorCount3(rows);
+  const rowMatches = [];
+  for (let index = 0; index < rowCount; index += 1) {
+    const row = rows?.nth?.(index);
+    const cells = row?.getByRole?.("gridcell");
+    if (await locatorCount3(cells) === 0) continue;
+    const text = (await cells?.first?.()?.innerText?.())?.trim();
+    if (row !== void 0 && text !== void 0 && projectNamesMatch(name, text)) rowMatches.push(row);
+  }
+  if (rowMatches.length > 1) throw ambiguousProjectNameError(name, rowMatches.length);
+  if (rowMatches.length === 1) return rowMatches[0];
   const icons = page.locator?.(PROJECT_ICON_SELECTOR);
   const iconCount = await locatorCount3(icons);
   const iconMatches = [];
   for (let index = 0; index < iconCount; index += 1) {
-    const row = icons?.nth?.(index).locator?.("xpath=ancestor::*[@role='button'][1]");
+    const row = icons?.nth?.(index).locator?.("xpath=ancestor::*[@role='button' or @role='link'][1]");
     const text = (await row?.innerText?.())?.trim();
     if (row !== void 0 && text !== void 0 && projectNamesMatch(name, text)) iconMatches.push(row);
   }
@@ -10576,6 +10617,16 @@ async function findVisibleProjectRow(page, name) {
   }
   if (buttonMatches.length > 1) throw ambiguousProjectNameError(name, buttonMatches.length);
   if (buttonMatches.length === 1) return buttonMatches[0];
+  const links = page.getByRole?.("link", { name: new RegExp(escapeRegex(name), "i") });
+  const linkCount = await locatorCount3(links);
+  const linkMatches = [];
+  for (let index = 0; index < linkCount; index += 1) {
+    const link3 = links?.nth?.(index);
+    const text = (await link3?.innerText?.())?.trim();
+    if (link3 !== void 0 && text !== void 0 && projectNamesMatch(name, text)) linkMatches.push(link3);
+  }
+  if (linkMatches.length > 1) throw ambiguousProjectNameError(name, linkMatches.length);
+  if (linkMatches.length === 1) return linkMatches[0];
   return void 0;
 }
 function ambiguousProjectNameError(name, count) {
@@ -10584,6 +10635,13 @@ function ambiguousProjectNameError(name, count) {
   );
 }
 async function resolveProjectPageUrl(page, row, timeoutMs) {
+  const directHref = await row.getAttribute?.("href");
+  const directProjectUrl = directHref === null || directHref === void 0 ? void 0 : projectPageUrlFromHref(directHref);
+  if (directProjectUrl !== void 0) return directProjectUrl;
+  if (await locatorCount3(row.getByRole?.("gridcell")) > 0) {
+    await row.click?.({ force: true });
+    return waitForAnyProjectPageUrl(page, timeoutMs);
+  }
   await row.click?.({ force: true });
   await page.waitForTimeout?.(150);
   const item = row.locator?.("xpath=ancestor::li[1]");
@@ -10609,9 +10667,10 @@ async function openProjectPage(page, url, name, timeoutMs) {
   }
 }
 async function createProject(page, project, timeoutMs) {
-  const createButton = page.getByRole?.("button", { name: "New project", exact: true });
+  const currentUrl = await pageUrl(page);
+  const createButton = currentUrl?.startsWith(CHATGPT_PROJECTS) ? page.getByRole?.("button", { name: "New", exact: true }) : page.getByRole?.("button", { name: "New project", exact: true });
   if (await locatorCount3(createButton) !== 1) {
-    throw new ProjectSelectorError("The visible New project control was missing or ambiguous.");
+    throw new ProjectSelectorError("The visible Project creation control was missing or ambiguous.");
   }
   await createButton?.click?.();
   const dialog = page.getByRole?.("dialog", { name: "Create project", exact: true });
