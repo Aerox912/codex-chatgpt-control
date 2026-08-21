@@ -916,20 +916,9 @@ describe("production ChatGPT artifact source", () => {
     expect(await readdir(parent)).toEqual(["browser-owned-source.bin"]);
   });
 
-  it.each([
-    ["symlink", async (parent: string) => {
-      const target = join(parent, "real-source.bin");
-      const link = join(parent, "linked-source.bin");
-      await writeFile(target, PAYLOAD);
-      await symlink(target, link);
-      return { path: link, remaining: ["linked-source.bin", "real-source.bin"] };
-    }],
-    ["non-file", async (parent: string) => {
-      const directory = join(parent, "source-directory");
-      await mkdir(directory);
-      return { path: directory, remaining: ["source-directory"] };
-    }]
-  ])("fails closed for a %s path and still cleans the provider temp directory", async (_label, setup) => {
+  const assertInvalidPathCleanup = async (
+    setup: (parent: string) => Promise<{ path: string; remaining: string[] }>
+  ) => {
     const parent = await root("path-invalid");
     const configured = await setup(parent);
     const observed = facts();
@@ -938,6 +927,24 @@ describe("production ChatGPT artifact source", () => {
     const acquired = await provider.acquireDownload(request({ sourceIdentityDigest: artifactIdentityDigest(observed) }));
     await expect(provider.materializeDownload(acquired)).rejects.toThrow("source is unavailable");
     expect((await readdir(parent)).sort()).toEqual(configured.remaining.sort());
+  };
+
+  it.skipIf(process.platform === "win32")("fails closed for a symlink path and still cleans the provider temp directory", async () => {
+    await assertInvalidPathCleanup(async parent => {
+      const target = join(parent, "real-source.bin");
+      const link = join(parent, "linked-source.bin");
+      await writeFile(target, PAYLOAD);
+      await symlink(target, link);
+      return { path: link, remaining: ["linked-source.bin", "real-source.bin"] };
+    });
+  });
+
+  it("fails closed for a non-file path and still cleans the provider temp directory", async () => {
+    await assertInvalidPathCleanup(async parent => {
+      const directory = join(parent, "source-directory");
+      await mkdir(directory);
+      return { path: directory, remaining: ["source-directory"] };
+    });
   });
 
   it("snapshots options and request fields before caller mutation", async () => {
