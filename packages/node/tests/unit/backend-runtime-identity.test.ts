@@ -24,7 +24,7 @@ describe("packaged backend runtime identity", () => {
     });
   });
 
-  it("discovers plugin metadata and refuses to hash a symlinked entry", async () => {
+  it.skipIf(process.platform === "win32")("discovers plugin metadata and refuses to hash a symlinked entry", async () => {
     const root = await mkdtemp(join(tmpdir(), "backend-plugin-identity-"));
     const runtime = join(root, "runtime", "node");
     await mkdir(join(root, ".codex-plugin"), { recursive: true });
