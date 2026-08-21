@@ -70,3 +70,7 @@ Check both permission gates:
 2. Codex settings > **Computer Use > Google Chrome > Permissions > Uploads**.
 
 The SDK should report a structured permission blocker when either gate is missing. Do not retry uploads repeatedly without changing the permission state.
+
+## Long Prompt Composer Verification
+
+ChatGPT can convert a paste over 10,000 characters into a visible pasted-text attachment instead of leaving all text in the composer. `messages.compose`, `messages.ask`, and Work submission accept that product-managed conversion only when a new attachment appears in the same active composer after the fill. A different non-empty composer value without new attachment evidence remains a recoverable `ComposerVerificationError` and is never submitted automatically.

@@ -166,6 +166,7 @@ export async function startWork(
     if (!compose.ok) {
       return forwardCommandFailure(compose);
     }
+    const submissionWarnings = [...compose.warnings];
 
     const submitArgs = {
       text: prompt,
@@ -176,6 +177,7 @@ export async function startWork(
     if (!submit.ok || submit.data === undefined) {
       return forwardCommandFailure(submit);
     }
+    submissionWarnings.push(...submit.warnings);
 
     const task = await workTaskRef(env, baselineTurnCount, baselineAssistantTurnCount);
     const data: StartWorkData = { task, submitted: submit.data };
@@ -208,6 +210,7 @@ export async function startWork(
         status: "partial",
         data,
         warnings: [
+          ...submissionWarnings,
           ...waitResult.warnings,
           "The Work task was submitted exactly once, but completion was not verified."
         ],
@@ -221,7 +224,10 @@ export async function startWork(
     return resultOk(
       data,
       await workContext(env, surface.data?.selectorProfile),
-      ["Work task submission uses matching-turn recovery and will not blindly resubmit the prompt."]
+      [
+        ...submissionWarnings,
+        "Work task submission uses matching-turn recovery and will not blindly resubmit the prompt."
+      ]
     );
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await workContext(env));

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { askMessage, isResponseComplete, messageStatus, readLatest, stopGeneration, submittedUserTurnMatches, submitMessage, waitForMessage } from "../../src/commands/messages.js";
+import { askMessage, composeMessage, isResponseComplete, messageStatus, readLatest, stopGeneration, submittedUserTurnMatches, submitMessage, waitForMessage } from "../../src/commands/messages.js";
 import { waitTextMetadata } from "../../src/dom/wait-snapshot.js";
 import { copyResponse } from "../../src/commands/response-actions.js";
 import { EMPTY_GENERATION_STATE, readAssistantGenerationState } from "../../src/dom/generation-state.js";
@@ -16,6 +16,86 @@ import {
 import type { BrowserOperationOptions, LocatorLike, PageLike } from "../../src/types.js";
 
 describe("extractMessagesFromHtml", () => {
+  it("accepts ChatGPT's verified automatic attachment conversion for a long prompt", async () => {
+    const prompt = "x".repeat(10_001);
+    let composerText = "";
+    let attachmentProbe = 0;
+    const composer: LocatorLike = {
+      click: async () => undefined,
+      fill: async () => { composerText = "Pasted text"; },
+      innerText: async () => composerText
+    };
+    const page: PageLike = {
+      url: () => "https://chatgpt.com/c/test",
+      content: async () => "<main><form></form></main>",
+      getByRole: () => composer,
+      evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>): Promise<T> => {
+        if (!String(fn).includes("attachmentElementCount")) return "" as T;
+        const value = attachmentProbe++ === 0
+          ? { supported: true, inputFileCount: 0, attachmentElementCount: 0 }
+          : { supported: true, inputFileCount: 0, attachmentElementCount: 1 };
+        return value as T;
+      }
+    };
+
+    const result = await composeMessage({ page }, { text: prompt, timeoutMs: 5 });
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.text).toBe(prompt);
+    expect(result.warnings.join(" ")).toContain("pasted-text attachment");
+  });
+
+  it("still rejects a long composer mismatch when the attachment count does not increase", async () => {
+    const prompt = "x".repeat(10_001);
+    let attachmentProbe = 0;
+    const composer: LocatorLike = {
+      click: async () => undefined,
+      fill: async () => undefined,
+      innerText: async () => "truncated prompt"
+    };
+    const page: PageLike = {
+      url: () => "https://chatgpt.com/c/test",
+      content: async () => "<main><form></form></main>",
+      getByRole: () => composer,
+      evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>): Promise<T> => {
+        if (!String(fn).includes("attachmentElementCount")) return "" as T;
+        attachmentProbe += 1;
+        return { supported: true, inputFileCount: 0, attachmentElementCount: 1 } as T;
+      }
+    };
+
+    const result = await composeMessage({ page }, { text: prompt, timeoutMs: 5 });
+
+    expect(result.ok).toBe(false);
+    expect(result.error?.name).toBe("ComposerVerificationError");
+  });
+
+  it("does not treat a new attachment as prompt conversion for a short mismatched prompt", async () => {
+    let attachmentProbe = 0;
+    const composer: LocatorLike = {
+      click: async () => undefined,
+      fill: async () => undefined,
+      innerText: async () => "different text"
+    };
+    const page: PageLike = {
+      url: () => "https://chatgpt.com/c/test",
+      content: async () => "<main><form></form></main>",
+      getByRole: () => composer,
+      evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>): Promise<T> => {
+        if (!String(fn).includes("attachmentElementCount")) return "" as T;
+        const value = attachmentProbe++ === 0
+          ? { supported: true, inputFileCount: 0, attachmentElementCount: 0 }
+          : { supported: true, inputFileCount: 0, attachmentElementCount: 1 };
+        return value as T;
+      }
+    };
+
+    const result = await composeMessage({ page }, { text: "short prompt" });
+
+    expect(result.ok).toBe(false);
+    expect(result.error?.name).toBe("ComposerVerificationError");
+  });
+
   it("keeps every shipped Stop label disjoint from every Send label", () => {
     const send = new Set(localeLabels.sendButton.map(label => label.trim().toLocaleLowerCase()));
     expect(localeLabels.stopControl.filter(label => send.has(label.trim().toLocaleLowerCase()))).toEqual([]);
@@ -1002,6 +1082,21 @@ describe("extractMessagesFromHtml", () => {
     expect(result.output_text).toBe("I will now produce the list.");
   });
 
+  it("propagates verified pasted-text attachment conversion through a partial messages.ask result", async () => {
+    const prompt = "x".repeat(10_001);
+    const page = askWaitFallbackPage(prompt, "accepted", { convertLongPaste: true });
+
+    const result = await askMessage({ page }, {
+      text: prompt,
+      wait: { timeoutMs: 5, stableMs: 0, pollMs: 1 },
+      read: { format: "normalized_text" }
+    });
+
+    expect(result.status).toBe("partial");
+    expect(result.error?.name).not.toBe("ComposerVerificationError");
+    expect(result.warnings.join(" ")).toContain("pasted-text attachment");
+  });
+
   it("rejects conflicting text and prompt aliases before submitting", async () => {
     const result = await askMessage({}, {
       text: "first",
@@ -1450,13 +1545,18 @@ function contentPage(html: string, onClick?: () => void): PageLike {
   };
 }
 
-function askWaitFallbackPage(prompt: string, answer: string): PageLike {
+function askWaitFallbackPage(
+  prompt: string,
+  answer: string,
+  options: { convertLongPaste?: boolean } = {}
+): PageLike {
   let composerText = "";
   let submitted = false;
+  let attachmentProbe = 0;
   const textbox: LocatorLike = {
     click: async () => {},
     fill: async text => {
-      composerText = text;
+      composerText = options.convertLongPaste === true ? "Pasted text" : text;
     },
     innerText: async () => composerText
   };
@@ -1477,6 +1577,11 @@ function askWaitFallbackPage(prompt: string, answer: string): PageLike {
       const totalCount = submitted ? 4 : 2;
       const assistantCount = submitted ? 2 : 1;
       const userCount = submitted ? 2 : 1;
+
+      if (source.includes("attachmentElementCount")) {
+        const attachmentElementCount = options.convertLongPaste === true && attachmentProbe++ > 0 ? 1 : 0;
+        return { supported: true, inputFileCount: 0, attachmentElementCount } as T;
+      }
 
       if (source.includes("document.querySelectorAll(selector).length")) {
         if (arg === "assistant") return assistantCount as T;

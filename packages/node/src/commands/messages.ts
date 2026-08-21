@@ -58,6 +58,16 @@ type SendButtonState = {
   reason?: string;
 };
 
+type ComposerAttachmentEvidence = {
+  supported: boolean;
+  inputFileCount: number;
+  attachmentElementCount: number;
+};
+
+const MIN_AUTOMATIC_PASTE_ATTACHMENT_CHARS = 10_000;
+const AUTOMATIC_PASTE_ATTACHMENT_WARNING =
+  "ChatGPT converted the long prompt into a visible pasted-text attachment; the SDK verified a new composer attachment before submission.";
+
 export function isResponseComplete(snapshot: CompletionSnapshot): boolean {
   return snapshot.latestText.trim().length > 0
     && !isTransientAssistantText(snapshot.latestText)
@@ -84,11 +94,21 @@ export async function composeMessage(
     const text = args.mode === "append"
       ? `${await readLocatorText(textbox)}${args.text}`
       : args.text;
+    const attachmentBaseline = text.length > MIN_AUTOMATIC_PASTE_ATTACHMENT_CHARS
+      ? await readComposerAttachmentEvidence(page, args.timeoutMs).catch(() => unsupportedAttachmentEvidence())
+      : unsupportedAttachmentEvidence();
 
     await textbox.click?.();
     await textbox.fill?.(text);
-    const actual = normalizeWhitespace(await readLocatorText(textbox));
+    let actual = normalizeWhitespace(await readLocatorText(textbox));
     const wanted = normalizeWhitespace(text);
+
+    if (actual !== wanted && text.length > MIN_AUTOMATIC_PASTE_ATTACHMENT_CHARS) {
+      if (await waitForNewComposerAttachmentEvidence(page, attachmentBaseline, args.timeoutMs)) {
+        return resultOk({ text }, await contextFromPage(page), [AUTOMATIC_PASTE_ATTACHMENT_WARNING]);
+      }
+      actual = normalizeWhitespace(await readLocatorText(textbox));
+    }
 
     if (actual !== wanted && actual.length > 0) {
       return {
@@ -1123,6 +1143,7 @@ export async function askMessage(
   if (!compose.ok) {
     return forwardFailure(compose);
   }
+  const warnings = [...compose.warnings];
 
   const submitArgs: SubmitArgs = { text: prompt };
   if (beforeTurnCount !== undefined) {
@@ -1133,8 +1154,9 @@ export async function askMessage(
   }
   const submit = await submitMessage(env, submitArgs);
   if (!submit.ok) {
-    return forwardFailure(submit);
+    return forwardFailure(submit, warnings);
   }
+  warnings.push(...submit.warnings);
 
   const readRequested = args.read === true || typeof args.read === "object";
   let waitResult: CommandResult<WaitData> | undefined;
@@ -1153,7 +1175,7 @@ export async function askMessage(
         waitFailure = waitResult;
       } else {
         if (!readRequested || readRole(args.read) === "user") {
-          return forwardFailure(waitResult);
+          return forwardFailure(waitResult, warnings);
         }
         waitFailure = waitResult;
       }
@@ -1161,12 +1183,11 @@ export async function askMessage(
   }
 
   let responseText = waitResult?.data?.responseText;
-  const warnings: string[] = [];
   if (readRequested) {
     const read = await readLatest(env, typeof args.read === "object" ? args.read : {});
     if (read.ok) {
       if (waitFailure !== undefined && !readCapturedNewAssistantTurn(read, beforeTurnCount, beforeAssistantTurnCount)) {
-        return forwardFailure(waitFailure);
+        return forwardFailure(waitFailure, warnings);
       }
       responseText = read.data?.text;
       warnings.push(...read.warnings);
@@ -1177,12 +1198,12 @@ export async function askMessage(
         );
       }
     } else if (responseText === undefined) {
-      return forwardFailure(waitFailure ?? read);
+      return forwardFailure(waitFailure ?? read, warnings);
     }
   }
 
   if (waitFailure !== undefined && responseText === undefined) {
-    return forwardFailure(waitFailure);
+    return forwardFailure(waitFailure, warnings);
   }
 
   const state = await readPageState(page).catch(() => undefined);
@@ -1403,6 +1424,110 @@ async function readLocatorText(locator: { innerText?: () => Promise<string>; tex
   return "";
 }
 
+async function readComposerAttachmentEvidence(
+  page: PageLike,
+  timeoutMs = 1_000
+): Promise<ComposerAttachmentEvidence> {
+  if (typeof page.evaluate !== "function") return unsupportedAttachmentEvidence();
+  const evidence = await page.evaluate(() => {
+    const visible = (element: HTMLElement) => {
+      if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const style = window.getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 || rect.height > 0;
+    };
+    const enabledUploads = Array.from(document.querySelectorAll<HTMLInputElement>("input[type='file']"))
+      .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+    const preferredUploads = enabledUploads.filter(input => input.id === "upload-files");
+    let composer = preferredUploads.length === 1
+      ? preferredUploads[0]!.closest<HTMLElement>("form")
+        ?? preferredUploads[0]!.closest<HTMLElement>("[data-testid*='composer' i]")
+        ?? preferredUploads[0]!.closest<HTMLElement>("[aria-label*='composer' i]")
+        ?? preferredUploads[0]!.closest<HTMLElement>("[class*='composer' i]")
+      : null;
+    if (composer === null) {
+      const prompts = Array.from(document.querySelectorAll<HTMLElement>(
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      )).filter(visible);
+      const composers = [...new Set(prompts
+        .map(prompt => prompt.closest<HTMLElement>("form")
+          ?? prompt.closest<HTMLElement>("[data-testid*='composer' i]")
+          ?? prompt.closest<HTMLElement>("[aria-label*='composer' i]")
+          ?? prompt.closest<HTMLElement>("[class*='composer' i]"))
+        .filter((value): value is HTMLElement => value !== null))];
+      if (composers.length !== 1) {
+        return { supported: false, inputFileCount: 0, attachmentElementCount: 0 };
+      }
+      composer = composers[0]!;
+    }
+
+    const scopedInputs = enabledUploads.filter(input => composer!.contains(input));
+    const inputFileCount = scopedInputs.reduce((count, input) => count + (input.files?.length ?? 0), 0);
+    const attachmentSelector = [
+      "[data-testid*='attachment' i]",
+      "[data-testid*='file' i]",
+      "[aria-label*='attachment' i]",
+      "[aria-label*='upload' i]",
+      "[aria-label*='file' i]",
+      "[class*='attachment' i]",
+      "[class*='upload' i]",
+      "[class*='file' i]",
+      "[role='progressbar']"
+    ].join(", ");
+    const attachmentElementCount = Array.from(composer.querySelectorAll<HTMLElement>(attachmentSelector))
+      .filter(visible).length;
+    return { supported: true, inputFileCount, attachmentElementCount };
+  }, undefined, { timeoutMs: Math.max(1, Math.min(timeoutMs, 1_000)) });
+  if (typeof evidence !== "object" || evidence === null) return unsupportedAttachmentEvidence();
+  const supported = (evidence as { supported?: unknown }).supported;
+  const inputFileCount = (evidence as { inputFileCount?: unknown }).inputFileCount;
+  const attachmentElementCount = (evidence as { attachmentElementCount?: unknown }).attachmentElementCount;
+  if (typeof supported !== "boolean"
+    || typeof inputFileCount !== "number" || !Number.isSafeInteger(inputFileCount) || inputFileCount < 0
+    || typeof attachmentElementCount !== "number" || !Number.isSafeInteger(attachmentElementCount) || attachmentElementCount < 0) {
+    return unsupportedAttachmentEvidence();
+  }
+  return {
+    supported,
+    inputFileCount,
+    attachmentElementCount
+  };
+}
+
+function unsupportedAttachmentEvidence(): ComposerAttachmentEvidence {
+  return { supported: false, inputFileCount: 0, attachmentElementCount: 0 };
+}
+
+function hasNewAttachmentEvidence(
+  before: ComposerAttachmentEvidence,
+  after: ComposerAttachmentEvidence
+): boolean {
+  return before.supported
+    && after.supported
+    && (after.inputFileCount > before.inputFileCount
+      || after.attachmentElementCount > before.attachmentElementCount);
+}
+
+async function waitForNewComposerAttachmentEvidence(
+  page: PageLike,
+  before: ComposerAttachmentEvidence,
+  requestedTimeoutMs = 1_500
+): Promise<boolean> {
+  if (!before.supported) return false;
+  const timeoutMs = Math.max(1, Math.min(requestedTimeoutMs, 1_500));
+  const startedAt = Date.now();
+  do {
+    const remaining = Math.max(1, timeoutMs - (Date.now() - startedAt));
+    const after = await readComposerAttachmentEvidence(page, remaining)
+      .catch(() => unsupportedAttachmentEvidence());
+    if (hasNewAttachmentEvidence(before, after)) return true;
+    if (Date.now() - startedAt >= timeoutMs) break;
+    await sleep(page, Math.min(100, Math.max(1, timeoutMs - (Date.now() - startedAt))));
+  } while (Date.now() - startedAt < timeoutMs);
+  return false;
+}
+
 async function sleep(page: PageLike, ms: number): Promise<void> {
   if (typeof page.waitForTimeout === "function") {
     await page.waitForTimeout(ms);
@@ -1533,11 +1658,14 @@ function readCapturedNewAssistantTurn(
   return assistantAdvanced && turnAdvanced;
 }
 
-function forwardFailure<T>(result: CommandResult<unknown>): CommandResult<T> {
+function forwardFailure<T>(
+  result: CommandResult<unknown>,
+  precedingWarnings: string[] = []
+): CommandResult<T> {
   const forwarded: CommandResult<T> = {
     ok: false,
     status: result.status,
-    warnings: result.warnings,
+    warnings: [...precedingWarnings, ...result.warnings],
     context: result.context
   };
   if (result.error !== undefined) {

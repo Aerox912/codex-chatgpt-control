@@ -9634,6 +9634,8 @@ var ProbeTimeoutError = class extends Error {
 };
 
 // src/commands/messages.ts
+var MIN_AUTOMATIC_PASTE_ATTACHMENT_CHARS = 1e4;
+var AUTOMATIC_PASTE_ATTACHMENT_WARNING = "ChatGPT converted the long prompt into a visible pasted-text attachment; the SDK verified a new composer attachment before submission.";
 function isResponseComplete(snapshot2) {
   return snapshot2.latestText.trim().length > 0 && !isTransientAssistantText(snapshot2.latestText) && snapshot2.textStableForMs >= snapshot2.stableMs && snapshot2.generation.observed && !snapshot2.generation.active && !snapshot2.generation.stopped && snapshot2.hasResponseActions;
 }
@@ -9646,10 +9648,17 @@ async function composeMessage(env, args) {
   try {
     const textbox = composerTextbox(page);
     const text = args.mode === "append" ? `${await readLocatorText(textbox)}${args.text}` : args.text;
+    const attachmentBaseline = text.length > MIN_AUTOMATIC_PASTE_ATTACHMENT_CHARS ? await readComposerAttachmentEvidence(page, args.timeoutMs).catch(() => unsupportedAttachmentEvidence()) : unsupportedAttachmentEvidence();
     await textbox.click?.();
     await textbox.fill?.(text);
-    const actual = normalizeWhitespace(await readLocatorText(textbox));
+    let actual = normalizeWhitespace(await readLocatorText(textbox));
     const wanted = normalizeWhitespace(text);
+    if (actual !== wanted && text.length > MIN_AUTOMATIC_PASTE_ATTACHMENT_CHARS) {
+      if (await waitForNewComposerAttachmentEvidence(page, attachmentBaseline, args.timeoutMs)) {
+        return resultOk({ text }, await contextFromPage(page), [AUTOMATIC_PASTE_ATTACHMENT_WARNING]);
+      }
+      actual = normalizeWhitespace(await readLocatorText(textbox));
+    }
     if (actual !== wanted && actual.length > 0) {
       return {
         ok: false,
@@ -10469,6 +10478,7 @@ async function askMessage(env, args) {
   if (!compose.ok) {
     return forwardFailure(compose);
   }
+  const warnings = [...compose.warnings];
   const submitArgs = { text: prompt };
   if (beforeTurnCount !== void 0) {
     submitArgs.previousTurnCount = beforeTurnCount;
@@ -10478,8 +10488,9 @@ async function askMessage(env, args) {
   }
   const submit = await submitMessage(env, submitArgs);
   if (!submit.ok) {
-    return forwardFailure(submit);
+    return forwardFailure(submit, warnings);
   }
+  warnings.push(...submit.warnings);
   const readRequested = args.read === true || typeof args.read === "object";
   let waitResult;
   let waitFailure;
@@ -10497,19 +10508,18 @@ async function askMessage(env, args) {
         waitFailure = waitResult;
       } else {
         if (!readRequested || readRole(args.read) === "user") {
-          return forwardFailure(waitResult);
+          return forwardFailure(waitResult, warnings);
         }
         waitFailure = waitResult;
       }
     }
   }
   let responseText = waitResult?.data?.responseText;
-  const warnings = [];
   if (readRequested) {
     const read = await readLatest(env, typeof args.read === "object" ? args.read : {});
     if (read.ok) {
       if (waitFailure !== void 0 && !readCapturedNewAssistantTurn(read, beforeTurnCount, beforeAssistantTurnCount)) {
-        return forwardFailure(waitFailure);
+        return forwardFailure(waitFailure, warnings);
       }
       responseText = read.data?.text;
       warnings.push(...read.warnings);
@@ -10520,11 +10530,11 @@ async function askMessage(env, args) {
         );
       }
     } else if (responseText === void 0) {
-      return forwardFailure(waitFailure ?? read);
+      return forwardFailure(waitFailure ?? read, warnings);
     }
   }
   if (waitFailure !== void 0 && responseText === void 0) {
-    return forwardFailure(waitFailure);
+    return forwardFailure(waitFailure, warnings);
   }
   const state = await readPageState(page).catch(() => void 0);
   const data = { prompt };
@@ -10693,6 +10703,77 @@ async function readLocatorText(locator) {
   }
   return "";
 }
+async function readComposerAttachmentEvidence(page, timeoutMs = 1e3) {
+  if (typeof page.evaluate !== "function") return unsupportedAttachmentEvidence();
+  const evidence = await page.evaluate(() => {
+    const visible = (element) => {
+      if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
+      const style = window.getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 || rect.height > 0;
+    };
+    const enabledUploads = Array.from(document.querySelectorAll("input[type='file']")).filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true");
+    const preferredUploads = enabledUploads.filter((input) => input.id === "upload-files");
+    let composer = preferredUploads.length === 1 ? preferredUploads[0].closest("form") ?? preferredUploads[0].closest("[data-testid*='composer' i]") ?? preferredUploads[0].closest("[aria-label*='composer' i]") ?? preferredUploads[0].closest("[class*='composer' i]") : null;
+    if (composer === null) {
+      const prompts = Array.from(document.querySelectorAll(
+        "#prompt-textarea, [data-testid='prompt-textarea']"
+      )).filter(visible);
+      const composers = [...new Set(prompts.map((prompt) => prompt.closest("form") ?? prompt.closest("[data-testid*='composer' i]") ?? prompt.closest("[aria-label*='composer' i]") ?? prompt.closest("[class*='composer' i]")).filter((value) => value !== null))];
+      if (composers.length !== 1) {
+        return { supported: false, inputFileCount: 0, attachmentElementCount: 0 };
+      }
+      composer = composers[0];
+    }
+    const scopedInputs = enabledUploads.filter((input) => composer.contains(input));
+    const inputFileCount2 = scopedInputs.reduce((count, input) => count + (input.files?.length ?? 0), 0);
+    const attachmentSelector = [
+      "[data-testid*='attachment' i]",
+      "[data-testid*='file' i]",
+      "[aria-label*='attachment' i]",
+      "[aria-label*='upload' i]",
+      "[aria-label*='file' i]",
+      "[class*='attachment' i]",
+      "[class*='upload' i]",
+      "[class*='file' i]",
+      "[role='progressbar']"
+    ].join(", ");
+    const attachmentElementCount2 = Array.from(composer.querySelectorAll(attachmentSelector)).filter(visible).length;
+    return { supported: true, inputFileCount: inputFileCount2, attachmentElementCount: attachmentElementCount2 };
+  }, void 0, { timeoutMs: Math.max(1, Math.min(timeoutMs, 1e3)) });
+  if (typeof evidence !== "object" || evidence === null) return unsupportedAttachmentEvidence();
+  const supported = evidence.supported;
+  const inputFileCount = evidence.inputFileCount;
+  const attachmentElementCount = evidence.attachmentElementCount;
+  if (typeof supported !== "boolean" || typeof inputFileCount !== "number" || !Number.isSafeInteger(inputFileCount) || inputFileCount < 0 || typeof attachmentElementCount !== "number" || !Number.isSafeInteger(attachmentElementCount) || attachmentElementCount < 0) {
+    return unsupportedAttachmentEvidence();
+  }
+  return {
+    supported,
+    inputFileCount,
+    attachmentElementCount
+  };
+}
+function unsupportedAttachmentEvidence() {
+  return { supported: false, inputFileCount: 0, attachmentElementCount: 0 };
+}
+function hasNewAttachmentEvidence(before, after) {
+  return before.supported && after.supported && (after.inputFileCount > before.inputFileCount || after.attachmentElementCount > before.attachmentElementCount);
+}
+async function waitForNewComposerAttachmentEvidence(page, before, requestedTimeoutMs = 1500) {
+  if (!before.supported) return false;
+  const timeoutMs = Math.max(1, Math.min(requestedTimeoutMs, 1500));
+  const startedAt = Date.now();
+  do {
+    const remaining = Math.max(1, timeoutMs - (Date.now() - startedAt));
+    const after = await readComposerAttachmentEvidence(page, remaining).catch(() => unsupportedAttachmentEvidence());
+    if (hasNewAttachmentEvidence(before, after)) return true;
+    if (Date.now() - startedAt >= timeoutMs) break;
+    await sleep(page, Math.min(100, Math.max(1, timeoutMs - (Date.now() - startedAt))));
+  } while (Date.now() - startedAt < timeoutMs);
+  return false;
+}
 async function sleep(page, ms2) {
   if (typeof page.waitForTimeout === "function") {
     await page.waitForTimeout(ms2);
@@ -10787,11 +10868,11 @@ function readCapturedNewAssistantTurn(read, beforeTurnCount, beforeAssistantTurn
   const turnAdvanced = beforeTurnCount === void 0 || read.context.turnCount !== void 0 && read.context.turnCount > beforeTurnCount;
   return assistantAdvanced && turnAdvanced;
 }
-function forwardFailure(result3) {
+function forwardFailure(result3, precedingWarnings = []) {
   const forwarded = {
     ok: false,
     status: result3.status,
-    warnings: result3.warnings,
+    warnings: [...precedingWarnings, ...result3.warnings],
     context: result3.context
   };
   if (result3.error !== void 0) {
@@ -16774,6 +16855,7 @@ async function startWork(env, args) {
     if (!compose.ok) {
       return forwardCommandFailure(compose);
     }
+    const submissionWarnings = [...compose.warnings];
     const submitArgs = {
       text: prompt,
       ...baselineTurnCount === void 0 ? {} : { previousTurnCount: baselineTurnCount },
@@ -16783,6 +16865,7 @@ async function startWork(env, args) {
     if (!submit.ok || submit.data === void 0) {
       return forwardCommandFailure(submit);
     }
+    submissionWarnings.push(...submit.warnings);
     const task = await workTaskRef(env, baselineTurnCount, baselineAssistantTurnCount);
     const data = { task, submitted: submit.data };
     if (project !== void 0) data.project = project;
@@ -16811,6 +16894,7 @@ async function startWork(env, args) {
         status: "partial",
         data,
         warnings: [
+          ...submissionWarnings,
           ...waitResult.warnings,
           "The Work task was submitted exactly once, but completion was not verified."
         ],
@@ -16823,7 +16907,10 @@ async function startWork(env, args) {
     return resultOk(
       data,
       await workContext(env, surface.data?.selectorProfile),
-      ["Work task submission uses matching-turn recovery and will not blindly resubmit the prompt."]
+      [
+        ...submissionWarnings,
+        "Work task submission uses matching-turn recovery and will not blindly resubmit the prompt."
+      ]
     );
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await workContext(env));
