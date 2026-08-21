@@ -74,3 +74,5 @@ The SDK should report a structured permission blocker when either gate is missin
 ## Long Prompt Composer Verification
 
 ChatGPT can convert a paste over 10,000 characters into a visible pasted-text attachment instead of leaving all text in the composer. `messages.compose`, `messages.ask`, and Work submission accept that product-managed conversion only when a new attachment appears in the same active composer after the fill. A different non-empty composer value without new attachment evidence remains a recoverable `ComposerVerificationError` and is never submitted automatically.
+
+ChatGPT can also render a plain URL as a non-editable inline reference pill. The visible pill may shorten a GitHub pull-request URL to `owner/repository#number` and add editor-only cursor sentinels. Composer verification reconstructs URL pills from their source URL metadata before comparison. An already-correct restored draft is accepted without refilling, while stale pills are cleared before replacement; unrelated text changes still fail closed with `ComposerVerificationError`.

@@ -15,6 +15,7 @@ import type {
   ComposeData,
   MessageStatusArgs,
   MessageStatusData,
+  LocatorLike,
   PageLike,
   ReadLatestArgs,
   ReadLatestData,
@@ -91,17 +92,24 @@ export async function composeMessage(
 
   try {
     const textbox = composerTextbox(page);
+    const currentText = await readLocatorText(textbox);
     const text = args.mode === "append"
-      ? `${await readLocatorText(textbox)}${args.text}`
+      ? `${currentText}${args.text}`
       : args.text;
+    const wanted = normalizeWhitespace(text);
+    if (args.mode !== "append" && normalizeWhitespace(currentText) === wanted) {
+      return resultOk({ text }, await contextFromPage(page));
+    }
     const attachmentBaseline = text.length > MIN_AUTOMATIC_PASTE_ATTACHMENT_CHARS
       ? await readComposerAttachmentEvidence(page, args.timeoutMs).catch(() => unsupportedAttachmentEvidence())
       : unsupportedAttachmentEvidence();
 
     await textbox.click?.();
+    if (await hasInlineSelectionPills(textbox)) {
+      await textbox.fill?.("");
+    }
     await textbox.fill?.(text);
     let actual = normalizeWhitespace(await readLocatorText(textbox));
-    const wanted = normalizeWhitespace(text);
 
     if (actual !== wanted && text.length > MIN_AUTOMATIC_PASTE_ATTACHMENT_CHARS) {
       if (await waitForNewComposerAttachmentEvidence(page, attachmentBaseline, args.timeoutMs)) {
@@ -1414,7 +1422,32 @@ function waitTargetReached(
   return assistantTargetReached && turnTargetReached;
 }
 
-async function readLocatorText(locator: { innerText?: () => Promise<string>; textContent?: () => Promise<string | null> }): Promise<string> {
+async function readLocatorText(locator: LocatorLike): Promise<string> {
+  if (typeof locator.evaluate === "function") {
+    const semanticText = await locator.evaluate(element => {
+      const blockTags = new Set(["ADDRESS", "BLOCKQUOTE", "DIV", "LI", "OL", "P", "PRE", "UL"]);
+      const readNode = (node: Node): string => {
+        if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
+        if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+        const child = node as HTMLElement;
+        if (child.matches("[data-inline-selection-pill-cursor-target]")) return "";
+        if (child.matches("[data-inline-selection-pill][data-reference-type='url']")) {
+          const sourceUrl = child.getAttribute("data-id");
+          if (sourceUrl !== null && sourceUrl.trim().length > 0) return sourceUrl;
+        }
+        if (child.tagName === "BR") {
+          return child.classList.contains("ProseMirror-trailingBreak") ? "" : "\n";
+        }
+        if (child.tagName === "IMG" && child.classList.contains("ProseMirror-separator")) return "";
+
+        const text = Array.from(child.childNodes, readNode).join("");
+        return blockTags.has(child.tagName) ? `${text}\n` : text;
+      };
+      return readNode(element);
+    }).catch(() => undefined);
+    if (typeof semanticText === "string") return semanticText;
+  }
   if (typeof locator.innerText === "function") {
     return locator.innerText().catch(() => "");
   }
@@ -1422,6 +1455,13 @@ async function readLocatorText(locator: { innerText?: () => Promise<string>; tex
     return locator.textContent().then(text => text ?? "").catch(() => "");
   }
   return "";
+}
+
+async function hasInlineSelectionPills(locator: LocatorLike): Promise<boolean> {
+  if (typeof locator.evaluate !== "function") return false;
+  const detected = await locator.evaluate(element => element.querySelector("[data-inline-selection-pill]") !== null)
+    .catch(() => false);
+  return detected === true;
 }
 
 async function readComposerAttachmentEvidence(

@@ -16,6 +16,76 @@ import {
 import type { BrowserOperationOptions, LocatorLike, PageLike } from "../../src/types.js";
 
 describe("extractMessagesFromHtml", () => {
+  it("verifies the original URL when ChatGPT renders a shortened inline reference pill", async () => {
+    const prompt = "Review https://github.com/example/example/pull/1";
+    let current = "";
+    let fills = 0;
+    const composer: LocatorLike = {
+      click: async () => undefined,
+      fill: async value => { fills += 1; current = value; },
+      innerText: async () => current.length === 0 ? "" : "Review example/example#1\uFEFF",
+      evaluate: async <T>(fn: (element: Element) => T) => fn.toString().includes("querySelector")
+        ? false as T
+        : current as T
+    };
+    const page: PageLike = {
+      url: () => "https://chatgpt.com/c/test",
+      content: async () => "<main><form></form></main>",
+      getByRole: () => composer
+    };
+
+    const result = await composeMessage({ page }, { text: prompt });
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.text).toBe(prompt);
+    expect(fills).toBe(1);
+  });
+
+  it("does not refill an exact persisted URL-pill draft", async () => {
+    const prompt = "Review https://github.com/example/example/pull/1";
+    let fills = 0;
+    const composer: LocatorLike = {
+      click: async () => undefined,
+      fill: async () => { fills += 1; },
+      evaluate: async <T>(fn: (element: Element) => T) => fn.toString().includes("querySelector")
+        ? true as T
+        : prompt as T
+    };
+    const page: PageLike = {
+      url: () => "https://chatgpt.com/c/test",
+      content: async () => "<main><form></form></main>",
+      getByRole: () => composer
+    };
+
+    const result = await composeMessage({ page }, { text: prompt });
+
+    expect(result.ok).toBe(true);
+    expect(fills).toBe(0);
+  });
+
+  it("clears stale inline URL pills before replacing the composer", async () => {
+    const prompt = "Review https://github.com/example/example/pull/2";
+    let current = "Review https://github.com/example/example/pull/1";
+    const fills: string[] = [];
+    const composer: LocatorLike = {
+      click: async () => undefined,
+      fill: async value => { fills.push(value); current = value; },
+      evaluate: async <T>(fn: (element: Element) => T) => fn.toString().includes("querySelector")
+        ? true as T
+        : current as T
+    };
+    const page: PageLike = {
+      url: () => "https://chatgpt.com/c/test",
+      content: async () => "<main><form></form></main>",
+      getByRole: () => composer
+    };
+
+    const result = await composeMessage({ page }, { text: prompt });
+
+    expect(result.ok).toBe(true);
+    expect(fills).toEqual(["", prompt]);
+  });
+
   it("accepts ChatGPT's verified automatic attachment conversion for a long prompt", async () => {
     const prompt = "x".repeat(10_001);
     let composerText = "";

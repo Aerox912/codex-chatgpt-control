@@ -871,13 +871,42 @@ async function readLocatorText(locator: LocatorLike): Promise<string | undefined
       while (current !== null) {
         visited += 1;
         if (visited > 4096) return undefined;
+        let skipChildren = false;
+        if (current.nodeType === 1) {
+          const element = current as HTMLElement;
+          const attribute = (name: string): string | null => typeof element.getAttribute === "function"
+            ? element.getAttribute(name)
+            : null;
+          if (attribute("data-inline-selection-pill-cursor-target") !== null) {
+            skipChildren = true;
+          } else if (attribute("data-inline-selection-pill") !== null
+            && attribute("data-reference-type") === "url") {
+            const sourceUrl = attribute("data-id");
+            if (sourceUrl !== null && sourceUrl.trim().length > 0) {
+              total += sourceUrl.length;
+              if (total > 8 * 1024 * 1024) return undefined;
+              chunks.push(sourceUrl);
+              skipChildren = true;
+            }
+          } else if (element.tagName === "BR") {
+            const className = attribute("class") ?? "";
+            if (!className.split(/\s+/u).includes("ProseMirror-trailingBreak")) {
+              total += 1;
+              if (total > 8 * 1024 * 1024) return undefined;
+              chunks.push("\n");
+            }
+            skipChildren = true;
+          } else if (element.tagName === "IMG") {
+            skipChildren = true;
+          }
+        }
         if (current.nodeType === 3) {
           const text = current.nodeValue ?? "";
           total += text.length;
           if (total > 8 * 1024 * 1024) return undefined;
           if (text.length > 0) chunks.push(text);
         }
-        const child: Node | null = current.firstChild;
+        const child: Node | null = skipChildren ? null : current.firstChild;
         if (child !== null) {
           if (ancestors.length >= 4096) return undefined;
           ancestors.push(current);

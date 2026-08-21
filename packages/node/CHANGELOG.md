@@ -2,6 +2,8 @@
 
 ## 0.5.1-alpha.3
 
+- Reconstructs source URLs from ChatGPT inline reference pills, accepts exact
+  restored drafts without refilling, and clears stale pills before replacement.
 - Adds the transactional `operations.submit`, `collect`, `inspect`, `control`,
   and `run` surface with durable request identity, monotonic mutation
   boundaries, exact ownership, non-repetition, and redacted recovery receipts.

@@ -12079,12 +12079,19 @@ async function composeMessage(env, args) {
   const page = env.page;
   try {
     const textbox = composerTextbox(page);
-    const text = args.mode === "append" ? `${await readLocatorText(textbox)}${args.text}` : args.text;
+    const currentText = await readLocatorText(textbox);
+    const text = args.mode === "append" ? `${currentText}${args.text}` : args.text;
+    const wanted = normalizeWhitespace(text);
+    if (args.mode !== "append" && normalizeWhitespace(currentText) === wanted) {
+      return resultOk({ text }, await contextFromPage(page));
+    }
     const attachmentBaseline = text.length > MIN_AUTOMATIC_PASTE_ATTACHMENT_CHARS ? await readComposerAttachmentEvidence(page, args.timeoutMs).catch(() => unsupportedAttachmentEvidence()) : unsupportedAttachmentEvidence();
     await textbox.click?.();
+    if (await hasInlineSelectionPills(textbox)) {
+      await textbox.fill?.("");
+    }
     await textbox.fill?.(text);
     let actual = normalizeWhitespace(await readLocatorText(textbox));
-    const wanted = normalizeWhitespace(text);
     if (actual !== wanted && text.length > MIN_AUTOMATIC_PASTE_ATTACHMENT_CHARS) {
       if (await waitForNewComposerAttachmentEvidence(page, attachmentBaseline, args.timeoutMs)) {
         return resultOk({ text }, await contextFromPage(page), [AUTOMATIC_PASTE_ATTACHMENT_WARNING]);
@@ -13127,6 +13134,30 @@ function waitTargetReached(args, snapshot2) {
   return assistantTargetReached && turnTargetReached;
 }
 async function readLocatorText(locator) {
+  if (typeof locator.evaluate === "function") {
+    const semanticText = await locator.evaluate((element) => {
+      const blockTags = /* @__PURE__ */ new Set(["ADDRESS", "BLOCKQUOTE", "DIV", "LI", "OL", "P", "PRE", "UL"]);
+      const readNode = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
+        if (node.nodeType !== Node.ELEMENT_NODE) return "";
+        const child = node;
+        if (child.matches("[data-inline-selection-pill-cursor-target]")) return "";
+        if (child.matches("[data-inline-selection-pill][data-reference-type='url']")) {
+          const sourceUrl = child.getAttribute("data-id");
+          if (sourceUrl !== null && sourceUrl.trim().length > 0) return sourceUrl;
+        }
+        if (child.tagName === "BR") {
+          return child.classList.contains("ProseMirror-trailingBreak") ? "" : "\n";
+        }
+        if (child.tagName === "IMG" && child.classList.contains("ProseMirror-separator")) return "";
+        const text = Array.from(child.childNodes, readNode).join("");
+        return blockTags.has(child.tagName) ? `${text}
+` : text;
+      };
+      return readNode(element);
+    }).catch(() => void 0);
+    if (typeof semanticText === "string") return semanticText;
+  }
   if (typeof locator.innerText === "function") {
     return locator.innerText().catch(() => "");
   }
@@ -13134,6 +13165,11 @@ async function readLocatorText(locator) {
     return locator.textContent().then((text) => text ?? "").catch(() => "");
   }
   return "";
+}
+async function hasInlineSelectionPills(locator) {
+  if (typeof locator.evaluate !== "function") return false;
+  const detected = await locator.evaluate((element) => element.querySelector("[data-inline-selection-pill]") !== null).catch(() => false);
+  return detected === true;
 }
 async function readComposerAttachmentEvidence(page, timeoutMs = 1e3) {
   if (typeof page.evaluate !== "function") return unsupportedAttachmentEvidence();
@@ -37457,13 +37493,39 @@ async function readLocatorText2(locator) {
       while (current !== null) {
         visited += 1;
         if (visited > 4096) return void 0;
+        let skipChildren = false;
+        if (current.nodeType === 1) {
+          const element2 = current;
+          const attribute = (name) => typeof element2.getAttribute === "function" ? element2.getAttribute(name) : null;
+          if (attribute("data-inline-selection-pill-cursor-target") !== null) {
+            skipChildren = true;
+          } else if (attribute("data-inline-selection-pill") !== null && attribute("data-reference-type") === "url") {
+            const sourceUrl = attribute("data-id");
+            if (sourceUrl !== null && sourceUrl.trim().length > 0) {
+              total += sourceUrl.length;
+              if (total > 8 * 1024 * 1024) return void 0;
+              chunks.push(sourceUrl);
+              skipChildren = true;
+            }
+          } else if (element2.tagName === "BR") {
+            const className = attribute("class") ?? "";
+            if (!className.split(/\s+/u).includes("ProseMirror-trailingBreak")) {
+              total += 1;
+              if (total > 8 * 1024 * 1024) return void 0;
+              chunks.push("\n");
+            }
+            skipChildren = true;
+          } else if (element2.tagName === "IMG") {
+            skipChildren = true;
+          }
+        }
         if (current.nodeType === 3) {
           const text = current.nodeValue ?? "";
           total += text.length;
           if (total > 8 * 1024 * 1024) return void 0;
           if (text.length > 0) chunks.push(text);
         }
-        const child = current.firstChild;
+        const child = skipChildren ? null : current.firstChild;
         if (child !== null) {
           if (ancestors.length >= 4096) return void 0;
           ancestors.push(current);

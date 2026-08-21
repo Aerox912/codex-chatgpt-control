@@ -329,6 +329,83 @@ describe("provider-specific production operation primitives", () => {
     expect(result.status).toBe("satisfied");
   });
 
+  it("reconstructs a source URL from a shortened inline reference pill", async () => {
+    const sourceUrl = "https://github.com/example/example/pull/1";
+    const prompt = `Review ${sourceUrl}`;
+    const root = {
+      nodeType: 1,
+      tagName: "DIV",
+      value: "",
+      firstChild: undefined as unknown,
+      nextSibling: null,
+      getAttribute: (name: string) => name === "contenteditable" ? "true" : null
+    };
+    const literal = {
+      nodeType: 3,
+      nodeValue: "Review ",
+      firstChild: null,
+      nextSibling: undefined as unknown
+    };
+    const pill = {
+      nodeType: 1,
+      tagName: "SPAN",
+      firstChild: {
+        nodeType: 3,
+        nodeValue: "example/example#1",
+        firstChild: null,
+        nextSibling: null
+      },
+      nextSibling: undefined as unknown,
+      getAttribute: (name: string) => ({
+        "data-inline-selection-pill": "",
+        "data-reference-type": "url",
+        "data-id": sourceUrl
+      })[name] ?? null
+    };
+    const cursor = {
+      nodeType: 1,
+      tagName: "SPAN",
+      firstChild: {
+        nodeType: 3,
+        nodeValue: "\uFEFF",
+        firstChild: null,
+        nextSibling: null
+      },
+      nextSibling: undefined as unknown,
+      getAttribute: (name: string) => name === "data-inline-selection-pill-cursor-target" ? "" : null
+    };
+    const trailingBreak = {
+      nodeType: 1,
+      tagName: "BR",
+      firstChild: null,
+      nextSibling: null,
+      getAttribute: (name: string) => name === "class" ? "ProseMirror-trailingBreak" : null
+    };
+    root.firstChild = literal;
+    literal.nextSibling = pill;
+    pill.nextSibling = cursor;
+    cursor.nextSibling = trailingBreak;
+    const composer: LocatorLike = {
+      count: async () => 1,
+      isVisible: async () => true,
+      evaluate: async <T>(fn: (element: Element) => T) => fn(root as unknown as Element)
+    };
+    const primitives = createProductionOperationPrimitives({
+      evidenceDigest,
+      operationId: OPERATION_ID,
+      requestDigest: REQUEST_DIGEST,
+      desiredComposerText: prompt
+    });
+
+    const result = await primitives.staging!.readCurrent!({
+      ...stagingRequest(),
+      page: pageFixture({ observations: [], composer }),
+      target
+    });
+
+    expect(result.status).toBe("satisfied");
+  });
+
   it("activates Send at most once and reconciles one exact post-Send user delta", async () => {
     let clicks = 0;
     const send = composerLocator();
