@@ -907,8 +907,8 @@ describe("ChatGPT backend client", () => {
   it("tombstones timed-out ids, discards late output, and keeps the route healthy", async () => {
     const transport = new StdioBackendTransport({
       command: [process.execPath, "-e", childScript("timeout")],
-      timeoutMs: 15,
-      handshakeTimeoutMs: 500
+      timeoutMs: 100,
+      handshakeTimeoutMs: 1_000
     });
     try {
       await expect(transport.request(backendRequest("req_slow"))).rejects.toMatchObject({
@@ -927,9 +927,9 @@ describe("ChatGPT backend client", () => {
   it("recycles after an unresolved tombstone grace while healthy routes settle first", async () => {
     const transport = new StdioBackendTransport({
       command: [process.execPath, "-e", childScript("no-terminal")],
-      timeoutMs: 15,
-      handshakeTimeoutMs: 500,
-      lateOutputGraceMs: 25
+      timeoutMs: 100,
+      handshakeTimeoutMs: 1_000,
+      lateOutputGraceMs: 150
     });
     try {
       await expect(transport.request(backendRequest("req_stuck"))).rejects.toMatchObject({ code: "backend_timeout" });
@@ -937,7 +937,7 @@ describe("ChatGPT backend client", () => {
         ok: true,
         result: { id: "req_healthy" }
       });
-      await new Promise(resolve => setTimeout(resolve, 40));
+      await new Promise(resolve => setTimeout(resolve, 200));
       await expect(transport.request(backendRequest("req_after_recycle"))).resolves.toMatchObject({
         ok: true,
         result: { id: "req_after_recycle" }
@@ -1887,7 +1887,7 @@ const health = request => {
     process.stderr.write("secret-stderr-payload");
     return setTimeout(() => process.exit(0), 5);
   }
-  if (mode === "timeout" && request.requestId === "req_slow") return setTimeout(() => ok(request, result), 45);
+  if (mode === "timeout" && request.requestId === "req_slow") return setTimeout(() => ok(request, result), 250);
   if (mode === "cancel" && request.requestId === "req_cancel") return setTimeout(() => ok(request, result), 45);
   if (mode === "overflow" && request.requestId === "req_after_overflow" && !overflowCompleted) {
     pendingOverflowHealth = { request, result };
