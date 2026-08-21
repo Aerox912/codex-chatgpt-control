@@ -68,6 +68,23 @@ async function verifyChatGPTOrigin(env: RuntimeEnv): Promise<CommandResult<unkno
   if (env.page === undefined) return undefined;
   const actualUrl = await Promise.resolve(env.page.url?.()).catch(() => undefined);
   if (isChatGPTUrl(actualUrl)) return undefined;
+
+  // In-app Browser tabs are released at the end of a Codex turn unless the
+  // caller explicitly keeps them. A client retained across an action-time
+  // confirmation can therefore still hold the exact provider tab identity
+  // while its old page facade can no longer report a URL. Reclaim only that
+  // exact tab, and never recover from an observed non-ChatGPT origin.
+  if ((actualUrl === undefined || actualUrl === "") && env.expectedTabId !== undefined) {
+    const recovered = await bootstrap(env, {
+      existingTab: {
+        target: { type: "tabId", tabId: env.expectedTabId },
+        ifMissing: "block",
+        requireChatGPT: true
+      }
+    });
+    if (recovered.ok) return undefined;
+  }
+
   return {
     ok: false,
     status: "blocked",

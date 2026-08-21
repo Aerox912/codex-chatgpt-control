@@ -9,6 +9,12 @@ Use this skill for outcome-oriented delegation to the visible ChatGPT product. C
 
 This is a workflow over the `codex-chatgpt-control` plugin. It operates visible UI only and must not call private ChatGPT endpoints, inspect credentials or browser storage, bypass login or confirmation, or submit sensitive material without the user's approval.
 
+Codex approval mode and Browser confirmation are separate boundaries. `Approve
+for me`, `never`, and full local access can authorize local Codex work, but do
+not waive Browser's action-time confirmation for sending a ChatGPT message.
+Never infer that waiver from `sandbox_mode`, filesystem access, or other turn
+metadata.
+
 ## Runtime Loader
 
 Resolve relative paths from this `SKILL.md`. Load the plugin-bundled runtime:
@@ -114,6 +120,15 @@ const read = await chatgpt.messages.waitAndRead({
 ```
 
 `partial`, `completionState: "generating"`, or `generationActive: true` means the prompt may already be running. Never resubmit it blindly.
+
+If Browser policy requires a separate action-time confirmation after the Chat
+or Work tab is prepared, mark the exact controlled tab for handoff before
+yielding. After the user confirms, reuse the same client and exact tab, run
+`session.bootstrap` if the page facade was released, and re-inspect any required
+configuration immediately before the one submission. Do not substitute the
+selected tab or a different ChatGPT tab. The SDK can reclaim a released in-app
+Browser tab by its stable provider tab ID when the old page URL is no longer
+readable.
 
 ## Work Delegation
 

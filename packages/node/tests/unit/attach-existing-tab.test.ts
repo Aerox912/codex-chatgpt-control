@@ -1,8 +1,73 @@
 import { describe, expect, it } from "vitest";
-import { bootstrap } from "../../src/commands/session.js";
+import { bootstrap, ensurePage } from "../../src/commands/session.js";
 import type { BrowserLike, PageLike } from "../../src/types.js";
 
 describe("existing browser tab bootstrap", () => {
+  it("accepts the ChatGPT Projects index as an allowlisted origin", async () => {
+    const result = await ensurePage({
+      page: fakeChatGPTPage("projects", "https://chatgpt.com/projects", "Projects")
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("reclaims an exact released in-app Browser tab after an approval turn", async () => {
+    const released = fakeChatGPTPage("provider-tab-1", "https://chatgpt.com/projects", "Projects");
+    released.url = () => undefined as unknown as string;
+    const reclaimed = fakeChatGPTPage("provider-tab-1", "https://chatgpt.com/projects", "Projects");
+    const claimable = {
+      id: "opaque-claim-handle",
+      providerTabId: "provider-tab-1",
+      url: "https://chatgpt.com/projects",
+      title: "Projects"
+    };
+    const claimed: unknown[] = [];
+    const env = {
+      browser: {
+        name: "iab",
+        user: {
+          openTabs: async () => [claimable],
+          claimTab: async (tab: unknown) => {
+            claimed.push(tab);
+            return reclaimed;
+          }
+        }
+      },
+      page: released,
+      expectedTabId: "provider-tab-1"
+    } satisfies { browser: BrowserLike; page: PageLike; expectedTabId: string };
+
+    const result = await ensurePage(env);
+
+    expect(result.ok).toBe(true);
+    expect(env.page).not.toBe(released);
+    expect(claimed).toEqual([claimable]);
+  });
+
+  it("does not reclaim a tab whose current URL is an observed unsafe origin", async () => {
+    let openTabsCalls = 0;
+    const result = await ensurePage({
+      browser: {
+        name: "iab",
+        user: {
+          openTabs: async () => {
+            openTabsCalls += 1;
+            return [];
+          }
+        }
+      },
+      page: fakeChatGPTPage("provider-tab-1", "https://evil.example/", "Redirected"),
+      expectedTabId: "provider-tab-1"
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "blocked",
+      blocker: { code: "unsafe_chatgpt_origin" }
+    });
+    expect(openTabsCalls).toBe(0);
+  });
+
   it("claims the most recent open user ChatGPT tab for selected existing-tab mode", async () => {
     const claimed: unknown[] = [];
     const browser: BrowserLike = {

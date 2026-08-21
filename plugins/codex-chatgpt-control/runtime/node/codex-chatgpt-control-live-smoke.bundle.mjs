@@ -6191,7 +6191,7 @@ function userTabMatchesTarget(tab, policy) {
     case "selected":
       return target.host === void 0 || target.host === "chatgpt" ? isChatGPTUrl(tab.url) : true;
     case "tabId":
-      return tab.id === target.tabId;
+      return tab.id === target.tabId || tab.providerTabId === target.tabId;
     case "conversationId":
     case "conversation_id":
       return parseConversationId(tab.url ?? "") === target.conversationId;
@@ -6273,7 +6273,7 @@ function mismatchReasonForNoMatches(policy, tabs, chatgptTabs) {
   }
   switch (target.type) {
     case "tabId":
-      return tabs.some((tab) => tab.id === target.tabId) ? "non_chatgpt_tab" : "explicit_tab_id_not_open";
+      return tabs.some((tab) => tab.id === target.tabId || tab.providerTabId === target.tabId) ? "non_chatgpt_tab" : "explicit_tab_id_not_open";
     case "conversationId":
     case "conversation_id":
       return "conversation_id_mismatch";
@@ -8361,6 +8361,16 @@ async function verifyChatGPTOrigin(env) {
   if (env.page === void 0) return void 0;
   const actualUrl = await Promise.resolve(env.page.url?.()).catch(() => void 0);
   if (isChatGPTUrl(actualUrl)) return void 0;
+  if ((actualUrl === void 0 || actualUrl === "") && env.expectedTabId !== void 0) {
+    const recovered = await bootstrap(env, {
+      existingTab: {
+        target: { type: "tabId", tabId: env.expectedTabId },
+        ifMissing: "block",
+        requireChatGPT: true
+      }
+    });
+    if (recovered.ok) return void 0;
+  }
   return {
     ok: false,
     status: "blocked",

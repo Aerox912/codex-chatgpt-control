@@ -24,6 +24,13 @@ This skill is for visible, user-directed ChatGPT workflows only. It is not an Op
     surface before configuration or submission. Do not assume the currently
     visible pane is already correct.
 
+Codex approval mode and Browser confirmation are separate boundaries. Full
+local access or an approve-for-me setting does not waive Browser's action-time
+confirmation for sending a ChatGPT message. Never infer that waiver from
+`sandbox_mode`, filesystem access, or other turn metadata. If confirmation
+requires another turn, preserve the exact controlled tab as a handoff and
+re-bootstrap it before re-verifying configuration and submitting once.
+
 ## Plugin Runtime
 
 Resolve relative paths from this `SKILL.md` directory. The plugin runtime lives at:

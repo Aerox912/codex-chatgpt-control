@@ -381,7 +381,7 @@ function userTabMatchesTarget(tab: BrowserUserTabInfo, policy: ExistingTabPolicy
     case "selected":
       return target.host === undefined || target.host === "chatgpt" ? isChatGPTUrl(tab.url) : true;
     case "tabId":
-      return tab.id === target.tabId;
+      return tab.id === target.tabId || tab.providerTabId === target.tabId;
     case "conversationId":
     case "conversation_id":
       return parseConversationId(tab.url ?? "") === target.conversationId;
@@ -483,7 +483,9 @@ function mismatchReasonForNoMatches(
   }
   switch (target.type) {
     case "tabId":
-      return tabs.some(tab => tab.id === target.tabId) ? "non_chatgpt_tab" : "explicit_tab_id_not_open";
+      return tabs.some(tab => tab.id === target.tabId || tab.providerTabId === target.tabId)
+        ? "non_chatgpt_tab"
+        : "explicit_tab_id_not_open";
     case "conversationId":
     case "conversation_id":
       return "conversation_id_mismatch";
