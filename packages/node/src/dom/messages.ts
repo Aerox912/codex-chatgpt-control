@@ -1,4 +1,5 @@
 import type {
+  BrowserOperationOptions,
   PageLike,
   ResponseAction,
   ResponseBlock,
@@ -178,14 +179,18 @@ export function countMessages(messages: ExtractedMessage[], role?: MessageRole):
   return role === undefined ? messages.length : messages.filter(message => message.role === role).length;
 }
 
-export async function countPageMessages(page: PageLike, role?: MessageRole): Promise<number> {
+export async function countPageMessages(
+  page: PageLike,
+  role?: MessageRole,
+  options?: BrowserOperationOptions
+): Promise<number> {
   if (typeof page.evaluate === "function") {
     return page.evaluate((wantedRole: MessageRole | undefined) => {
       const selector = wantedRole === undefined
         ? "[data-message-author-role]"
         : `[data-message-author-role="${wantedRole}"]`;
       return document.querySelectorAll(selector).length;
-    }, role);
+    }, role, options);
   }
 
   return countMessages(await readMessages(page), role);

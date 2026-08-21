@@ -135,6 +135,7 @@ import type { ControlResult } from "./operations/control.js";
 import type { OperationInspectResult, OperationRunResult, OperationSubmitResult } from "./operations/service.js";
 import { createRuntimeEnvSession } from "./runtime/runtime-session.js";
 import { coordinateRuntimeEnv } from "./runtime/coordinated-browser.js";
+import { normalizeBrowserProvider } from "./browser/provider-normalization.js";
 import {
   createChatGPTOperationAdapterFactory,
   createChatGPTOperationControlAdapterFactory,
@@ -1119,7 +1120,10 @@ async function maybeAttachReport(
 function runtimeEnv(options: ChatGPTClientOptions): RuntimeEnv {
   const env: RuntimeEnv = {};
   if (options.agent !== undefined) env.agent = options.agent;
-  if (options.browser !== undefined) env.browser = options.browser;
+  if (options.browser !== undefined) {
+    const browser = normalizeBrowserProvider(options.browser);
+    if (browser !== undefined) env.browser = browser;
+  }
   if (options.page !== undefined) env.page = options.page;
   if (options.clipboard !== undefined) env.clipboard = options.clipboard;
   if (options.now !== undefined) env.now = options.now;
@@ -2587,6 +2591,8 @@ function bootstrapArgsForWorkflow(
   }
   if (preferExistingTab !== undefined) {
     args.preferExistingTab = preferExistingTab;
+  } else if (existingTab === undefined && isTypedThread(thread) && thread.type === "new") {
+    args.preferExistingTab = false;
   }
   return Object.keys(args).length === 0 ? undefined : args;
 }

@@ -122,6 +122,8 @@ if (!result.ok) {
 }
 ```
 
+New-thread workflows open a fresh controlled ChatGPT tab by default. Use `preferExistingTab: true` only for intentional broad reuse, or `existingTab` for a user-identified open tab.
+
 Instructions are visible prompt text by default. Use `instructionsMode` intentionally:
 
 - `visible_prefix`: include instructions in the submitted user message.

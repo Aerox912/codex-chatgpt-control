@@ -803,6 +803,11 @@ describe("createChatGPT", () => {
       "threads.new",
       "messages.ask"
     ]);
+    expect(plan?.steps[0]).toEqual({
+      id: "bootstrap",
+      command: "session.bootstrap",
+      args: { preferExistingTab: false }
+    });
     expect(plan?.steps.at(-1)).toMatchObject({
       command: "messages.ask",
       args: {
@@ -849,6 +854,45 @@ describe("createChatGPT", () => {
       command: "threads.new",
       args: { project: false, confirmGlobal: true }
     });
+  });
+
+  it("preserves explicit tab-reuse defaults for new-thread workflows", () => {
+    const chatgpt = createChatGPT({ defaults: { preferExistingTab: true } });
+    const plan = chatgpt.plan("new-ask-read", { prompt: "reply with the word hi" });
+
+    expect(plan?.steps[0]).toEqual({
+      id: "bootstrap",
+      command: "session.bootstrap",
+      args: { preferExistingTab: true }
+    });
+  });
+
+  it("opens a fresh tab after a preflight invocation when new-thread bootstrap requests one", async () => {
+    const preflightPage = fakeChatGPTPage() as PageLike;
+    preflightPage.id = "preflight-tab";
+    const submissionPage = fakeChatGPTPage() as PageLike;
+    submissionPage.id = "submission-tab";
+    const created: string[] = [];
+    const browser: BrowserLike = {
+      name: "iab",
+      tabs: {
+        selected: async () => preflightPage,
+        create: async url => {
+          created.push(url);
+          return submissionPage;
+        }
+      }
+    };
+    const chatgpt = createChatGPT({ browser });
+
+    const preflight = await chatgpt.session.bootstrap({ preferExistingTab: true });
+    const submissionBootstrap = await chatgpt.session.bootstrap({ preferExistingTab: false });
+
+    expect(preflight.ok).toBe(true);
+    expect(preflight.context.tabId).toBe("preflight-tab");
+    expect(submissionBootstrap.ok).toBe(true);
+    expect(submissionBootstrap.context.tabId).toBe("submission-tab");
+    expect(created).toEqual(["https://chatgpt.com/"]);
   });
 
   it("does not let an unconfirmed global client default override workspace routing", () => {

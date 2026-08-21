@@ -143,6 +143,8 @@ const result = await chatgpt.runner.run(reviewer, {
 console.log(result.output_text);
 ```
 
+New-thread workflows open a fresh controlled ChatGPT tab by default. Use `preferExistingTab: true` only for intentional broad reuse, or `existingTab` for a user-identified open tab.
+
 Route every new Chat workflow and direct new Work task into a ChatGPT Project named after the current
 Codex workspace:
 

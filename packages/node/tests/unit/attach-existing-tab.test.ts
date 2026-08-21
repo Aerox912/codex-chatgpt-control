@@ -176,7 +176,7 @@ describe("existing browser tab bootstrap", () => {
       id: "redirected-new-page",
       url: () => currentUrl,
       goto: async () => {
-        currentUrl = "https://evil.example/";
+        currentUrl = "https://evil.example/private/path?next=secret";
       },
       title: async () => "Redirected"
     };
@@ -196,6 +196,55 @@ describe("existing browser tab bootstrap", () => {
       },
       error: { recoverable: false }
     });
+    expect(result.blocker?.visibleText).toBe("Observed browser origin: https://evil.example");
+    expect(result.blocker?.visibleText).not.toContain("next=");
+  });
+
+  it("replaces a cached page that drifted away from ChatGPT", async () => {
+    let cachedUrl = "https://chatgpt.com/c/preflight";
+    const cached = fakeChatGPTPage("cached", cachedUrl, "Preflight");
+    cached.url = () => cachedUrl;
+    const fresh = fakeChatGPTPage("fresh", "https://chatgpt.com/", "ChatGPT");
+    const created: string[] = [];
+    const browser: BrowserLike = {
+      name: "iab",
+      tabs: {
+        create: async url => {
+          created.push(url);
+          return fresh;
+        }
+      }
+    };
+    const env = { browser, page: cached };
+
+    cachedUrl = "about:blank";
+    const result = await bootstrap(env, { preferExistingTab: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.context.tabId).toBe("fresh");
+    expect(created).toEqual(["https://chatgpt.com/"]);
+    expect(env.page).not.toBe(cached);
+  });
+
+  it("does not reuse a valid cached page when a fresh tab is requested", async () => {
+    const cached = fakeChatGPTPage("cached", "https://chatgpt.com/c/preflight", "Preflight");
+    const fresh = fakeChatGPTPage("fresh", "https://chatgpt.com/", "ChatGPT");
+    const created: string[] = [];
+    const browser: BrowserLike = {
+      name: "iab",
+      tabs: {
+        create: async url => {
+          created.push(url);
+          return fresh;
+        }
+      }
+    };
+
+    const result = await bootstrap({ browser, page: cached }, { preferExistingTab: false });
+
+    expect(result.ok).toBe(true);
+    expect(result.context.tabId).toBe("fresh");
+    expect(created).toEqual(["https://chatgpt.com/"]);
   });
 
   it("blocks when a claimed ChatGPT tab changes origin during the claim", async () => {

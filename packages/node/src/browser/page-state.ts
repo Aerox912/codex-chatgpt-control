@@ -71,7 +71,7 @@ export async function readVisibleText(page: PageLike): Promise<string> {
   if (typeof page.evaluate === "function") {
     try {
       return await withTimeout(
-        page.evaluate(() => document.body?.innerText ?? ""),
+        page.evaluate(() => document.body?.innerText ?? "", undefined, { timeoutMs: 1000 }),
         1000,
         "Timed out while reading visible page text."
       );
@@ -136,7 +136,7 @@ async function readPageSurfaceSnapshot(page: PageLike): Promise<PageSurfaceSnaps
           blockerText,
           hasConversationMessages: Array.from(document.querySelectorAll<HTMLElement>(messageSelector)).some(visible)
         };
-      }), 1000, "Timed out while reading the visible ChatGPT page surface.");
+      }, undefined, { timeoutMs: 1000 }), 1000, "Timed out while reading the visible ChatGPT page surface.");
       if (typeof snapshot === "string") {
         return {
           visibleText: snapshot,

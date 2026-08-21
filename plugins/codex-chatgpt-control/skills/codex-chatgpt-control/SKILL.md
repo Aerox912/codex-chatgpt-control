@@ -107,6 +107,8 @@ if (!result.ok) {
 }
 ```
 
+New-thread workflows open a fresh controlled ChatGPT tab by default. Use `preferExistingTab: true` only for intentional broad reuse, or `existingTab` for a user-identified open tab.
+
 Instructions are visible prompt text by default. Use `instructionsMode` intentionally:
 
 - `visible_prefix`: include instructions in the submitted user message.
@@ -307,9 +309,9 @@ npm test
 Plugin packaging gates:
 
 ```bash
-node tools/public-export/root/scripts/build-plugin-runtime.mjs --root .
-node tools/public-export/root/scripts/check-plugin-runtime.mjs --root .
-node tools/public-export/root/scripts/validate-plugin-layout.mjs --root .
+node scripts/build-plugin-runtime.mjs --root .
+node scripts/check-plugin-runtime.mjs --root .
+node scripts/validate-plugin-layout.mjs --root .
 python3 /path/to/plugin-creator/scripts/validate_plugin.py plugins/codex-chatgpt-control
 ```
 

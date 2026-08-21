@@ -29,6 +29,8 @@ const result = await chatgpt.runner.run(reviewer, {
 });
 ```
 
+New-thread workflows open a fresh controlled ChatGPT tab by default. Use `preferExistingTab: true` only for intentional broad reuse, or `existingTab` for a user-identified open tab.
+
 ## Transactional operation preview
 
 Supported Chat, Work, Runner, and Responses workflows accept an optional

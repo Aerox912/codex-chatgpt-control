@@ -32,6 +32,10 @@ Real ChatGPT control additionally needs:
 
 When the host exposes multiple compatible browsers and the caller does not pass an explicit `browser`, automatic discovery prefers the Codex in-app browser and falls back to the Chrome extension. A caller-supplied browser remains authoritative.
 
+## Tab Lifecycle
+
+New-thread workflows open a fresh controlled ChatGPT tab by default. This keeps a preflight or another client invocation from becoming the implicit target of a later submission. Pass `preferExistingTab: true` only when reusing any suitable controlled ChatGPT tab is intentional, or use `existingTab` when the user identified an already-open tab. Cached pages are revalidated against the supported ChatGPT origins before reuse.
+
 ## Host-Local Attachment Paths
 
 Attachment paths must be absolute on the machine running the Node backend. On Linux/WSL backends, use paths such as `/home/you/file.pdf` or `/mnt/c/work/file.pdf`. On Windows backends, use fully qualified paths such as `C:\Users\you\file.pdf` or UNC paths such as `\\server\share\file.pdf`. The backend rejects ambiguous Windows forms and rejects Windows-looking paths when the backend host is POSIX.

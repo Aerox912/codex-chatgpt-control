@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { attachChatGPTBrowser } from "../../src/browser/attach.js";
+import { createChatGPT } from "../../src/client.js";
 import { unwrapCoordinatedBrowser } from "../../src/runtime/coordinated-browser.js";
 import { unwrapCoordinatedPage } from "../../src/runtime/coordinated-page.js";
 import type { BrowserLike, PageLike } from "../../src/types.js";
@@ -54,6 +55,40 @@ describe("ChatGPT browser attachment coordination", () => {
     expect(await attached.page.url!()).toBe("https://chatgpt.com/c/attach-test");
   });
 
+  it("normalizes an explicit receiver-bound browser handle before coordination", async () => {
+    const rawPage = pageFixture("explicit-private-field-tab");
+    let createCalls = 0;
+    class BridgeTabs {
+      readonly #page: PageLike;
+
+      constructor(page: PageLike) {
+        this.#page = page;
+      }
+
+      async new(): Promise<PageLike> {
+        createCalls += 1;
+        return this.#page;
+      }
+    }
+    const target = new BridgeTabs(rawPage);
+    const tabs = new Proxy(target, {
+      get(receiver, property) {
+        const value = Reflect.get(receiver, property, receiver);
+        return typeof value === "function" ? value.bind(receiver) : value;
+      }
+    });
+
+    const chatgpt = createChatGPT({
+      browser: { name: "iab", tabs }
+    });
+    const result = await chatgpt.session.bootstrap({ preferExistingTab: false });
+
+    expect(createCalls).toBe(1);
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({ browserName: "iab" });
+    expect(result.context.tabId).toBe("explicit-private-field-tab");
+  });
+
   it("wraps the selected page and browser acquisition result without leaking raw identity", async () => {
     const rawPage = pageFixture("attach-tab");
     const rawBrowser: BrowserLike = {
@@ -63,8 +98,9 @@ describe("ChatGPT browser attachment coordination", () => {
     const attached = await attachChatGPTBrowser({ browser: rawBrowser }, { preferExistingTab: true });
     expect(attached.browser).not.toBe(rawBrowser);
     expect(attached.page).not.toBe(rawPage);
-    expect(unwrapCoordinatedBrowser(attached.browser)).toBe(rawBrowser);
-    expect(unwrapCoordinatedPage(attached.page)).toBe(rawPage);
+    expect(unwrapCoordinatedBrowser(attached.browser)).not.toBe(rawBrowser);
+    expect(unwrapCoordinatedPage(attached.page)).not.toBe(rawPage);
+    expect(await attached.page.url!()).toBe(await rawPage.url!());
     expect(attached.tabId).toBe("attach-tab");
   });
 
@@ -84,14 +120,16 @@ describe("ChatGPT browser attachment coordination", () => {
     const claimed = await attachChatGPTBrowser({ browser }, {
       existingTab: true
     });
-    expect(unwrapCoordinatedPage(claimed.page)).toBe(claimedPage);
+    expect(unwrapCoordinatedPage(claimed.page)).not.toBe(claimedPage);
+    expect(await claimed.page.url!()).toBe(await claimedPage.url!());
     expect(claimed.tabId).toBe("claimed-tab");
 
     const created = await attachChatGPTBrowser({ browser: {
       name: "chrome",
       tabs: { create: async () => createdPage }
     } }, { preferExistingTab: false });
-    expect(unwrapCoordinatedPage(created.page)).toBe(createdPage);
+    expect(unwrapCoordinatedPage(created.page)).not.toBe(createdPage);
+    expect(await created.page.url!()).toBe(await createdPage.url!());
     expect(created.tabId).toBe("created-tab");
   });
 });

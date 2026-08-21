@@ -5,9 +5,14 @@ import { parseConversationId, readPageState } from "./page-state.js";
 import {
   createCoordinatedBrowser,
   createCoordinatedPageForBrowser,
+  unwrapCoordinatedBrowser,
   type CoordinatedBrowserOptions
 } from "../runtime/coordinated-browser.js";
-import { unwrapCoordinatedPage } from "../runtime/coordinated-page.js";
+import {
+  normalizeBrowserProvider as normalizeBrowser,
+  normalizePageProvider as normalizePage,
+  unwrapPageProvider
+} from "./provider-normalization.js";
 
 const MAX_EXISTING_TAB_DIAGNOSTIC_CANDIDATES = 10;
 const MAX_EXISTING_TAB_DIAGNOSTIC_FIELD_LENGTH = 240;
@@ -66,7 +71,13 @@ async function getBrowser(
   coordination?: CoordinatedBrowserOptions
 ): Promise<BrowserLike> {
   if (env.browser !== undefined) {
-    return createCoordinatedBrowser(env.browser, coordination);
+    if (unwrapCoordinatedBrowser(env.browser) !== env.browser) {
+      return env.browser;
+    }
+    const normalized = normalizeBrowser(env.browser);
+    if (normalized !== undefined) {
+      return createCoordinatedBrowser(normalized, coordination);
+    }
   }
 
   const anyEnv = env as Record<string, unknown>;
@@ -232,8 +243,16 @@ async function cachedPageMatchesBootstrapArgs(
     return pageMatchesExistingTarget(page, explicitExistingPolicy);
   }
 
+  if (args.preferExistingTab === false) {
+    return false;
+  }
+
+  const currentUrl = await Promise.resolve(page.url?.()).catch(() => undefined);
+  if (!isChatGPTUrl(currentUrl)) {
+    return false;
+  }
+
   if (args.url !== undefined) {
-    const currentUrl = await Promise.resolve(page.url?.()).catch(() => undefined);
     return urlMatches(currentUrl, args.url);
   }
 
@@ -690,91 +709,31 @@ async function ensurePageAt(page: PageLike, url: string): Promise<void> {
 
 async function assertPageOnChatGPTOrigin(page: PageLike): Promise<void> {
   const actualUrl = await Promise.resolve(page.url?.()).catch(() => undefined);
-  if (!isChatGPTUrl(actualUrl)) throw unsafeChatGPTOriginError();
+  if (!isChatGPTUrl(actualUrl)) throw unsafeChatGPTOriginError(undefined, actualUrl);
 }
 
 function unsafeChatGPTOriginError(
-  message = "The browser did not remain on a supported ChatGPT origin after navigation or attachment."
+  message = "The browser did not remain on a supported ChatGPT origin after navigation or attachment.",
+  actualUrl?: string
 ): ChatGPTControlError {
+  const observedOrigin = sanitizedOriginEvidence(actualUrl);
   return new ChatGPTControlError(
     message,
     "selector_drift",
     false,
-    undefined,
+    observedOrigin === undefined ? undefined : `Observed browser origin: ${observedOrigin}`,
     { code: "unsafe_chatgpt_origin" }
   );
 }
 
-function normalizeBrowser(browser: unknown): BrowserLike | undefined {
-  if (browser === undefined || browser === null || typeof browser !== "object") {
+function sanitizedOriginEvidence(value: string | undefined): string | undefined {
+  if (value === undefined || value.length === 0) return undefined;
+  try {
+    const parsed = new URL(value);
+    return parsed.origin === "null" ? parsed.protocol : parsed.origin;
+  } catch {
     return undefined;
   }
-
-  // Browsers returned by the Codex bridge are capability proxies. Reading a
-  // method normally returns a receiver-safe callable, while extracting the
-  // same function from its prototype loses the proxy's private-field binding.
-  // Normalize that trusted bridge result into a plain BrowserLike before the
-  // descriptor-only coordination facade inspects it.
-  const rawBrowser = browser as Record<PropertyKey, unknown>;
-  const normalized: BrowserLike = {};
-  const name = providerValue(rawBrowser, "name");
-  if (typeof name === "string") normalized.name = name;
-
-  const rawUser = providerValue(rawBrowser, "user");
-  if (isProviderRecord(rawUser)) {
-    const openTabs = providerCallable(rawUser, "openTabs");
-    const claimTab = providerCallable(rawUser, "claimTab");
-    normalized.user = {
-      ...(openTabs === undefined ? {} : {
-        openTabs: async () => await openTabs() as BrowserUserTabInfo[]
-      }),
-      ...(claimTab === undefined ? {} : {
-        claimTab: async (tab: string | BrowserUserTabInfo) => normalizePage(await claimTab(tab))
-      })
-    };
-  }
-
-  const rawTabs = providerValue(rawBrowser, "tabs");
-  if (isProviderRecord(rawTabs)) {
-    const create = providerCallable(rawTabs, "create");
-    const newer = providerCallable(rawTabs, "new");
-    const selected = providerCallable(rawTabs, "selected");
-    const list = providerCallable(rawTabs, "list");
-    const get = providerCallable(rawTabs, "get");
-    const finalize = providerCallable(rawTabs, "finalize");
-    normalized.tabs = {
-      ...(create === undefined ? {} : {
-        create: async (url: string) => normalizePage(await create(url))
-      }),
-      ...(newer === undefined ? {} : {
-        new: async (url?: string) => normalizePage(await newer(...(url === undefined ? [] : [url])))
-      }),
-      ...(selected === undefined ? {} : {
-        selected: async () => {
-          const page = await selected();
-          return page === undefined ? undefined : normalizePage(page);
-        }
-      }),
-      ...(list === undefined ? {} : {
-        list: async () => {
-          const pages = await list();
-          return Array.isArray(pages) ? pages.map(normalizePage) : pages as PageLike[];
-        }
-      }),
-      ...(get === undefined ? {} : {
-        get: async (id: string) => normalizePage(await get(id))
-      }),
-      ...(finalize === undefined ? {} : {
-        finalize: async (options: { keep?: unknown[] }) => { await finalize(options); }
-      })
-    };
-  }
-
-  const newPage = providerCallable(rawBrowser, "newPage");
-  if (newPage !== undefined) {
-    normalized.newPage = async () => normalizePage(await newPage());
-  }
-  return normalized;
 }
 
 async function hydrateTab(browser: BrowserLike, pageOrTab: unknown): Promise<PageLike> {
@@ -789,70 +748,8 @@ async function hydrateTab(browser: BrowserLike, pageOrTab: unknown): Promise<Pag
   return normalizePage(pageOrTab);
 }
 
-function normalizePage(pageOrTab: unknown): PageLike {
-  if (isPageWrapper(pageOrTab)) return pageOrTab;
-  if (!isProviderRecord(pageOrTab)) return pageOrTab as PageLike;
-  const maybe = pageOrTab;
-  const embedded = providerValue(maybe, "playwright") ?? providerValue(maybe, "page");
-  const primary = isProviderRecord(embedded) ? embedded : maybe;
-  const normalized: Record<string, unknown> = {};
-
-  for (const property of ["id", "tabId"] as const) {
-    const value = providerValue(maybe, property) ?? providerValue(primary, property);
-    if (typeof value === "string") normalized[property] = value;
-  }
-  for (const property of ["keyboard", "mouse", "cua", "capabilities"] as const) {
-    const value = providerValue(primary, property) ?? providerValue(maybe, property);
-    if (isProviderRecord(value)) normalized[property] = value;
-  }
-  if (isProviderRecord(embedded)) normalized.playwright = embedded;
-
-  for (const method of [
-    "url", "goto", "title", "locator", "getByRole", "getByPlaceholder",
-    "getByText", "waitForTimeout", "waitForEvent", "evaluate", "content", "close"
-  ] as const) {
-    const callable = providerCallable(primary, method) ?? providerCallable(maybe, method);
-    if (callable !== undefined) normalized[method] = (...args: unknown[]) => callable(...args);
-  }
-
-  const stringUrl = providerValue(maybe, "url");
-  if (normalized.url === undefined && typeof stringUrl === "string") {
-    normalized.url = () => stringUrl;
-  }
-  const stringTitle = providerValue(maybe, "title");
-  if (normalized.title === undefined && typeof stringTitle === "string") {
-    normalized.title = async () => stringTitle;
-  }
-  return normalized as PageLike;
-}
-
-type ProviderCallable = (...args: unknown[]) => unknown;
-
-function isProviderRecord(value: unknown): value is Record<PropertyKey, unknown> {
-  return (typeof value === "object" && value !== null) || typeof value === "function";
-}
-
-function providerValue(value: Record<PropertyKey, unknown>, key: PropertyKey): unknown {
-  try {
-    return Reflect.get(value, key, value);
-  } catch {
-    return undefined;
-  }
-}
-
-function providerCallable(value: Record<PropertyKey, unknown>, key: PropertyKey): ProviderCallable | undefined {
-  const candidate = providerValue(value, key);
-  if (typeof candidate !== "function") return undefined;
-  return (...args: unknown[]) => Reflect.apply(candidate, value, args);
-}
-
-function isPageWrapper(value: unknown): value is PageLike {
-  if (value === null || (typeof value !== "object" && typeof value !== "function")) return false;
-  return unwrapCoordinatedPage(value as PageLike) !== value;
-}
-
 export function tabIdFromPage(page: PageLike): string | undefined {
-  const maybe = page as Record<string, unknown>;
+  const maybe = unwrapPageProvider(page) as Record<string, unknown>;
   const id = maybe.id ?? maybe.tabId;
   return typeof id === "string" ? id : undefined;
 }

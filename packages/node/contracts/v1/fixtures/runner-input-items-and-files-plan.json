@@ -6,6 +6,9 @@
   },
   "steps": [
     {
+      "args": {
+        "preferExistingTab": false
+      },
       "command": "session.bootstrap",
       "id": "bootstrap"
     },

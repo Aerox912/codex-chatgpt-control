@@ -648,7 +648,8 @@ function fakeBrowser({ assistantText }) {
   return {
     name: "chrome",
     tabs: {
-      selected: () => page
+      selected: () => page,
+      create: () => page
     }
   };
 }
