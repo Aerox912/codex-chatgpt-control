@@ -48,10 +48,10 @@ jobs:
           npm run release:build-python
           npm run release:check-python
 
-  package-smoke-macos:
-    name: release package smoke (macos-latest)
+  package-smoke-linux:
+    name: release package smoke (ubuntu-latest)
     needs: preflight
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -72,7 +72,7 @@ jobs:
 
   publish-npm:
     name: publish npm
-    needs: [preflight, package-smoke-macos]
+    needs: [preflight, package-smoke-linux]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -95,7 +95,7 @@ jobs:
 
   publish-pypi:
     name: publish PyPI
-    needs: [preflight, package-smoke-macos]
+    needs: [preflight, package-smoke-linux]
     runs-on: ubuntu-latest
     environment: release
     permissions:
