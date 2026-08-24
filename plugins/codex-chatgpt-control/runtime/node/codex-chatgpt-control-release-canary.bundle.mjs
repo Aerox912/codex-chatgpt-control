@@ -12049,11 +12049,12 @@ async function projectSelectorFailure(page, message) {
     blocker: {
       kind: "selector_drift",
       code: "chatgpt_project_routing_selector_drift",
-      message,
+      fieldPath: "project",
+      message: `${message} The prompt was not submitted, but that does not authorize a global fallback. Restore and verify the matching Project route, or stop this workflow.`,
       remediation: [
         {
-          label: "Review visible Projects UI",
-          instruction: "Open ChatGPT Projects and verify the project list, Create project dialog, and project new-chat composer are still available.",
+          label: "Restore Project routing",
+          instruction: "Open ChatGPT Projects and verify the project list, Create project dialog, and matching Project new-chat composer. Do not continue with project: false, confirmGlobal: true, workspaceProject: false, or another global client.",
           userActionRequired: true
         }
       ],

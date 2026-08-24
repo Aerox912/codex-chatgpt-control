@@ -165,6 +165,17 @@ async function main() {
   assert(delegateSkill.includes("../../runtime/import-chatgpt-control.mjs"), "Delegate skill must use plugin runtime loader");
   assert(proSkill.includes("../../runtime/import-chatgpt-control.mjs"), "Pro skill must use plugin runtime loader");
   assert(!proSkill.includes("~/.codex/skills/"), "Pro skill must not depend on an installed skill runtime");
+  for (const [name, skill] of [
+    ["Broad", broadSkill],
+    ["Delegate", delegateSkill],
+    ["Pro", proSkill]
+  ]) {
+    assert(skill.includes("Project routing is fail-closed."), `${name} skill must keep Project routing fail-closed`);
+    assert(
+      skill.includes("it does not authorize") && skill.includes("a global fallback."),
+      `${name} skill must prohibit automatic global fallback`
+    );
+  }
 
   const agentMetadata = await readFile(path.join(pluginRoot, "agents/openai.yaml"), "utf8");
   assert(agentMetadata.includes('$codex-chatgpt-control'), "agents/openai.yaml default_prompt must explicitly invoke $codex-chatgpt-control");

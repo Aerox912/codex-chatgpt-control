@@ -19,6 +19,13 @@ Common interpretations:
 - `rate_limit`: wait or ask the user how to proceed.
 - `partial`: a workflow submitted or progressed but did not fully complete.
 
+Project routing is fail-closed. If
+`chatgpt_project_routing_selector_drift` is returned, do not switch to a
+plain/global Chat or Work run just because the prompt was not submitted. That
+only rules out a duplicate; it does not authorize a global fallback. Restore
+and verify the matching Project route, or stop and report the blocker. Only a
+new, explicit user request for a global conversation authorizes an opt-out.
+
 `unsafe_chatgpt_origin` with `visibleText: "The current tab URL could not be
 verified."` can mean that the in-app Browser released the prepared tab while
 Codex paused for action-time confirmation. Current runtimes reclaim only the

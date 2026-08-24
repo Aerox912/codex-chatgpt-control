@@ -178,6 +178,13 @@ resumable `chatgpt_global_project_opt_out_confirmation_required` blocker before
 touching the browser. A `newTask: false` continuation keeps the currently loaded
 Work task and does not apply the workspace default.
 
+Project routing is fail-closed. A selector-drift blocker, missing creation
+confirmation, or lost Project context ends that workflow before submission.
+Callers must not convert the failure into a plain/global Chat or Work run. The
+absence of a submission rules out duplicates, but does not authorize a global
+fallback. Only an explicit user request for a global conversation authorizes
+the opt-out parameters above or a dedicated `workspaceProject: false` client.
+
 The Codex plugin can record a user's explicit blanket approval without changing
 the public SDK default. Create `~/.codex/codex-chatgpt-control/preferences.json`:
 

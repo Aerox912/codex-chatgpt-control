@@ -53,6 +53,12 @@ Then rerun the Python smoke from `packages/python`.
 ## Selector Drift
 
 Treat selector drift as a product-change blocker. Capture the smallest public-safe reproduction and update selectors/tests together.
+Project routing is fail-closed: do not turn
+`chatgpt_project_routing_selector_drift` into a plain/global Chat or Work run,
+even when the prompt was not submitted. Restore and verify the matching Project
+route, or stop and report the blocker. Only a separate, explicit user request
+for a global conversation authorizes `project: false`, `confirmGlobal: true`,
+or a `workspaceProject: false` client.
 
 ## Doctor Preflight
 

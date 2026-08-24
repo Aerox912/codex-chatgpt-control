@@ -64,6 +64,15 @@ When the user explicitly requests a global conversation, use `project: false`
 with `confirmGlobal: true`. Unconfirmed opt-outs must remain blocked. Use a
 dedicated `workspaceProject: false` client only for an explicitly global workflow.
 
+Project routing is fail-closed. A Project selector-drift blocker, missing
+creation confirmation, or lost Project context ends the current workflow
+before submission. Never recover by switching to plain/global Chat or Work,
+setting `project: false` with `confirmGlobal: true`, creating a
+`workspaceProject: false` client, or starting a second unbound client. The fact
+that no prompt was submitted only rules out a duplicate; it does not authorize
+a global fallback. Only a new, explicit user request for a global conversation
+can authorize a separate opt-out workflow.
+
 The plugin loader reads `~/.codex/codex-chatgpt-control/preferences.json`. After
 the user explicitly grants durable preapproval for all current and future Codex
 workspaces, this preference records it without weakening the public SDK default:

@@ -2,6 +2,9 @@
 
 ## 0.5.1-alpha.3
 
+- Makes plugin Project routing explicitly fail-closed across structured
+  blockers and agent skills, so selector drift cannot trigger an automatic
+  plain/global Chat or Work fallback.
 - Fixes false pre-send composer mismatches and unsafe retry duplication when
   ChatGPT renders supplied URLs as non-editable inline reference pills.
 - Adds durable transactional Chat and Work operations with caller-owned IDs,

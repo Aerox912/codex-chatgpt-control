@@ -202,6 +202,8 @@ describe("ChatGPT Project routing", () => {
       }
     });
     expect(result.blocker?.message).toContain("2 visible Projects");
+    expect(result.blocker?.message).toContain("does not authorize a global fallback");
+    expect(result.blocker?.fieldPath).toBe("project");
     expect(fake.actions).not.toContain("create-project");
   });
 

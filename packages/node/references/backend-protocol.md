@@ -255,6 +255,12 @@ includes `data.project` with the
 verified name, URL, and `created` flag. A newly created Project also includes
 the icon and color selected by the visible creation flow.
 
+Project routing is fail-closed. The routing blocker confirms that no prompt was
+submitted, but does not authorize a second global Chat or Work attempt. Callers
+must preserve the blocker and stop until the matching Project route is restored
+and verified. Only a separate, explicit user request for a global conversation
+authorizes the opt-out inputs below.
+
 `work.start({ project })` opens or creates the target Project, switches to Work,
 ensures a blank task, and verifies the Project context remains selected before
 submitting. `project: false` requests a global Chat thread or Work task and must

@@ -66,6 +66,15 @@ blocker. Set `confirmCreation: true` only after explicit user approval. Use
 `project: false` with `confirmGlobal: true` only when the user specifically
 requests a global conversation. Unconfirmed opt-outs must remain blocked.
 
+Project routing is fail-closed. A Project selector-drift blocker, missing
+creation confirmation, or lost Project context ends the current consultation
+before submission. Never recover by switching to plain/global Chat or Work,
+setting `project: false` with `confirmGlobal: true`, creating a
+`workspaceProject: false` client, or starting a second unbound client. The fact
+that no prompt was submitted only rules out a duplicate; it does not authorize
+a global fallback. Only a new, explicit user request for a global conversation
+can authorize a separate opt-out workflow.
+
 The plugin loader may persist an explicit blanket approval in
 `~/.codex/codex-chatgpt-control/preferences.json` as
 `{ "workspaceProjects": { "autoCreate": true } }`. Only record it after the
