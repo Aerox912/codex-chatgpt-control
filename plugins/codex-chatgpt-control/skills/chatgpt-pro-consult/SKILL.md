@@ -13,6 +13,12 @@ This skill is a thin workflow over the `codex-chatgpt-control` plugin. Use the s
 
 ## Guardrails
 
+- Only the primary Codex task may bootstrap or operate the in-app browser,
+  Chrome surface control, browser confirmations, exact tab identity, or live
+  ChatGPT submission/read operations. If this skill is running in a Workflow
+  child or other Codex subagent, stop before browser initialization and return
+  the visible-surface operation to the parent. A child may prepare a prompt or
+  analyze output supplied by the parent.
 - This sends prompt and attachment content to ChatGPT web. Do not send secrets, credentials, private source material, financial details, legal evidence, medical details, or sensitive personal data unless the user clearly approved that disclosure.
 - Use only visible ChatGPT web through the Codex/browser bridge. Do not replicate private ChatGPT network calls, read cookies, inspect localStorage/sessionStorage, or extract hidden auth headers.
 - Make Pro selection explicit with `experience: "chat"` and `configuration: { intelligence: "Pro" }`. The strict configuration API handles older and newer visible pickers and verifies the postcondition. If the SDK cannot verify Pro, stop and report the blocker and visible candidate labels.
@@ -85,7 +91,7 @@ Do not import from an older manually installed skill runtime; the plugin-bundled
 
 ## Bridge Bootstrap Handoff
 
-This skill assumes a Codex Browser runtime is already available. If `globalThis.agent` is missing, do not stop after reporting `hasAgent: false`; initialize the Browser runtime using the bootstrap steps from the `codex-chatgpt-control` skill, then retry the consult. Automatic discovery prefers the in-app browser and falls back to Chrome.
+This skill assumes a Codex Browser runtime is already available. In the primary task, if `globalThis.agent` is missing, do not stop after reporting `hasAgent: false`; initialize the Browser runtime using the bootstrap steps from the `codex-chatgpt-control` skill, then retry the consult. A Workflow child or other Codex subagent must stop before browser initialization and return the operation to its parent. Automatic discovery prefers the in-app browser and falls back to Chrome.
 
 After bootstrap, verify both values before using the snippets below:
 

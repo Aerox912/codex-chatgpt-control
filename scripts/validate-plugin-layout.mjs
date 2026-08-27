@@ -155,6 +155,10 @@ async function main() {
   const broadSkill = await readFile(path.join(skillRoot, "codex-chatgpt-control/SKILL.md"), "utf8");
   const delegateSkill = await readFile(path.join(skillRoot, "chatgpt-delegate/SKILL.md"), "utf8");
   const proSkill = await readFile(path.join(skillRoot, "chatgpt-pro-consult/SKILL.md"), "utf8");
+  const bridgeBootstrap = await readFile(
+    path.join(skillRoot, "codex-chatgpt-control/references/bridge-bootstrap.md"),
+    "utf8"
+  );
   validateSkillFrontmatter(broadSkill, "codex-chatgpt-control");
   validateSkillFrontmatter(delegateSkill, "chatgpt-delegate");
   validateSkillFrontmatter(proSkill, "chatgpt-pro-consult");
@@ -170,12 +174,28 @@ async function main() {
     ["Delegate", delegateSkill],
     ["Pro", proSkill]
   ]) {
+    assert(
+      skill.includes("Only the primary Codex task") &&
+        skill.includes("stop before browser initialization") &&
+        skill.includes("to the parent"),
+      `${name} skill must keep visible browser surfaces with the primary task`
+    );
     assert(skill.includes("Project routing is fail-closed."), `${name} skill must keep Project routing fail-closed`);
     assert(
       skill.includes("it does not authorize") && skill.includes("a global fallback."),
       `${name} skill must prohibit automatic global fallback`
     );
   }
+  assert(
+    delegateSkill.includes("does not delegate browser control to a Codex child or subagent"),
+    "Delegate skill must mean delegation to ChatGPT, not to a Codex child"
+  );
+  assert(
+    bridgeBootstrap.includes("Use this bootstrap only in the primary Codex task") &&
+      bridgeBootstrap.includes("stop before browser initialization") &&
+      bridgeBootstrap.includes("to the parent"),
+    "Bridge bootstrap reference must block child and subagent use"
+  );
 
   const agentMetadata = await readFile(path.join(pluginRoot, "agents/openai.yaml"), "utf8");
   assert(agentMetadata.includes('$codex-chatgpt-control'), "agents/openai.yaml default_prompt must explicitly invoke $codex-chatgpt-control");

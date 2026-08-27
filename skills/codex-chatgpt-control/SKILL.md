@@ -9,11 +9,18 @@ Use this skill when a user asks Codex to operate ChatGPT web through a visible b
 
 This skill is for visible, user-directed ChatGPT workflows only. It is not an OpenAI API wrapper, does not call hidden ChatGPT endpoints, and must not bypass login, captcha, product permissions, file permissions, or user confirmation.
 
+Only the primary Codex task may bootstrap or operate the in-app browser, Chrome
+surface control, browser confirmations, exact tab identity, or live ChatGPT
+submission/read operations. If this skill is running in a Workflow child or
+other Codex subagent, stop before browser initialization and return the
+visible-surface operation to the parent. A child may prepare a prompt or analyze
+output supplied by the parent.
+
 ## Required Posture
 
 1. Prefer the SDK facade from `createChatGPT({ agent })`.
 2. Use ChatGPT web through a compatible Codex/browser bridge. Do not use private ChatGPT network calls.
-3. Treat `globalThis.agent` as host-provided. If it is missing, initialize an installed Codex Browser runtime when available; otherwise report a bridge blocker. Automatic SDK discovery prefers the in-app browser and falls back to Chrome.
+3. In the primary task, treat `globalThis.agent` as host-provided. If it is missing, initialize an installed Codex Browser runtime when available; otherwise report a bridge blocker. A child or subagent must return the operation to its parent instead. Automatic SDK discovery prefers the in-app browser and falls back to Chrome.
 4. Stop on login, captcha, rate-limit, selector-drift, upload/download permission, or ambiguous confirmation blockers.
 5. Ask for explicit user confirmation before public, destructive, third-party, paid, account-level, or externally visible actions.
 6. Redact run reports by default. Raw prompt/response content is opt-in only.

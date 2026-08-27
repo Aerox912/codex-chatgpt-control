@@ -9,11 +9,18 @@ Use this skill when a user asks Codex to work with ChatGPT web through a visible
 
 This skill is for visible, user-directed ChatGPT workflows only. It is not an OpenAI API wrapper, does not call hidden ChatGPT endpoints, and must not bypass login, captcha, product permissions, file permissions, or user confirmation.
 
+Only the primary Codex task may bootstrap or operate the in-app browser, Chrome
+surface control, browser confirmations, exact tab identity, or live ChatGPT
+submission/read operations. If this skill is running in a Workflow child or
+other Codex subagent, stop before browser initialization and return the
+visible-surface operation to the parent. A child may prepare a prompt or analyze
+output supplied by the parent.
+
 ## Required Posture
 
 1. Prefer the plugin-bundled SDK facade from `createChatGPT({ agent })`.
 2. Use ChatGPT web through a compatible Codex/browser bridge. Do not use private ChatGPT network calls.
-3. Treat `globalThis.agent` as host-provided. If it is missing, bootstrap the installed Browser runtime when available; otherwise report a bridge blocker. Automatic SDK discovery prefers the in-app browser and falls back to Chrome.
+3. In the primary task, treat `globalThis.agent` as host-provided. If it is missing, bootstrap the installed Browser runtime when available; otherwise report a bridge blocker. A child or subagent must return the operation to its parent instead. Automatic SDK discovery prefers the in-app browser and falls back to Chrome.
 4. Stop on login, captcha, rate-limit, selector-drift, upload/download permission, or ambiguous confirmation blockers.
 5. Ask for explicit user confirmation before public, destructive, third-party, paid, account-level, or externally visible actions.
 6. Redact run reports by default. Raw prompt/response content is opt-in only.
@@ -95,7 +102,7 @@ When using this installed plugin, do not import from an older manually installed
 
 Ordinary shells should not have `globalThis.agent`. A `browser_bridge_unavailable` blocker from an ordinary shell is an expected safe result for browser-required calls.
 
-For a live Codex run, initialize the installed Browser runtime before using the SDK if `globalThis.agent` is missing. Automatic discovery prefers the in-app browser, then falls back to the Chrome extension. If the user explicitly requests a browser, obtain that browser through the Browser skill and pass its handle as `browser` to `createChatGPT(...)`. See `references/bridge-bootstrap.md` when bootstrap details are needed.
+For a live primary-task Codex run, initialize the installed Browser runtime before using the SDK if `globalThis.agent` is missing. A Workflow child or other Codex subagent must stop before browser initialization and return the operation to its parent. Automatic discovery prefers the in-app browser, then falls back to the Chrome extension. If the user explicitly requests a browser, obtain that browser through the Browser skill and pass its handle as `browser` to `createChatGPT(...)`. See `references/bridge-bootstrap.md` when bootstrap details are needed.
 
 Treat Browser bootstrap and instruction loading as internal setup. User-facing progress should say that Codex is connecting to the selected browser; do not narrate Node hosts, globals, runtime imports, or guidance loading unless the user explicitly asks for diagnostics.
 

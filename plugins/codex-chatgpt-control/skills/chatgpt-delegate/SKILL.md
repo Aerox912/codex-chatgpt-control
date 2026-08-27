@@ -9,6 +9,15 @@ Use this skill for outcome-oriented delegation to the visible ChatGPT product. C
 
 This is a workflow over the `codex-chatgpt-control` plugin. It operates visible UI only and must not call private ChatGPT endpoints, inspect credentials or browser storage, bypass login or confirmation, or submit sensitive material without the user's approval.
 
+`chatgpt-delegate` delegates a user-directed task from Codex to visible
+ChatGPT; it does not delegate browser control to a Codex child or subagent.
+Only the primary Codex task may bootstrap or operate the in-app browser, Chrome
+surface control, browser confirmations, exact tab identity, or live ChatGPT
+submission/read operations. If this skill is running in a Workflow child or
+other Codex subagent, stop before browser initialization and return the
+visible-surface operation to the parent. A child may prepare a prompt or analyze
+output supplied by the parent.
+
 Codex approval mode and Browser confirmation are separate boundaries. `Approve
 for me`, `never`, and full local access can authorize local Codex work, but do
 not waive Browser's action-time confirmation for sending a ChatGPT message.
@@ -55,7 +64,7 @@ The plugin loader may persist an explicit blanket approval in
 user approves automatic creation for all current and future Codex workspaces.
 The public SDK remains confirmation-gated when that user preference is absent.
 
-If `globalThis.agent` is absent, use the Browser-bootstrap instructions in the broad `codex-chatgpt-control` skill. Automatic discovery prefers the in-app browser and falls back to Chrome. Preserve an explicit user browser choice by passing that browser handle to `createChatGPT(...)`. An ordinary-shell `browser_bridge_unavailable` result is expected and should be reported, not worked around.
+In the primary task, if `globalThis.agent` is absent, use the Browser-bootstrap instructions in the broad `codex-chatgpt-control` skill. A Workflow child or other Codex subagent must return the operation to its parent instead. Automatic discovery prefers the in-app browser and falls back to Chrome. Preserve an explicit user browser choice by passing that browser handle to `createChatGPT(...)`. An ordinary-shell `browser_bridge_unavailable` result is expected and should be reported, not worked around.
 
 ## Choose The Experience
 
