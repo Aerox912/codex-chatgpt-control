@@ -90,6 +90,8 @@ export type ProductionConfigurationDomControl = Readonly<{
   id?: string;
   menuKey?: string;
   menuLabel?: string;
+  popup?: "menu" | "listbox";
+  composerScoped?: boolean;
   selected?: boolean;
   visible?: boolean;
 }>;
@@ -126,6 +128,8 @@ type Control = {
   id?: string;
   menuKey?: string;
   menuLabel?: string;
+  popup?: "menu" | "listbox";
+  composerScoped: boolean;
   selected: boolean;
   visible: boolean;
   index: number;
@@ -661,7 +665,7 @@ function evaluateMenuState(
     const axes = axesForDesired(requested.value, requested.axes, configurationForKind(kind));
     const hasAxisValue = axes.some(axis => (values.get(axis)?.length ?? 0) > 0);
     const hasSelectedValue = selectedValues.some(value => labelsMatchAny(value, valueAliases("configuration", requested.value)));
-    return axes.length === 0 || (!hasAxisValue && !hasSelectedValue);
+    return axes.length === 0 || (!hasAxisValue && !hasSelectedValue && !hasUniqueCompactCurrent(snapshot, requested));
   });
   if (unknown) {
     return { status: "unavailable", blockerCode: "configuration_control_ambiguous" };
@@ -672,7 +676,8 @@ function evaluateMenuState(
     return axes.some(axis => {
       const current = values.get(axis) ?? [];
       return current.length === 1 && labelsMatchAny(current[0]!, valueAliases("configuration", requested.value));
-    }) || selectedValues.filter(value => labelsMatchAny(value, valueAliases("configuration", requested.value))).length === 1;
+    }) || selectedValues.filter(value => labelsMatchAny(value, valueAliases("configuration", requested.value))).length === 1
+      || hasUniqueCompactCurrent(snapshot, requested);
   });
   const currentValues = [...values.entries()].flatMap(([axis, current]) => current.map(value => `${axis}:${value}`));
   const result: {
@@ -686,6 +691,17 @@ function evaluateMenuState(
   const currentStateDigest = opaqueStateDigest(snapshot, currentValues);
   if (currentStateDigest !== undefined) result.currentStateDigest = currentStateDigest;
   return result;
+}
+
+function hasUniqueCompactCurrent(snapshot: Snapshot, requested: RequestedValue): boolean {
+  const aliases = valueAliases("configuration", requested.value);
+  const candidates = snapshot.controls.filter(control => control.visible
+    && control.composerScoped
+    && control.menuKey === undefined
+    && control.role === "button"
+    && (control.popup === "menu" || control.popup === "listbox")
+    && labelsMatchAny(control.label, aliases));
+  return candidates.length === 1;
 }
 
 function configurationForKind(kind: OperationStagingKind): "configuration" | "tool" {
@@ -956,6 +972,30 @@ async function discoverMenuSnapshot(page: Readonly<PageLike>, surface: Productio
     const text = (node: Element): string => {
       return normalize(node.getAttribute("aria-label") ?? boundedText(node));
     };
+    const composerNodes = boundedQuery<HTMLElement>(document,
+      "main textarea, main [contenteditable='true'], main [role='textbox']",
+      32).filter(visible);
+    const composerForms = new Set<Element>();
+    for (const composer of composerNodes) {
+      let current: Element | null = composer;
+      for (let depth = 0; current !== null && depth < 4096; depth += 1) {
+        if (current.tagName.toLocaleLowerCase() === "form") {
+          composerForms.add(current);
+          break;
+        }
+        current = elementParent(current);
+      }
+      if (current !== null && current.tagName.toLocaleLowerCase() !== "form") throw new Error("node limit exceeded");
+    }
+    const isComposerScoped = (node: Element): boolean => {
+      let current: Element | null = node;
+      for (let depth = 0; current !== null && depth < 4096; depth += 1) {
+        if (current.tagName.toLocaleLowerCase() === "form") return composerForms.has(current);
+        current = elementParent(current);
+      }
+      if (current !== null) throw new Error("node limit exceeded");
+      return false;
+    };
     const surfaceOf = (): ProductionConfigurationSurface | "unknown" => {
       const signals = new Set<ProductionConfigurationSurface>();
       const addMarker = (raw: string): void => {
@@ -970,9 +1010,6 @@ async function discoverMenuSnapshot(page: Readonly<PageLike>, surface: Productio
         if (config.chatComposerLabels.some(label => value === normalize(label).toLocaleLowerCase())
           || config.chatSurfaceLabels.some(label => value === normalize(label).toLocaleLowerCase())) signals.add("chat");
       };
-      const composerNodes = boundedQuery<HTMLElement>(document,
-        "main textarea, main [contenteditable='true'], main [role='textbox']",
-        32).filter(visible);
       for (const node of composerNodes) {
         addLabel(normalize(node.getAttribute("aria-label")
           ?? node.getAttribute("placeholder")
@@ -1034,6 +1071,9 @@ async function discoverMenuSnapshot(page: Readonly<PageLike>, surface: Productio
         || node.getAttribute("data-selected") === "true";
       const testId = node.getAttribute("data-testid") ?? undefined;
       const id = node.getAttribute("id") ?? undefined;
+      const rawPopup = node.getAttribute("aria-haspopup");
+      const popup = rawPopup === "menu" || rawPopup === "listbox" ? rawPopup : undefined;
+      const composerScoped = isComposerScoped(node);
       const menuRoot = menu < 0 ? null : menus[menu];
       const menuLabel = menuRoot === null || menuRoot === undefined ? undefined : text(menuRoot);
       controls.push({
@@ -1042,6 +1082,8 @@ async function discoverMenuSnapshot(page: Readonly<PageLike>, surface: Productio
         ...(testId === undefined ? {} : { testId }),
         ...(id === undefined ? {} : { id }),
         ...(menu < 0 ? {} : { menuKey: `menu:${menu}`, ...(menuLabel === undefined ? {} : { menuLabel }) }),
+        ...(popup === undefined ? {} : { popup }),
+        ...(composerScoped ? { composerScoped: true } : {}),
         ...(selected ? { selected: true } : {})
       });
     }
@@ -1080,7 +1122,7 @@ function normalizeSnapshot(value: unknown): Snapshot {
   const controls: Control[] = [];
   for (let index = 0; index < rawControls.length; index += 1) {
     const raw = snapshotDataRecord(rawControls[index], "configuration_surface_unavailable");
-    if (Object.keys(raw).some(key => !["label", "role", "testId", "id", "menuKey", "menuLabel", "selected", "visible"].includes(key))
+    if (Object.keys(raw).some(key => !["label", "role", "testId", "id", "menuKey", "menuLabel", "popup", "composerScoped", "selected", "visible"].includes(key))
       || typeof raw.label !== "string" || raw.label.length === 0 || raw.label.length > MAX_CONTROL_LABEL_LENGTH) {
       throw new ProductionConfigurationPrimitiveError("configuration_surface_unavailable");
     }
@@ -1092,8 +1134,12 @@ function normalizeSnapshot(value: unknown): Snapshot {
         throw new ProductionConfigurationPrimitiveError("configuration_surface_unavailable");
       }
     }
-    if ((raw.selected !== undefined && typeof raw.selected !== "boolean")
+    if ((raw.composerScoped !== undefined && typeof raw.composerScoped !== "boolean")
+      || (raw.selected !== undefined && typeof raw.selected !== "boolean")
       || (raw.visible !== undefined && typeof raw.visible !== "boolean")) {
+      throw new ProductionConfigurationPrimitiveError("configuration_surface_unavailable");
+    }
+    if (raw.popup !== undefined && raw.popup !== "menu" && raw.popup !== "listbox") {
       throw new ProductionConfigurationPrimitiveError("configuration_surface_unavailable");
     }
     controls.push({
@@ -1104,6 +1150,8 @@ function normalizeSnapshot(value: unknown): Snapshot {
       ...(typeof raw.id === "string" ? { id: raw.id } : {}),
       ...(typeof raw.menuKey === "string" ? { menuKey: raw.menuKey } : {}),
       ...(typeof raw.menuLabel === "string" ? { menuLabel: raw.menuLabel } : {}),
+      ...(raw.popup === "menu" || raw.popup === "listbox" ? { popup: raw.popup } : {}),
+      composerScoped: raw.composerScoped === true,
       selected: raw.selected === true,
       visible: raw.visible !== false,
       index
@@ -1115,6 +1163,8 @@ function normalizeSnapshot(value: unknown): Snapshot {
     control.testId ?? "",
     control.id ?? "",
     control.menuKey ?? "",
+    control.popup ?? "",
+    control.composerScoped ? "1" : "0",
     control.label,
     control.selected ? "1" : "0"
   ].join("\u001f")).join("\u001e");

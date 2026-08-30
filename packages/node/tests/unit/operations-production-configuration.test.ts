@@ -222,6 +222,51 @@ describe("production configuration staging primitive", () => {
     });
   });
 
+  it("recognizes one compact Chat configuration menu trigger as the current effort", async () => {
+    const current = await primitive({
+      experience: "chat",
+      additional: { effort: "Pro" }
+    }).readCurrent!({
+      ...request("configuration_set"),
+      page: fakePage({ menuSnapshots: [menuSnapshot([
+        { label: "Account Pro", role: "button", popup: "menu" },
+        { label: "Pro", role: "button", popup: "menu", composerScoped: true }
+      ])] }),
+      target
+    });
+    const missingPopupEvidence = await primitive({
+      experience: "chat",
+      additional: { effort: "Pro" }
+    }).readCurrent!({
+      ...request("configuration_set", { actionId: "33333333-3333-4333-8333-333333333333" }),
+      page: fakePage({ menuSnapshots: [menuSnapshot([
+        { label: "Pro", role: "button" }
+      ])] }),
+      target
+    });
+    const ambiguous = await primitive({
+      experience: "chat",
+      additional: { effort: "Pro" }
+    }).readCurrent!({
+      ...request("configuration_set", { actionId: "44444444-4444-4444-8444-444444444444" }),
+      page: fakePage({ menuSnapshots: [menuSnapshot([
+        { label: "Pro", role: "button", popup: "menu", composerScoped: true },
+        { label: "Pro", role: "button", popup: "menu", composerScoped: true }
+      ])] }),
+      target
+    });
+
+    expect(current.status).toBe("satisfied");
+    expect(missingPopupEvidence).toMatchObject({
+      status: "unavailable",
+      blockerCode: "configuration_control_ambiguous"
+    });
+    expect(ambiguous).toMatchObject({
+      status: "unavailable",
+      blockerCode: "configuration_control_ambiguous"
+    });
+  });
+
   it("uses locale-aware semantic values and one planned click without leaking requested labels", async () => {
     const before = menuSnapshot([
       { label: "Aufwand Mittel", role: "button", id: "effort-row" },
