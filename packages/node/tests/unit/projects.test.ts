@@ -207,6 +207,27 @@ describe("ChatGPT Project routing", () => {
     expect(fake.actions).not.toContain("create-project");
   });
 
+  it("skips a Project icon whose button or link ancestor is absent", async () => {
+    const fake = projectPage({
+      directProjectSection: true,
+      existingProject: true,
+      orphanProjectIcon: true
+    });
+
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Codex ChatGPT Control" },
+      250
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "needs_confirmation",
+      blocker: { code: "chatgpt_project_creation_confirmation_required" }
+    });
+    expect(fake.actions).not.toContain("create-project");
+  });
+
   it("blocks instead of creating a duplicate when Show more cannot be exhausted", async () => {
     const fake = projectPage({
       directProjectSection: true,
@@ -283,6 +304,7 @@ function projectPage(options: {
   directProjectSection?: boolean;
   existingProject?: boolean;
   matchingProjectCount?: number;
+  orphanProjectIcon?: boolean;
   projectControlsHydrateAfter?: number;
   projectCardIsLink?: boolean;
   projectHydratesAfter?: number;
@@ -320,9 +342,13 @@ function projectPage(options: {
     ...(options.projectCardIsLink === true ? { href: "/g/g-p-test/project" } : {}),
     locator: selector => selector.includes("ancestor::li") ? projectItem : projectRow
   });
+  const orphanProjectAncestor = locator({ count: 0, throwOnInnerText: true });
   const projectIcons = locator({
     count: () => projectVisible() && options.projectsIndexGrid !== true ? (options.matchingProjectCount ?? 1) : 0,
-    nth: () => locator({ count: 1, locator: () => projectRow })
+    nth: () => locator({
+      count: 1,
+      locator: () => options.orphanProjectIcon === true ? orphanProjectAncestor : projectRow
+    })
   });
   const projectNameCell = locator({ count: 1, text: "Codex ChatGPT Control" });
   const otherGridCell = locator({ count: 1, text: "Yesterday" });
@@ -474,6 +500,7 @@ type LocatorOptions = {
   fill?: (value: string) => void;
   locator?: (selector: string) => LocatorLike;
   nth?: (index: number) => LocatorLike;
+  throwOnInnerText?: boolean;
   getByRole?: (role: string, options?: Record<string, unknown>) => LocatorLike;
 };
 
@@ -482,7 +509,10 @@ function locator(options: LocatorOptions): LocatorLike {
     count: async () => typeof options.count === "function" ? options.count() : options.count,
     click: async () => { options.click?.(); },
     fill: async value => { options.fill?.(value); },
-    innerText: async () => options.text ?? "",
+    innerText: async () => {
+      if (options.throwOnInnerText === true) throw new Error("innerText must not run for a zero-count locator");
+      return options.text ?? "";
+    },
     getAttribute: async name => name === "href" ? options.href ?? null : null,
     locator: selector => options.locator?.(selector) ?? locator({ count: 0 }),
     nth: index => options.nth?.(index) ?? locator({ count: 0 }),

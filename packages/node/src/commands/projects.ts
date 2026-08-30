@@ -398,6 +398,7 @@ async function findVisibleProjectRow(page: PageLike, name: string): Promise<Loca
   const iconMatches: LocatorLike[] = [];
   for (let index = 0; index < iconCount; index += 1) {
     const row = icons?.nth?.(index).locator?.("xpath=ancestor::*[@role='button' or @role='link'][1]");
+    if (await locatorCount(row) !== 1) continue;
     const text = (await row?.innerText?.())?.trim();
     if (row !== undefined && text !== undefined && projectNamesMatch(name, text)) iconMatches.push(row);
   }

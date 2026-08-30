@@ -2,6 +2,11 @@
 
 ## 0.5.1-alpha.3
 
+- Restores current compact Chat model selection by setting Power first, entering
+  the nested Select model pane, verifying the chosen GPT-5.5 or GPT-5.6 Sol
+  radio, and closing the configuration menu only after the postcondition holds.
+- Prevents zero-match Project ancestor inspection from consuming the full
+  selector deadline when ChatGPT changes the surrounding navigation markup.
 - Makes plugin Project routing explicitly fail-closed across structured
   blockers and agent skills, so selector drift cannot trigger an automatic
   plain/global Chat or Work fallback.

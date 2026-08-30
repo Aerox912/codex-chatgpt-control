@@ -11,7 +11,10 @@ export const MAX_POWER_LEVELS = 32;
 export const MAX_POWER_SLIDERS = 32;
 /** Maximum browser-realm nodes inspected by one Power discovery probe. */
 export const MAX_POWER_DOM_NODES = 4096;
+/** Element-only cap used to locate the small set of menu roots before bounded text collection. */
+export const MAX_POWER_SEARCH_NODES = 65_536;
 const MAX_POWER_LABELS = 64;
+const MAX_POWER_VALUE_LABELS = 320;
 const MAX_POWER_LABEL_LENGTH = 240;
 const MAX_POWER_TEXT_CHARS = 32 * 1024;
 
@@ -126,6 +129,7 @@ export type PowerDomObservation = {
 
 export type PowerDiscoveryOptions = {
   powerLabels?: readonly string[];
+  valueLabels?: readonly string[];
   expectedSurface?: PowerSurface;
 };
 
@@ -148,22 +152,25 @@ export async function discoverPowerSlider(
 
   const observation = await page.evaluate((config: {
     powerLabels: string[];
+    valueLabels: string[];
     maxSliders: number;
     maxOptions: number;
     maxNodes: number;
+    maxSearchNodes: number;
     maxTextChars: number;
   }) => {
     // This callback is serialized into the browser realm. Keep the probe
-    // independent from module scope and use one SHOW_ALL traversal: text and
-    // comment nodes consume the same global budget as elements. In
-    // particular, do not replace this with a selector query or a DOM text
-    // property; either would materialize arbitrary page-sized data before the
-    // Power-specific caps can take effect.
+    // independent from module scope. An element-only TreeWalker locates a
+    // bounded set of menu roots; SHOW_ALL traversal and text collection then
+    // stay inside those roots. Do not replace either phase with selector
+    // queries or DOM text properties, which could materialize page-sized data
+    // before the Power-specific caps take effect.
     const maxLabelLength = 240;
     const maxLabelInput = maxLabelLength * 4;
     const elements: Element[] = [];
     const sliderElements: Element[] = [];
     const textByElement = new Map<Element, string>();
+    const seenNodes = new Set<Node>();
     let visitedNodes = 0;
     let textChars = 0;
     let textTruncated = false;
@@ -213,6 +220,8 @@ export async function discoverPowerSlider(
     };
 
     const visit = (node: Node): void => {
+      if (seenNodes.has(node)) return;
+      seenNodes.add(node);
       visitedNodes += 1;
       if (visitedNodes > config.maxNodes) throw new Error("node limit exceeded");
       appendText(node);
@@ -228,33 +237,86 @@ export async function discoverPowerSlider(
 
     const ownerDocument = document;
     try {
-      if (typeof ownerDocument.createTreeWalker === "function") {
-        const walker = ownerDocument.createTreeWalker(ownerDocument, 0xffffffff);
-        let current = walker.nextNode();
-        while (current !== null) {
-          visit(current);
-          current = walker.nextNode();
+      const traverse = (root: Node): void => {
+        visit(root);
+        if (typeof ownerDocument.createTreeWalker === "function") {
+          const walker = ownerDocument.createTreeWalker(root, 0xffffffff);
+          let current = walker.nextNode();
+          while (current !== null) {
+            visit(current);
+            current = walker.nextNode();
+          }
+          return;
         }
-      } else {
         // The manual path keeps deterministic behavior in minimal browser
         // adapters and tests which expose the DOM node links but no TreeWalker.
-        let current: Node | null = ownerDocument.firstChild;
+        let current: Node | null = root.firstChild;
         while (current !== null) {
           visit(current);
           if (current.firstChild !== null) {
             current = current.firstChild;
             continue;
           }
-          while (current !== null && current !== ownerDocument && current.nextSibling === null) {
+          while (current !== null && current !== root && current.nextSibling === null) {
             current = current.parentNode;
           }
-          if (current === ownerDocument || current === null) break;
+          if (current === root || current === null) break;
           current = current.nextSibling;
         }
+      };
+      const overlayRoots: Element[] = [];
+      if (typeof ownerDocument.createTreeWalker === "function") {
+        const rootWalker = ownerDocument.createTreeWalker(ownerDocument, 0x1);
+        let searched = 0;
+        let current = rootWalker.nextNode();
+        while (current !== null) {
+          searched += 1;
+          if (searched > config.maxSearchNodes) throw new Error("search limit exceeded");
+          if (current.nodeType === 1) {
+            const element = current as Element;
+            const role = element.getAttribute("role");
+            if (role === "menu"
+              || role === "listbox"
+              || element.getAttribute("data-radix-popper-content-wrapper") !== null
+              || element.getAttribute("data-radix-menu-content") !== null) {
+              overlayRoots.push(element);
+              if (overlayRoots.length > config.maxSliders) throw new Error("root limit exceeded");
+            }
+          }
+          current = rootWalker.nextNode();
+        }
+      } else if (typeof ownerDocument.querySelectorAll === "function") {
+        // The Codex Browser bridge intentionally exposes a reduced DOM realm
+        // without TreeWalker. Limit its fallback to the exact semantic overlay
+        // roots required by nearestMenu; subtree traversal remains subject to
+        // the normal node and text budgets below.
+        const roots = ownerDocument.querySelectorAll(
+          "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper], [data-radix-menu-content]"
+        );
+        if (roots.length > config.maxSliders) throw new Error("root limit exceeded");
+        for (let index = 0; index < roots.length; index += 1) {
+          const root = roots.item(index);
+          if (root !== null) overlayRoots.push(root);
+        }
+      }
+      if (overlayRoots.length > config.maxSliders) throw new Error("root limit exceeded");
+      for (const root of overlayRoots.length > 0 ? overlayRoots : [ownerDocument]) {
+        traverse(root);
+      }
+      // Preserve support for a semantic datalist referenced from inside the
+      // scoped menu without falling back to a whole-document traversal.
+      for (const slider of [...sliderElements]) {
+        const listId = slider.getAttribute("list");
+        if (listId === null || typeof ownerDocument.getElementById !== "function") continue;
+        const datalist = ownerDocument.getElementById(listId);
+        if (datalist !== null) traverse(datalist);
       }
     } catch (error) {
       if (error instanceof Error
-        && (error.message === "node limit exceeded" || error.message === "slider limit exceeded")) {
+        && (error.message === "node limit exceeded"
+          || error.message === "slider limit exceeded"
+          || error.message === "search limit exceeded"
+          || error.message === "root limit exceeded")) {
         return { sliders: [], slidersTruncated: true } satisfies PowerDomObservation;
       }
       throw error;
@@ -287,6 +349,14 @@ export async function discoverPowerSlider(
           || normalized.includes(` ${wanted} `);
       });
     };
+    const containsValueLabel = (value: string, label: string): boolean => {
+      const normalized = normalize(value).toLocaleLowerCase();
+      const wanted = normalize(label).toLocaleLowerCase();
+      if (wanted.length === 0) return false;
+      const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?:^|[\\s,:;()[\\]{}•·\\-–—/])${escaped}(?=$|[\\s,:;()[\\]{}•·\\-–—/])`, "u")
+        .test(normalized);
+    };
     const isVisible = (element: Element): boolean => {
       let current: Node | null = element;
       let depth = 0;
@@ -295,7 +365,8 @@ export async function discoverPowerSlider(
         const currentElement = current as Element;
         const html = currentElement as HTMLElement;
         if (html.hidden
-          || currentElement.getAttribute("aria-hidden") === "true"
+          || (currentElement.getAttribute("aria-hidden") === "true"
+            && !(current === element && element.getAttribute("role") === "slider"))
           || currentElement.hasAttribute("inert")) return false;
         const style = typeof window !== "undefined"
           ? window.getComputedStyle?.(html)
@@ -307,7 +378,30 @@ export async function discoverPowerSlider(
         depth += 1;
       }
       const rect = (element as HTMLElement).getBoundingClientRect?.();
-      return rect === undefined || (rect.width > 0 && rect.height > 0);
+      if (rect === undefined) return true;
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const viewportWidth = document.documentElement?.clientWidth ?? window.innerWidth;
+      const viewportHeight = document.documentElement?.clientHeight ?? window.innerHeight;
+      if (Number.isFinite(viewportWidth) && Number.isFinite(viewportHeight)
+        && (rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight)) {
+        return false;
+      }
+      let ancestor = element.parentElement ?? null;
+      while (ancestor !== null) {
+        const style = window.getComputedStyle?.(ancestor);
+        const overflowX = style?.overflowX || style?.overflow;
+        const overflowY = style?.overflowY || style?.overflow;
+        const ancestorRect = ancestor.getBoundingClientRect?.();
+        if (ancestorRect !== undefined
+          && ((/^(?:auto|clip|hidden|scroll)$/.test(overflowX ?? "")
+              && (rect.right <= ancestorRect.left || rect.left >= ancestorRect.right))
+            || (/^(?:auto|clip|hidden|scroll)$/.test(overflowY ?? "")
+              && (rect.bottom <= ancestorRect.top || rect.top >= ancestorRect.bottom)))) {
+          return false;
+        }
+        ancestor = ancestor.parentElement ?? null;
+      }
+      return true;
     };
     const labelledByText = (element: Element): string => {
       const ids = (element.getAttribute("aria-labelledby") ?? "")
@@ -451,9 +545,34 @@ export async function discoverPowerSlider(
       }
       return null;
     };
+    const nearbyValueText = (slider: Element, owner: Element | null, menu: Element | null): string => {
+      let current: Node | null = owner?.parentNode ?? slider.parentNode;
+      let depth = 0;
+      while (current !== null && depth < 6 && current !== menu) {
+        if (current.nodeType !== 1) break;
+        const text = visibleTextOf(current as Element);
+        const matches = config.valueLabels
+          .filter(label => label.length > 0 && label.length <= maxLabelLength && containsValueLabel(text, label))
+          .sort((left, right) => normalize(right).length - normalize(left).length);
+        if (matches.length > 0) {
+          const longestLength = normalize(matches[0]!).length;
+          const longest = [...new Set(matches
+            .filter(label => normalize(label).length === longestLength)
+            .map(label => normalize(label).toLocaleLowerCase()))];
+          if (longest.length === 1) return matches[0]!;
+        }
+        current = current.parentNode;
+        depth += 1;
+      }
+      return "";
+    };
     const sliders = sliderElements.map((slider, index): PowerSliderDomObservation => {
         const owner = nearestOwner(slider);
         const menu = nearestMenu(slider);
+        const explicitValueText = slider.getAttribute("aria-valuetext");
+        const valueText = explicitValueText === null
+          ? nearbyValueText(slider, owner, menu)
+          : normalize(explicitValueText);
         const listId = slider.getAttribute("list");
         const datalist = listId === null ? null : idIndex.get(listId) ?? null;
         // A whole menu is not an option map: it can contain model, speed, and
@@ -474,9 +593,7 @@ export async function discoverPowerSlider(
           visible: isVisible(slider),
           ...(textOf(slider).length === 0 ? {} : { ariaLabel: textOf(slider) }),
           ...(labelledByText(slider).length === 0 ? {} : { labelledByText: labelledByText(slider) }),
-          ...(slider.getAttribute("aria-valuetext") === null
-            ? {}
-            : { valueText: normalize(slider.getAttribute("aria-valuetext") ?? "") }),
+          ...(valueText.length === 0 ? {} : { valueText }),
           ...(slider.getAttribute("aria-valuemin") === null
             ? {}
             : { minimum: slider.getAttribute("aria-valuemin")! }),
@@ -517,9 +634,11 @@ export async function discoverPowerSlider(
     return { sliders } satisfies PowerDomObservation;
   }, {
     powerLabels: [...(options.powerLabels ?? DEFAULT_POWER_LABELS)].slice(0, MAX_POWER_LABELS + 1),
+    valueLabels: [...(options.valueLabels ?? [])].slice(0, MAX_POWER_VALUE_LABELS + 1),
     maxSliders: MAX_POWER_SLIDERS,
     maxOptions: MAX_POWER_LEVELS,
     maxNodes: MAX_POWER_DOM_NODES,
+    maxSearchNodes: MAX_POWER_SEARCH_NODES,
     maxTextChars: MAX_POWER_TEXT_CHARS
   }).catch(() => ({ sliders: [] }));
 
@@ -536,9 +655,12 @@ export function classifyPowerSliderObservation(
   options: PowerDiscoveryOptions = {}
 ): PowerDiscoveryResult {
   const suppliedPowerLabels = [...(options.powerLabels ?? DEFAULT_POWER_LABELS)];
+  const suppliedValueLabels = [...(options.valueLabels ?? [])];
   const limitExceeded = observation.slidersTruncated === true
     || observation.sliders.length > MAX_POWER_SLIDERS
     || suppliedPowerLabels.length > MAX_POWER_LABELS
+    || suppliedValueLabels.length > MAX_POWER_VALUE_LABELS
+    || suppliedValueLabels.some(label => label.length > MAX_POWER_LABEL_LENGTH)
     || observation.sliders.some(slider => slider.optionsTruncated === true
       || (slider.options?.length ?? 0) > MAX_POWER_LEVELS);
   if (limitExceeded) {

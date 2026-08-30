@@ -174,9 +174,12 @@ legacy button/menu/tab/link fallbacks.
 
 In a compact or narrow Chat composer, the closed configuration control may show
 only the current value, such as `Pro`. `configuration.inspect` scopes that
-opener to the composer, opens it without changing the selection, and reads the
-visible model and effort rows before deciding that an axis is unavailable. Do
-not treat the collapsed value alone as the complete capability graph.
+opener to the composer and reads both views before deciding that an axis is
+unavailable. Current Chat exposes the effort as a `Power` slider in the root
+view and the model radios behind `Select model`; application sets and verifies
+Power first, then enters the model view, verifies the selected radio, and closes
+the menu. Legacy combined Advanced rows remain supported. Do not treat the
+collapsed value alone as the complete capability graph.
 
 Selector profiles describe observed UI shapes (`chat_legacy_v1`, `chat_simplified_v1`, `work_basic_v1`, and `work_advanced_v1`). They are not plan or entitlement labels. Treat unavailable controls and rollout differences as structured results instead of guessing.
 

@@ -8792,6 +8792,7 @@ async function findVisibleProjectRow(page, name) {
   const iconMatches = [];
   for (let index = 0; index < iconCount; index += 1) {
     const row = icons?.nth?.(index).locator?.("xpath=ancestor::*[@role='button' or @role='link'][1]");
+    if (await locatorCount(row) !== 1) continue;
     const text = (await row?.innerText?.())?.trim();
     if (row !== void 0 && text !== void 0 && projectNamesMatch(name, text)) iconMatches.push(row);
   }
@@ -11779,14 +11780,33 @@ async function enumerateVisibleMenuItems(page) {
         const html = element;
         const rect = html.getBoundingClientRect?.();
         if (rect !== void 0 && (rect.width <= 0 || rect.height <= 0)) return false;
+        if (rect !== void 0 && typeof window !== "undefined") {
+          const viewportWidth = document.documentElement?.clientWidth ?? window.innerWidth;
+          const viewportHeight = document.documentElement?.clientHeight ?? window.innerHeight;
+          if (Number.isFinite(viewportWidth) && Number.isFinite(viewportHeight) && (rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight)) {
+            return false;
+          }
+        }
         let current = element;
         while (current !== null) {
           if (current.hasAttribute?.("inert") || current.getAttribute?.("aria-hidden") === "true") {
             return false;
           }
           const style = typeof window !== "undefined" ? window.getComputedStyle?.(current) : void 0;
-          if (style?.display === "none" || style?.visibility === "hidden" || style?.opacity === "0") {
+          if (style?.display === "none" || style?.visibility === "hidden" || style?.opacity === "0" || style?.pointerEvents === "none") {
             return false;
+          }
+          if (rect !== void 0 && current !== element && style !== void 0) {
+            const overflowX = style.overflowX || style.overflow;
+            const overflowY = style.overflowY || style.overflow;
+            const clipsX = /^(?:auto|clip|hidden|scroll)$/.test(overflowX);
+            const clipsY = /^(?:auto|clip|hidden|scroll)$/.test(overflowY);
+            if (clipsX || clipsY) {
+              const ancestorRect = current.getBoundingClientRect?.();
+              if (ancestorRect !== void 0 && (clipsX && (rect.right <= ancestorRect.left || rect.left >= ancestorRect.right) || clipsY && (rect.bottom <= ancestorRect.top || rect.top >= ancestorRect.bottom))) {
+                return false;
+              }
+            }
           }
           current = current.parentElement ?? null;
         }
@@ -11810,6 +11830,9 @@ async function enumerateVisibleMenuItems(page) {
         const testId = element.getAttribute("data-testid");
         if (testId !== null) item.testId = testId;
         if (ariaLabel !== null) item.ariaLabel = ariaLabel;
+        if (element.disabled || element.getAttribute("aria-disabled") === "true") {
+          item.disabled = true;
+        }
         return item;
       };
       const allRoleNodes = Array.from(document.querySelectorAll("[role='menuitem'], [role='menuitemradio'], [role='option']")).filter(visible);
@@ -11834,6 +11857,47 @@ function findUniqueMenuItem(items, wanted) {
   }
   const fuzzy = items.filter((item) => visibleLabelMatches(item.label, wanted));
   return fuzzy.length === 1 ? fuzzy[0] : void 0;
+}
+
+// src/dom/chat-configuration-menu.ts
+var CHAT_MODEL_LABEL_PATTERN = /\b(?:gpt[\s-]?\d|sol|terra|luna)\b/i;
+var CHAT_MODEL_VERSION_PATTERN = /^\d+(?:\.\d+)?(?:\s+(?:sol|terra|luna))?$/i;
+var chatPowerValueLabels = [
+  ...localeLabels.configurationOptions.instant,
+  ...localeLabels.configurationOptions.medium,
+  ...localeLabels.configurationOptions.high,
+  ...localeLabels.configurationOptions.extraHigh,
+  ...localeLabels.configurationOptions.pro
+];
+function chatModelMenuOptions(items) {
+  return items.filter((item) => item.role === "menuitemradio" && chatModelLabelLooksSelectable(item.label));
+}
+function findChatModelMenuOption(items, requested) {
+  const options = chatModelMenuOptions(items);
+  const wanted = normalizeChatModelLabel(requested);
+  const exact = options.filter((option) => normalizeChatModelLabel(option.label) === wanted);
+  return exact.length === 1 ? exact[0] : void 0;
+}
+function selectedChatModelMenuOption(items) {
+  const selected = chatModelMenuOptions(items).filter((option) => option.checked === true);
+  return selected.length === 1 ? selected[0] : void 0;
+}
+function findChatModelViewOpener(items) {
+  const matches = items.filter((item) => {
+    if (item.role === "menuitemradio" || item.disabled === true) return false;
+    const labels = [item.label, item.ariaLabel].filter((value) => value !== void 0);
+    return labels.some((label) => localeLabels.configurationAxes.model.some(
+      (axisLabel) => visibleLabelMatches(label, axisLabel)
+    ));
+  });
+  return matches.length === 1 ? matches[0] : void 0;
+}
+function chatModelLabelLooksSelectable(label) {
+  const normalized = normalizeForLabelMatch(label);
+  return CHAT_MODEL_LABEL_PATTERN.test(normalized) || CHAT_MODEL_VERSION_PATTERN.test(normalized.replace(/^gpt\s+/i, ""));
+}
+function normalizeChatModelLabel(value) {
+  return normalizeForLabelMatch(value).replace(/^gpt\s*/i, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 // src/commands/experience.ts
@@ -12307,7 +12371,9 @@ async function experienceSelectorDrift(page, message, detected) {
 var MAX_POWER_LEVELS = 32;
 var MAX_POWER_SLIDERS = 32;
 var MAX_POWER_DOM_NODES = 4096;
+var MAX_POWER_SEARCH_NODES = 65536;
 var MAX_POWER_LABELS = 64;
+var MAX_POWER_VALUE_LABELS = 320;
 var MAX_POWER_LABEL_LENGTH = 240;
 var MAX_POWER_TEXT_CHARS = 32 * 1024;
 var DEFAULT_POWER_LABELS = [];
@@ -12321,6 +12387,7 @@ async function discoverPowerSlider(page, options = {}) {
     const elements = [];
     const sliderElements = [];
     const textByElement = /* @__PURE__ */ new Map();
+    const seenNodes = /* @__PURE__ */ new Set();
     let visitedNodes = 0;
     let textChars = 0;
     let textTruncated = false;
@@ -12368,6 +12435,8 @@ async function discoverPowerSlider(page, options = {}) {
       }
     };
     const visit = (node) => {
+      if (seenNodes.has(node)) return;
+      seenNodes.add(node);
       visitedNodes += 1;
       if (visitedNodes > config.maxNodes) throw new Error("node limit exceeded");
       appendText(node);
@@ -12382,30 +12451,71 @@ async function discoverPowerSlider(page, options = {}) {
     };
     const ownerDocument = document;
     try {
-      if (typeof ownerDocument.createTreeWalker === "function") {
-        const walker = ownerDocument.createTreeWalker(ownerDocument, 4294967295);
-        let current = walker.nextNode();
-        while (current !== null) {
-          visit(current);
-          current = walker.nextNode();
+      const traverse = (root) => {
+        visit(root);
+        if (typeof ownerDocument.createTreeWalker === "function") {
+          const walker = ownerDocument.createTreeWalker(root, 4294967295);
+          let current2 = walker.nextNode();
+          while (current2 !== null) {
+            visit(current2);
+            current2 = walker.nextNode();
+          }
+          return;
         }
-      } else {
-        let current = ownerDocument.firstChild;
+        let current = root.firstChild;
         while (current !== null) {
           visit(current);
           if (current.firstChild !== null) {
             current = current.firstChild;
             continue;
           }
-          while (current !== null && current !== ownerDocument && current.nextSibling === null) {
+          while (current !== null && current !== root && current.nextSibling === null) {
             current = current.parentNode;
           }
-          if (current === ownerDocument || current === null) break;
+          if (current === root || current === null) break;
           current = current.nextSibling;
         }
+      };
+      const overlayRoots = [];
+      if (typeof ownerDocument.createTreeWalker === "function") {
+        const rootWalker = ownerDocument.createTreeWalker(ownerDocument, 1);
+        let searched = 0;
+        let current = rootWalker.nextNode();
+        while (current !== null) {
+          searched += 1;
+          if (searched > config.maxSearchNodes) throw new Error("search limit exceeded");
+          if (current.nodeType === 1) {
+            const element = current;
+            const role = element.getAttribute("role");
+            if (role === "menu" || role === "listbox" || element.getAttribute("data-radix-popper-content-wrapper") !== null || element.getAttribute("data-radix-menu-content") !== null) {
+              overlayRoots.push(element);
+              if (overlayRoots.length > config.maxSliders) throw new Error("root limit exceeded");
+            }
+          }
+          current = rootWalker.nextNode();
+        }
+      } else if (typeof ownerDocument.querySelectorAll === "function") {
+        const roots = ownerDocument.querySelectorAll(
+          "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper], [data-radix-menu-content]"
+        );
+        if (roots.length > config.maxSliders) throw new Error("root limit exceeded");
+        for (let index = 0; index < roots.length; index += 1) {
+          const root = roots.item(index);
+          if (root !== null) overlayRoots.push(root);
+        }
+      }
+      if (overlayRoots.length > config.maxSliders) throw new Error("root limit exceeded");
+      for (const root of overlayRoots.length > 0 ? overlayRoots : [ownerDocument]) {
+        traverse(root);
+      }
+      for (const slider of [...sliderElements]) {
+        const listId = slider.getAttribute("list");
+        if (listId === null || typeof ownerDocument.getElementById !== "function") continue;
+        const datalist = ownerDocument.getElementById(listId);
+        if (datalist !== null) traverse(datalist);
       }
     } catch (error) {
-      if (error instanceof Error && (error.message === "node limit exceeded" || error.message === "slider limit exceeded")) {
+      if (error instanceof Error && (error.message === "node limit exceeded" || error.message === "slider limit exceeded" || error.message === "search limit exceeded" || error.message === "root limit exceeded")) {
         return { sliders: [], slidersTruncated: true };
       }
       throw error;
@@ -12433,6 +12543,13 @@ async function discoverPowerSlider(page, options = {}) {
         return normalized === wanted || normalized.startsWith(`${wanted} `) || normalized.endsWith(` ${wanted}`) || normalized.includes(` ${wanted} `);
       });
     };
+    const containsValueLabel = (value, label) => {
+      const normalized = normalize2(value).toLocaleLowerCase();
+      const wanted = normalize2(label).toLocaleLowerCase();
+      if (wanted.length === 0) return false;
+      const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?:^|[\\s,:;()[\\]{}\u2022\xB7\\-\u2013\u2014/])${escaped}(?=$|[\\s,:;()[\\]{}\u2022\xB7\\-\u2013\u2014/])`, "u").test(normalized);
+    };
     const isVisible = (element) => {
       let current = element;
       let depth = 0;
@@ -12440,7 +12557,7 @@ async function discoverPowerSlider(page, options = {}) {
         if (current.nodeType !== 1) break;
         const currentElement = current;
         const html = currentElement;
-        if (html.hidden || currentElement.getAttribute("aria-hidden") === "true" || currentElement.hasAttribute("inert")) return false;
+        if (html.hidden || currentElement.getAttribute("aria-hidden") === "true" && !(current === element && element.getAttribute("role") === "slider") || currentElement.hasAttribute("inert")) return false;
         const style = typeof window !== "undefined" ? window.getComputedStyle?.(html) : void 0;
         if (style?.display === "none" || style?.visibility === "hidden" || style?.opacity === "0") {
           return false;
@@ -12449,7 +12566,25 @@ async function discoverPowerSlider(page, options = {}) {
         depth += 1;
       }
       const rect = element.getBoundingClientRect?.();
-      return rect === void 0 || rect.width > 0 && rect.height > 0;
+      if (rect === void 0) return true;
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const viewportWidth = document.documentElement?.clientWidth ?? window.innerWidth;
+      const viewportHeight = document.documentElement?.clientHeight ?? window.innerHeight;
+      if (Number.isFinite(viewportWidth) && Number.isFinite(viewportHeight) && (rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight)) {
+        return false;
+      }
+      let ancestor = element.parentElement ?? null;
+      while (ancestor !== null) {
+        const style = window.getComputedStyle?.(ancestor);
+        const overflowX = style?.overflowX || style?.overflow;
+        const overflowY = style?.overflowY || style?.overflow;
+        const ancestorRect = ancestor.getBoundingClientRect?.();
+        if (ancestorRect !== void 0 && (/^(?:auto|clip|hidden|scroll)$/.test(overflowX ?? "") && (rect.right <= ancestorRect.left || rect.left >= ancestorRect.right) || /^(?:auto|clip|hidden|scroll)$/.test(overflowY ?? "") && (rect.bottom <= ancestorRect.top || rect.top >= ancestorRect.bottom))) {
+          return false;
+        }
+        ancestor = ancestor.parentElement ?? null;
+      }
+      return true;
     };
     const labelledByText = (element) => {
       const ids = (element.getAttribute("aria-labelledby") ?? "").slice(0, 512).split(/\s+/).map((id2) => id2.trim()).filter(Boolean);
@@ -12559,9 +12694,28 @@ async function discoverPowerSlider(page, options = {}) {
       }
       return null;
     };
+    const nearbyValueText = (slider, owner, menu) => {
+      let current = owner?.parentNode ?? slider.parentNode;
+      let depth = 0;
+      while (current !== null && depth < 6 && current !== menu) {
+        if (current.nodeType !== 1) break;
+        const text = visibleTextOf(current);
+        const matches = config.valueLabels.filter((label) => label.length > 0 && label.length <= maxLabelLength && containsValueLabel(text, label)).sort((left, right) => normalize2(right).length - normalize2(left).length);
+        if (matches.length > 0) {
+          const longestLength = normalize2(matches[0]).length;
+          const longest = [...new Set(matches.filter((label) => normalize2(label).length === longestLength).map((label) => normalize2(label).toLocaleLowerCase()))];
+          if (longest.length === 1) return matches[0];
+        }
+        current = current.parentNode;
+        depth += 1;
+      }
+      return "";
+    };
     const sliders = sliderElements.map((slider, index) => {
       const owner = nearestOwner(slider);
       const menu = nearestMenu(slider);
+      const explicitValueText = slider.getAttribute("aria-valuetext");
+      const valueText = explicitValueText === null ? nearbyValueText(slider, owner, menu) : normalize2(explicitValueText);
       const listId = slider.getAttribute("list");
       const datalist = listId === null ? null : idIndex.get(listId) ?? null;
       const menuLabel = menu?.getAttribute("aria-label") ?? "";
@@ -12574,7 +12728,7 @@ async function discoverPowerSlider(page, options = {}) {
         visible: isVisible(slider),
         ...textOf(slider).length === 0 ? {} : { ariaLabel: textOf(slider) },
         ...labelledByText(slider).length === 0 ? {} : { labelledByText: labelledByText(slider) },
-        ...slider.getAttribute("aria-valuetext") === null ? {} : { valueText: normalize2(slider.getAttribute("aria-valuetext") ?? "") },
+        ...valueText.length === 0 ? {} : { valueText },
         ...slider.getAttribute("aria-valuemin") === null ? {} : { minimum: slider.getAttribute("aria-valuemin") },
         ...slider.getAttribute("aria-valuemax") === null ? {} : { maximum: slider.getAttribute("aria-valuemax") },
         ...slider.getAttribute("aria-valuenow") === null ? {} : { current: slider.getAttribute("aria-valuenow") },
@@ -12607,16 +12761,19 @@ async function discoverPowerSlider(page, options = {}) {
     return { sliders };
   }, {
     powerLabels: [...options.powerLabels ?? DEFAULT_POWER_LABELS].slice(0, MAX_POWER_LABELS + 1),
+    valueLabels: [...options.valueLabels ?? []].slice(0, MAX_POWER_VALUE_LABELS + 1),
     maxSliders: MAX_POWER_SLIDERS,
     maxOptions: MAX_POWER_LEVELS,
     maxNodes: MAX_POWER_DOM_NODES,
+    maxSearchNodes: MAX_POWER_SEARCH_NODES,
     maxTextChars: MAX_POWER_TEXT_CHARS
   }).catch(() => ({ sliders: [] }));
   return classifyPowerSliderObservation(observation, options);
 }
 function classifyPowerSliderObservation(observation, options = {}) {
   const suppliedPowerLabels = [...options.powerLabels ?? DEFAULT_POWER_LABELS];
-  const limitExceeded = observation.slidersTruncated === true || observation.sliders.length > MAX_POWER_SLIDERS || suppliedPowerLabels.length > MAX_POWER_LABELS || observation.sliders.some((slider) => slider.optionsTruncated === true || (slider.options?.length ?? 0) > MAX_POWER_LEVELS);
+  const suppliedValueLabels = [...options.valueLabels ?? []];
+  const limitExceeded = observation.slidersTruncated === true || observation.sliders.length > MAX_POWER_SLIDERS || suppliedPowerLabels.length > MAX_POWER_LABELS || suppliedValueLabels.length > MAX_POWER_VALUE_LABELS || suppliedValueLabels.some((label) => label.length > MAX_POWER_LABEL_LENGTH) || observation.sliders.some((slider) => slider.optionsTruncated === true || (slider.options?.length ?? 0) > MAX_POWER_LEVELS);
   if (limitExceeded) {
     return {
       ok: false,
@@ -12825,7 +12982,7 @@ async function setMode(env, args) {
   try {
     const requested = requestedModeSelections(args);
     const requestedVersion = requestedModelVersion(args);
-    const requestedForOpening = requestedVersion === void 0 ? requested : [...requested, requestedModeSelection(requestedVersion)];
+    const requestedForOpening = requestedVersion === void 0 ? requested : [...requested, requestedModeSelection(requestedVersion, "model")];
     const opened = await waitForModeMenu(page, requestedForOpening, args.timeoutMs ?? 3e4);
     if (requestedVersion === void 0 && opened.alreadySelected.length === requested.length) {
       return resultOk({ selected: opened.alreadySelected, candidates: opened.modeButtons }, await contextFromPage(page));
@@ -12848,6 +13005,28 @@ async function setMode(env, args) {
       };
     }
     for (const request of requested) {
+      if (request.axis === "model" && chatModelLabelLooksSelectable(request.requested)) {
+        const modelSelection = await selectCompactChatModel(page, request, candidates, args.timeoutMs ?? 3e4);
+        observedCandidates.push(...modelSelection.candidates);
+        if (modelSelection.handled) {
+          if (modelSelection.selected === void 0) {
+            const candidateLabels2 = dedupeLabels(observedCandidates.map((candidate) => candidate.label));
+            return {
+              ok: false,
+              status: "unsupported",
+              warnings: [],
+              blocker: selectorDriftBlocker(
+                `Model option "${request.requested}" was not found, was ambiguous, or could not be verified in the active model view.`,
+                candidateLabels2
+              ),
+              context: await contextFromPage(page)
+            };
+          }
+          selected.push(modelSelection.selected);
+          candidates = modelSelection.candidates;
+          continue;
+        }
+      }
       let match = findModeMenuItem(candidates, request);
       if (match === void 0) {
         const sliderSelection = await selectModeWithPowerSlider(page, request);
@@ -12877,7 +13056,16 @@ async function setMode(env, args) {
     }
     let candidateLabels = dedupeLabels(observedCandidates.map((candidate) => candidate.label));
     if (requestedVersion !== void 0) {
-      const versionResult = await selectModelVersion(page, requestedVersion, candidates, args.timeoutMs ?? 3e4);
+      const compactResult = await selectCompactChatModel(
+        page,
+        requestedModeSelection(requestedVersion, "model"),
+        candidates,
+        args.timeoutMs ?? 3e4
+      );
+      const versionResult = compactResult.handled ? {
+        ...compactResult.selected === void 0 ? {} : { selected: compactResult.selected },
+        candidates: compactResult.candidates.map((candidate) => candidate.label)
+      } : await selectModelVersion(page, requestedVersion, candidates, args.timeoutMs ?? 3e4);
       candidateLabels = dedupeLabels([...candidateLabels, ...versionResult.candidates]);
       if (!versionResult.selected) {
         return {
@@ -12890,7 +13078,11 @@ async function setMode(env, args) {
       }
       selected.push(versionResult.selected);
     }
-    const verificationWarnings = await modeVerificationWarnings(page, requested, selected);
+    const verificationWarnings = await modeVerificationWarnings(
+      page,
+      requested.filter((request) => request.axis !== "model" || !chatModelLabelLooksSelectable(request.requested)),
+      selected
+    );
     return resultOk({ selected, candidates: candidateLabels }, await contextFromPage(page), verificationWarnings);
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
@@ -12898,12 +13090,13 @@ async function setMode(env, args) {
 }
 async function selectModeWithPowerSlider(page, request) {
   const discovery = await discoverPowerSlider(page, {
-    powerLabels: localeLabels.configurationAxes.power
+    powerLabels: localeLabels.configurationAxes.power,
+    valueLabels: chatPowerValueLabels
   });
   if (!discovery.ok || await isWorkPowerSurface(page, discovery.evidence.surface)) {
     return void 0;
   }
-  const target = resolvePowerTarget(discovery, request.labels);
+  const target = resolvePowerTarget(discovery, request.labels) ?? resolveStandardChatPowerTarget(discovery, request);
   const slider = observedPowerSlider(page, discovery);
   if (target === void 0 || slider?.count === void 0 || slider.evaluate === void 0 || slider.press === void 0 || slider.isVisible === void 0 || !await slider.isVisible().catch(() => false) || await slider.count().catch(() => 0) !== 1) {
     return void 0;
@@ -12967,6 +13160,88 @@ async function openEffortSubmenu(page, rootItems, request) {
   await page.waitForTimeout?.(250);
   const nested = await enumerateVisibleMenuItems(page);
   return findModeMenuItem(nested, request) === void 0 ? [] : nested;
+}
+var STANDARD_CHAT_POWER_OFFSETS = {
+  instant: 0,
+  medium: 1,
+  high: 2,
+  extraHigh: 3,
+  pro: 4
+};
+function resolveStandardChatPowerTarget(discovery, request) {
+  if (discovery.range.count !== 5 || discovery.valueText === void 0 || request.modeId === void 0) {
+    return void 0;
+  }
+  const currentModeId = modeOptionIdFor(discovery.valueText);
+  const currentOffset = currentModeId === void 0 ? void 0 : STANDARD_CHAT_POWER_OFFSETS[currentModeId];
+  const targetOffset = STANDARD_CHAT_POWER_OFFSETS[request.modeId];
+  if (currentOffset === void 0 || targetOffset === void 0 || discovery.range.minimum + currentOffset !== discovery.range.current) {
+    return void 0;
+  }
+  return discovery.range.minimum + targetOffset;
+}
+async function selectCompactChatModel(page, request, rootItems, timeoutMs) {
+  const opened = await openCompactChatModelView(page, rootItems);
+  if (!opened.handled) return { handled: false, candidates: rootItems };
+  const observed = [...rootItems, ...opened.items];
+  const match = findChatModelMenuOption(opened.items, request.requested);
+  if (match === void 0) {
+    await closeModeMenus(page);
+    return { handled: true, candidates: observed };
+  }
+  if (match.checked !== true && !await clickResolvedMenuItem(page, match)) {
+    await closeModeMenus(page);
+    return { handled: true, candidates: observed };
+  }
+  if (match.checked !== true) await page.waitForTimeout?.(250);
+  const verification = await verifyCompactChatModel(page, request, timeoutMs);
+  observed.push(...verification.items);
+  await closeModeMenus(page);
+  return verification.selected === void 0 ? { handled: true, candidates: observed } : { handled: true, selected: verification.selected, candidates: observed };
+}
+async function openCompactChatModelView(page, items) {
+  if (chatModelMenuOptions(items).length > 0) {
+    return { handled: true, items };
+  }
+  const opener = findChatModelViewOpener(items);
+  if (opener === void 0) return { handled: false, items };
+  if (!await clickResolvedMenuItem(page, opener)) return { handled: true, items };
+  await page.waitForTimeout?.(250);
+  return { handled: true, items: await enumerateVisibleMenuItems(page) };
+}
+async function verifyCompactChatModel(page, request, timeoutMs) {
+  let items = await enumerateVisibleMenuItems(page);
+  if (chatModelMenuOptions(items).length === 0) {
+    if (findChatModelViewOpener(items) === void 0) {
+      const reopened = await waitForModeMenu(page, [request], Math.min(timeoutMs, 5e3));
+      if (!reopened.opened) return { items };
+      await page.waitForTimeout?.(250);
+      items = await enumerateVisibleMenuItems(page);
+    }
+    const modelView = await openCompactChatModelView(page, items);
+    if (!modelView.handled) return { items };
+    items = modelView.items;
+  }
+  const selected = findChatModelMenuOption(items, request.requested);
+  return selected?.checked === true ? { selected: selected.label, items } : { items };
+}
+async function closeModeMenus(page) {
+  if (page.keyboard?.press !== void 0) {
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout?.(50);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout?.(200);
+    return;
+  }
+  if (page.cua?.keypress !== void 0) {
+    try {
+      await page.cua.keypress({ keys: ["ESC"] });
+      await page.waitForTimeout?.(50);
+      await page.cua.keypress({ keys: ["ESC"] });
+      await page.waitForTimeout?.(200);
+    } catch {
+    }
+  }
 }
 async function modeVerificationWarnings(page, requested, selected) {
   if (requested.length === 0) {
@@ -13205,6 +13480,18 @@ async function clickIfUniqueMenuControl(locator, item) {
     const style = window.getComputedStyle(control);
     const rect = control.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0 || style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") return false;
+    const viewportWidth = document.documentElement?.clientWidth ?? window.innerWidth;
+    const viewportHeight = document.documentElement?.clientHeight ?? window.innerHeight;
+    if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight) return false;
+    let ancestor = control.parentElement;
+    while (ancestor != null) {
+      const ancestorStyle = window.getComputedStyle(ancestor);
+      const overflowX = ancestorStyle.overflowX || ancestorStyle.overflow;
+      const overflowY = ancestorStyle.overflowY || ancestorStyle.overflow;
+      const ancestorRect = ancestor.getBoundingClientRect();
+      if (/^(?:auto|clip|hidden|scroll)$/.test(overflowX) && (rect.right <= ancestorRect.left || rect.left >= ancestorRect.right) || /^(?:auto|clip|hidden|scroll)$/.test(overflowY) && (rect.bottom <= ancestorRect.top || rect.top >= ancestorRect.bottom)) return false;
+      ancestor = ancestor.parentElement;
+    }
     const containers = Array.from(document.querySelectorAll(
       "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]"
     )).filter((container) => {
@@ -13257,16 +13544,24 @@ function findUniqueModeMenuItem(items, wanted) {
   return hasStructuralModeEvidence(match) || match.role === "menuitemradio" ? match : void 0;
 }
 function requestedModeSelections(args) {
-  const requested = [args.model, args.intelligence, args.effort].filter((value) => value !== void 0);
-  if (requestedModelVersion(args) !== void 0 && requested.length === 0) {
+  const requested = [
+    ["intelligence", args.intelligence],
+    ["effort", args.effort],
+    ["model", args.model]
+  ];
+  const present = requested.filter(
+    (entry) => entry[1] !== void 0
+  );
+  if (requestedModelVersion(args) !== void 0 && present.length === 0) {
     return [];
   }
-  return (requested.length > 0 ? requested : [DEFAULT_MODE_EFFORT]).map(requestedModeSelection);
+  return present.length > 0 ? present.map(([axis, value]) => requestedModeSelection(value, axis)) : [requestedModeSelection(DEFAULT_MODE_EFFORT, "effort")];
 }
-function requestedModeSelection(requested) {
+function requestedModeSelection(requested, axis) {
   const modeId = modeOptionIdFor(requested);
   const labels = modeId === void 0 ? [requested] : localeLabels.modeOptions[modeId];
   const request = {
+    axis,
     requested,
     labels: labels.length > 0 ? [...labels] : [requested]
   };
@@ -13323,7 +13618,7 @@ function findUniqueVisibleLabelForRequest(labels, request) {
 async function selectModelVersion(page, requestedVersion, currentCandidates, timeoutMs) {
   let candidates = await enumerateVisibleMenuItems(page);
   if (!looksLikeModeMenu(candidates)) {
-    const opened2 = await waitForModeMenu(page, [{ requested: requestedVersion, labels: [requestedVersion] }], timeoutMs);
+    const opened2 = await waitForModeMenu(page, [{ axis: "model", requested: requestedVersion, labels: [requestedVersion] }], timeoutMs);
     if (opened2.opened) {
       await page.waitForTimeout?.(250);
       candidates = await enumerateVisibleMenuItems(page);
@@ -13412,7 +13707,20 @@ async function menuItemCenter(page, item, roles = ["menuitem", "menuitemradio", 
       if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
       const rect2 = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
-      return rect2.width > 0 && rect2.height > 0 && style.visibility !== "hidden" && style.display !== "none" && style.opacity !== "0" && style.pointerEvents !== "none";
+      const viewportWidth = document.documentElement?.clientWidth ?? window.innerWidth;
+      const viewportHeight = document.documentElement?.clientHeight ?? window.innerHeight;
+      const withinViewport = !Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight) || rect2.right > 0 && rect2.bottom > 0 && rect2.left < viewportWidth && rect2.top < viewportHeight;
+      if (!(rect2.width > 0 && rect2.height > 0 && style.visibility !== "hidden" && style.display !== "none" && style.opacity !== "0" && style.pointerEvents !== "none" && withinViewport)) return false;
+      let ancestor = element.parentElement;
+      while (ancestor != null) {
+        const ancestorStyle = window.getComputedStyle(ancestor);
+        const overflowX = ancestorStyle.overflowX || ancestorStyle.overflow;
+        const overflowY = ancestorStyle.overflowY || ancestorStyle.overflow;
+        const ancestorRect = ancestor.getBoundingClientRect();
+        if (/^(?:auto|clip|hidden|scroll)$/.test(overflowX) && (rect2.right <= ancestorRect.left || rect2.left >= ancestorRect.right) || /^(?:auto|clip|hidden|scroll)$/.test(overflowY) && (rect2.bottom <= ancestorRect.top || rect2.top >= ancestorRect.bottom)) return false;
+        ancestor = ancestor.parentElement;
+      }
+      return true;
     };
     const containers = Array.from(document.querySelectorAll(
       "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]"
@@ -13509,17 +13817,18 @@ async function visibleModeButtonLabelList(page) {
       const style = typeof window?.getComputedStyle === "function" ? window.getComputedStyle(element) : void 0;
       if (style?.display === "none" || style?.visibility === "hidden" || style?.opacity === "0" || style?.pointerEvents === "none") return "";
       const rect = typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : { width: 1, height: 1 };
-      if (rect.width <= 0 && rect.height <= 0) return "";
+      if (rect.width <= 0 || rect.height <= 0) return "";
       if (scopedRoots.length > 0 && !scopedRoots.some((root) => root.contains(node))) return "";
       const visibleText = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim();
       const ariaLabel = (element.getAttribute("aria-label") ?? "").replace(/\s+/g, " ").trim();
-      const label = visibleText.length > 0 ? visibleText : ariaLabel;
       const testId = element.getAttribute("data-testid") ?? "";
+      const semanticText = `${visibleText} ${ariaLabel}`.trim();
+      const structuralModelControl = /model-switcher|model-selector|mode-selector/i.test(testId) || /\b(?:gpt|sol|luna|terra|\d+\.\d+)\b/i.test(semanticText);
+      const label = structuralModelControl && ariaLabel.length > 0 ? ariaLabel : visibleText.length > 0 ? visibleText : ariaLabel;
       if (testId === "accounts-profile-button") return "";
       if (/open profile menu/i.test(label)) return "";
       if (visibleText.length === 0 && /feedback|conversation options|dismiss/i.test(ariaLabel)) return "";
       const normalized = label.toLowerCase();
-      const structuralModelControl = /model-switcher|model-selector|mode-selector/i.test(testId) || /\b(?:gpt|sol|luna|terra)\b/i.test(label);
       if (!structuralModelControl && !normalizedModeLabels.some((modeLabel) => tokenMatches(normalized, modeLabel))) return "";
       return label;
     }).filter(Boolean).slice(0, 30);
@@ -13538,6 +13847,13 @@ var CONFIGURATION_AXIS_ORDER = [
   "effort",
   "speed",
   "modelVersion"
+];
+var CHAT_CONFIGURATION_AXIS_ORDER = [
+  "intelligence",
+  "effort",
+  "model",
+  "modelVersion",
+  "speed"
 ];
 async function inspectConfiguration(env, args = {}) {
   const boot2 = await ensurePage(env);
@@ -13564,13 +13880,14 @@ async function inspectConfiguration(env, args = {}) {
       await page.waitForTimeout?.(150);
     }
     let panel = await readConfigurationPanel(page);
-    if (panel.openerLabel === void 0 && initialPanel.openerLabel !== void 0) {
+    if (initialPanel.openerLabel !== void 0 && (panel.openerLabel === void 0 || isProConfigurationOpener(initialPanel.openerLabel))) {
       panel.openerLabel = initialPanel.openerLabel;
     }
     let rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
     const inferredExperience = detected.data.experience === "unknown" ? inferExperienceFromConfigurationPanel(panel, rootItems) : detected.data.experience;
     const experience = inferredExperience === "unknown" ? discoveryExperience : inferredExperience;
     if (args.experience !== void 0 && experience !== args.experience) {
+      if (rootOpened) await closeConfigurationMenus(page);
       return {
         ok: false,
         status: "unsupported",
@@ -13588,21 +13905,39 @@ async function inspectConfiguration(env, args = {}) {
         })
       };
     }
-    const chatAdvancedRequired = experience === "chat" && rootOpened && compactChatRootLooksRecognized(panel, rootItems);
-    const chatAdvancedOpened = !chatAdvancedRequired || await ensureChatAdvancedPanel(page, rootItems);
+    let chatObservation;
+    const chatAdvancedRequired = experience === "chat" && rootOpened && (compactChatRootLooksRecognized(panel, rootItems) || chatModelMenuOptions(rootItems).length > 0);
+    let chatAdvancedOpened = !chatAdvancedRequired;
+    if (chatAdvancedRequired) {
+      const power = await discoverPowerSlider(page, {
+        powerLabels: localeLabels.configurationAxes.power,
+        valueLabels: chatPowerValueLabels
+      });
+      const currentModelItems = chatModelMenuOptions(rootItems).length > 0 ? rootItems : findChatModelViewOpener(rootItems) === void 0 ? void 0 : await ensureChatModelPanel(page, rootItems);
+      if (currentModelItems !== void 0 && chatModelMenuOptions(currentModelItems).length > 0) {
+        chatObservation = {
+          ...power.ok ? { power } : {},
+          modelItems: currentModelItems
+        };
+        chatAdvancedOpened = power.ok;
+        rootItems = currentModelItems;
+      } else {
+        chatAdvancedOpened = await ensureChatAdvancedPanel(page, rootItems);
+      }
+    }
     if (chatAdvancedRequired && chatAdvancedOpened) {
       await page.waitForTimeout?.(150);
       panel = await readConfigurationPanel(page);
-      if (panel.openerLabel === void 0 && initialPanel.openerLabel !== void 0) {
+      if (initialPanel.openerLabel !== void 0 && (panel.openerLabel === void 0 || isProConfigurationOpener(initialPanel.openerLabel))) {
         panel.openerLabel = initialPanel.openerLabel;
       }
-      rootItems = await enumerateVisibleMenuItems(page);
+      if (chatObservation === void 0) rootItems = await enumerateVisibleMenuItems(page);
     }
     const workAdvancedOpened = experience !== "work" || rootOpened && await ensureWorkAdvancedPanel(page);
     if (experience === "work" && workAdvancedOpened) {
       await page.waitForTimeout?.(150);
       panel = await readConfigurationPanel(page);
-      if (panel.openerLabel === void 0 && initialPanel.openerLabel !== void 0) {
+      if (initialPanel.openerLabel !== void 0 && (panel.openerLabel === void 0 || isProConfigurationOpener(initialPanel.openerLabel))) {
         panel.openerLabel = initialPanel.openerLabel;
       }
       rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
@@ -13612,7 +13947,8 @@ async function inspectConfiguration(env, args = {}) {
       detected.data.selectorProfile,
       detected.data.evidence,
       panel,
-      rootItems
+      rootItems,
+      chatObservation
     );
     if (args.includeOptions !== false && experience === "work" && panel.axisRows.length > 0) {
       for (const axis of WORK_AXES) {
@@ -13622,7 +13958,6 @@ async function inspectConfiguration(env, args = {}) {
           data.options[axis] = options;
         }
       }
-      await closeConfigurationMenus(page);
     }
     const warnings = [];
     if (!rootOpened) {
@@ -13632,11 +13967,12 @@ async function inspectConfiguration(env, args = {}) {
       warnings.push("The Work configuration menu opened, but its Advanced model, effort, and speed controls could not be made visible.");
     }
     if (chatAdvancedRequired && !chatAdvancedOpened) {
-      warnings.push("The compact Chat configuration menu opened, but its Advanced model and effort controls could not be made visible.");
+      warnings.push("The compact Chat configuration menu opened, but its Power and Select model controls could not both be verified.");
     }
     if (!data.verified) {
       warnings.push("The visible configuration could not be verified from a recognized Chat or Work selector profile.");
     }
+    if (rootOpened) await closeConfigurationMenus(page);
     return resultOk(data, await contextFromPage(page, {
       experience: data.experience,
       selectorProfile: data.selectorProfile
@@ -13705,7 +14041,8 @@ async function applyConfiguration(env, args) {
       return configurationFailure(page, before, desired, [], "The visible surface is not recognizable as Chat or Work.", "experience_unknown");
     }
     const selected = [];
-    for (const [axis, requested] of selectionEntries(desired)) {
+    const applyOrder = before.experience === "chat" ? CHAT_CONFIGURATION_AXIS_ORDER : CONFIGURATION_AXIS_ORDER;
+    for (const [axis, requested] of selectionEntries(desired, applyOrder)) {
       const active = activeConfigurationValue(before, axis);
       if (active !== void 0 && configurationValueMatches(active, requested)) {
         selected.push({ axis, requested, selected: active });
@@ -13765,7 +14102,7 @@ async function applyConfiguration(env, args) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
   }
 }
-function configurationInspectionFromSurface(experience, detectedProfile, evidence, panel, menuItems) {
+function configurationInspectionFromSurface(experience, detectedProfile, evidence, panel, menuItems, chatObservation) {
   const active = {};
   const options = {};
   const availableAxes = [];
@@ -13778,9 +14115,35 @@ function configurationInspectionFromSurface(experience, detectedProfile, evidenc
     selectorProfile = panel.advancedVisible ? "work_advanced_v1" : "work_basic_v1";
   } else if (experience === "chat") {
     const compact = compactChatMenuLooksRecognized(panel);
-    const simplified = compact || chatMenuLooksSimplified(menuItems);
+    const currentCompact = currentCompactChatMenuLooksRecognized(menuItems);
+    const simplified = chatObservation !== void 0 || currentCompact || compact || chatMenuLooksSimplified(menuItems);
     selectorProfile = simplified ? "chat_simplified_v1" : detectedProfile;
-    if (compact) {
+    if (chatObservation !== void 0) {
+      const modelOptions = chatModelMenuOptions(chatObservation.modelItems ?? []);
+      if (modelOptions.length > 0) {
+        availableAxes.push("model");
+        options.model = modelOptions.map(menuItemToOption);
+        const selectedModel = selectedChatModelMenuOption(modelOptions);
+        if (selectedModel !== void 0) active.model = selectedModel.label;
+      }
+      if (chatObservation.power !== void 0) {
+        const powerLabel = selectedPowerLabel(chatObservation.power);
+        availableAxes.push("effort");
+        if (powerLabel !== void 0) active.effort = powerLabel;
+        options.effort = chatObservation.power.options.map((option) => ({
+          id: normalizeConfigurationId(option.label),
+          label: option.label,
+          selected: option.value === chatObservation.power.range.current
+        }));
+      }
+    } else if (currentCompact) {
+      const modelOptions = chatModelMenuOptions(menuItems);
+      availableAxes.push("model", "effort");
+      options.model = modelOptions.map(menuItemToOption);
+      const selectedModel = selectedChatModelMenuOption(modelOptions);
+      if (selectedModel !== void 0) active.model = selectedModel.label;
+      if (panel.openerLabel !== void 0) active.effort = panel.openerLabel;
+    } else if (compact) {
       if (panel.openerLabel !== void 0) {
         availableAxes.push("intelligence");
         active.intelligence = panel.openerLabel;
@@ -14091,6 +14454,14 @@ async function ensureWorkAdvancedPanel(page) {
   await page.waitForTimeout?.(200);
   return (await readConfigurationPanel(page)).axisRows.length > 0;
 }
+async function ensureChatModelPanel(page, items) {
+  if (chatModelMenuOptions(items).length > 0) return items;
+  const opener = findChatModelViewOpener(items);
+  if (opener === void 0 || !await clickVisibleMenuItem(page, opener)) return void 0;
+  await page.waitForTimeout?.(200);
+  const modelItems = await enumerateVisibleMenuItems(page);
+  return chatModelMenuOptions(modelItems).length > 0 ? modelItems : void 0;
+}
 async function ensureChatAdvancedPanel(page, items) {
   const advanced = items.filter((item) => menuItemMatchesConfigurationAxis(item, "advanced"));
   if (advanced.length !== 1 || !await clickVisibleMenuItem(page, advanced[0])) {
@@ -14187,7 +14558,13 @@ function compactChatMenuLooksRecognized(panel) {
   return axes.has("model") && axes.has("effort");
 }
 function compactChatRootLooksRecognized(panel, items) {
-  return isProConfigurationOpener(panel.openerLabel) && panel.axisRows.length === 0 && items.some((item) => /\bpower\b/i.test(`${item.label} ${item.ariaLabel ?? ""}`)) && items.some((item) => menuItemMatchesConfigurationAxis(item, "advanced"));
+  if (panel.axisRows.length > 0 || !items.some((item) => /\bpower\b/i.test(`${item.label} ${item.ariaLabel ?? ""}`))) {
+    return false;
+  }
+  return findChatModelViewOpener(items) !== void 0 || isProConfigurationOpener(panel.openerLabel) && items.some((item) => menuItemMatchesConfigurationAxis(item, "advanced"));
+}
+function currentCompactChatMenuLooksRecognized(items) {
+  return items.some((item) => /\bpower\b/i.test(`${item.label} ${item.ariaLabel ?? ""}`)) && chatModelMenuOptions(items).length > 0 && selectedChatModelMenuOption(items) !== void 0;
 }
 function isProConfigurationOpener(label) {
   return label !== void 0 && localeLabels.configurationOptions.pro.some((candidate) => visibleLabelMatches(label, candidate));
@@ -14200,6 +14577,9 @@ function inferExperienceFromConfigurationPanel(panel, items) {
     return "chat";
   }
   if (compactChatRootLooksRecognized(panel, items)) {
+    return "chat";
+  }
+  if (isProConfigurationOpener(panel.openerLabel) && chatModelMenuOptions(items).length >= 2 && selectedChatModelMenuOption(items) !== void 0) {
     return "chat";
   }
   if (chatMenuLooksSimplified(items)) {
@@ -14303,9 +14683,9 @@ function configurationValueMatches(actual, requested) {
   if (normalizedActual === normalizedRequested) return true;
   return configurationSemanticLabels(requested).some((label) => normalizeConfigurationId(label) === normalizedActual);
 }
-function selectionEntries(selection) {
+function selectionEntries(selection, order = CONFIGURATION_AXIS_ORDER) {
   const entries = [];
-  for (const axis of CONFIGURATION_AXIS_ORDER) {
+  for (const axis of order) {
     const value = selection[axis];
     if (typeof value === "string" && value.trim().length > 0) {
       entries.push([axis, value.trim()]);
@@ -14334,6 +14714,13 @@ function menuItemToOption(item) {
   if (item.hasPopup !== void 0) option.hasSubmenu = item.hasPopup;
   return option;
 }
+function selectedPowerLabel(discovery) {
+  const selected = discovery.options.filter((option) => option.value === discovery.range.current);
+  if (selected.length === 1) return selected[0].label;
+  if (discovery.valueText === void 0) return void 0;
+  const aliases = Object.values(localeLabels.configurationOptions).flat().filter((label) => visibleLabelMatches(discovery.valueText, label));
+  return aliases.length === 1 ? aliases[0] : discovery.valueText;
+}
 function dedupeOptions(options) {
   const seen = /* @__PURE__ */ new Set();
   return options.filter((option) => {
@@ -14361,7 +14748,9 @@ function normalizeConfigurationId(value) {
 async function closeConfigurationMenus(page) {
   if (!await pressConfigurationEscape(page)) return;
   await page.waitForTimeout?.(50);
-  await pressConfigurationEscape(page);
+  if (await pressConfigurationEscape(page)) {
+    await page.waitForTimeout?.(200);
+  }
 }
 async function closeConfigurationSubmenu(page) {
   if (!await pressConfigurationEscape(page)) return;
@@ -14369,8 +14758,12 @@ async function closeConfigurationSubmenu(page) {
 }
 async function pressConfigurationEscape(page) {
   if (page.keyboard?.press !== void 0) {
-    await page.keyboard.press("Escape");
-    return true;
+    try {
+      await page.keyboard.press("Escape");
+      return true;
+    } catch {
+      return false;
+    }
   }
   if (page.cua?.keypress !== void 0) {
     try {

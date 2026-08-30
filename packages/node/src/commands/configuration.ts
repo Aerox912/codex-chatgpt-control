@@ -1,4 +1,10 @@
 import { enumerateVisibleMenuItems, type MenuItem } from "../dom/menus.js";
+import {
+  chatModelMenuOptions,
+  chatPowerValueLabels,
+  findChatModelViewOpener,
+  selectedChatModelMenuOption
+} from "../dom/chat-configuration-menu.js";
 import { localeLabels } from "../dom/locale-labels.js";
 import { normalizeForLabelMatch, visibleLabelMatches } from "../dom/label-match.js";
 import { resultError, resultOk } from "../errors.js";
@@ -22,6 +28,7 @@ import type {
 import { contextFromPage } from "./context.js";
 import { detectExperience, openExperience } from "./experience.js";
 import { setMode } from "./modes.js";
+import { discoverPowerSlider, type PowerDiscoveryResult } from "./power-discovery.js";
 import { ensurePage } from "./session.js";
 
 const WORK_AXES: ConfigurationAxis[] = ["model", "effort", "speed"];
@@ -36,6 +43,20 @@ const CONFIGURATION_AXIS_ORDER: ConfigurationAxis[] = [
   "speed",
   "modelVersion",
 ];
+const CHAT_CONFIGURATION_AXIS_ORDER: ConfigurationAxis[] = [
+  "intelligence",
+  "effort",
+  "model",
+  "modelVersion",
+  "speed",
+];
+
+type SuccessfulPowerDiscovery = Extract<PowerDiscoveryResult, { ok: true }>;
+
+type ChatConfigurationObservation = {
+  power?: SuccessfulPowerDiscovery;
+  modelItems?: MenuItem[];
+};
 
 export type ConfigurationPanelSnapshot = {
   openerLabel?: string;
@@ -75,7 +96,8 @@ export async function inspectConfiguration(
     }
 
     let panel = await readConfigurationPanel(page);
-    if (panel.openerLabel === undefined && initialPanel.openerLabel !== undefined) {
+    if (initialPanel.openerLabel !== undefined
+      && (panel.openerLabel === undefined || isProConfigurationOpener(initialPanel.openerLabel))) {
       panel.openerLabel = initialPanel.openerLabel;
     }
     let rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
@@ -87,6 +109,7 @@ export async function inspectConfiguration(
       : inferredExperience;
 
     if (args.experience !== undefined && experience !== args.experience) {
+      if (rootOpened) await closeConfigurationMenus(page);
       return {
         ok: false,
         status: "unsupported",
@@ -105,18 +128,40 @@ export async function inspectConfiguration(
       };
     }
 
+    let chatObservation: ChatConfigurationObservation | undefined;
     const chatAdvancedRequired = experience === "chat"
       && rootOpened
-      && compactChatRootLooksRecognized(panel, rootItems);
-    const chatAdvancedOpened = !chatAdvancedRequired
-      || await ensureChatAdvancedPanel(page, rootItems);
+      && (compactChatRootLooksRecognized(panel, rootItems) || chatModelMenuOptions(rootItems).length > 0);
+    let chatAdvancedOpened = !chatAdvancedRequired;
+    if (chatAdvancedRequired) {
+      const power = await discoverPowerSlider(page, {
+        powerLabels: localeLabels.configurationAxes.power,
+        valueLabels: chatPowerValueLabels
+      });
+      const currentModelItems = chatModelMenuOptions(rootItems).length > 0
+        ? rootItems
+        : findChatModelViewOpener(rootItems) === undefined
+          ? undefined
+          : await ensureChatModelPanel(page, rootItems);
+      if (currentModelItems !== undefined && chatModelMenuOptions(currentModelItems).length > 0) {
+        chatObservation = {
+          ...(power.ok ? { power } : {}),
+          modelItems: currentModelItems
+        };
+        chatAdvancedOpened = power.ok;
+        rootItems = currentModelItems;
+      } else {
+        chatAdvancedOpened = await ensureChatAdvancedPanel(page, rootItems);
+      }
+    }
     if (chatAdvancedRequired && chatAdvancedOpened) {
       await page.waitForTimeout?.(150);
       panel = await readConfigurationPanel(page);
-      if (panel.openerLabel === undefined && initialPanel.openerLabel !== undefined) {
+      if (initialPanel.openerLabel !== undefined
+        && (panel.openerLabel === undefined || isProConfigurationOpener(initialPanel.openerLabel))) {
         panel.openerLabel = initialPanel.openerLabel;
       }
-      rootItems = await enumerateVisibleMenuItems(page);
+      if (chatObservation === undefined) rootItems = await enumerateVisibleMenuItems(page);
     }
 
     const workAdvancedOpened = experience !== "work"
@@ -124,7 +169,8 @@ export async function inspectConfiguration(
     if (experience === "work" && workAdvancedOpened) {
       await page.waitForTimeout?.(150);
       panel = await readConfigurationPanel(page);
-      if (panel.openerLabel === undefined && initialPanel.openerLabel !== undefined) {
+      if (initialPanel.openerLabel !== undefined
+        && (panel.openerLabel === undefined || isProConfigurationOpener(initialPanel.openerLabel))) {
         panel.openerLabel = initialPanel.openerLabel;
       }
       rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
@@ -135,7 +181,8 @@ export async function inspectConfiguration(
       detected.data.selectorProfile,
       detected.data.evidence,
       panel,
-      rootItems
+      rootItems,
+      chatObservation
     );
 
     if (args.includeOptions !== false && experience === "work" && panel.axisRows.length > 0) {
@@ -146,7 +193,6 @@ export async function inspectConfiguration(
           data.options[axis] = options;
         }
       }
-      await closeConfigurationMenus(page);
     }
 
     const warnings: string[] = [];
@@ -157,12 +203,13 @@ export async function inspectConfiguration(
       warnings.push("The Work configuration menu opened, but its Advanced model, effort, and speed controls could not be made visible.");
     }
     if (chatAdvancedRequired && !chatAdvancedOpened) {
-      warnings.push("The compact Chat configuration menu opened, but its Advanced model and effort controls could not be made visible.");
+      warnings.push("The compact Chat configuration menu opened, but its Power and Select model controls could not both be verified.");
     }
     if (!data.verified) {
       warnings.push("The visible configuration could not be verified from a recognized Chat or Work selector profile.");
     }
 
+    if (rootOpened) await closeConfigurationMenus(page);
     return resultOk(data, await contextFromPage(page, {
       experience: data.experience,
       selectorProfile: data.selectorProfile
@@ -244,7 +291,10 @@ export async function applyConfiguration(
     }
 
     const selected: AppliedConfigurationSelection[] = [];
-    for (const [axis, requested] of selectionEntries(desired)) {
+    const applyOrder = before.experience === "chat"
+      ? CHAT_CONFIGURATION_AXIS_ORDER
+      : CONFIGURATION_AXIS_ORDER;
+    for (const [axis, requested] of selectionEntries(desired, applyOrder)) {
       const active = activeConfigurationValue(before, axis);
       if (active !== undefined && configurationValueMatches(active, requested)) {
         selected.push({ axis, requested, selected: active });
@@ -317,7 +367,8 @@ export function configurationInspectionFromSurface(
   detectedProfile: SurfaceSelectorProfile,
   evidence: ConfigurationInspectionData["evidence"],
   panel: ConfigurationPanelSnapshot,
-  menuItems: MenuItem[]
+  menuItems: MenuItem[],
+  chatObservation?: ChatConfigurationObservation
 ): ConfigurationInspectionData {
   const active: Partial<Record<ConfigurationAxis, string>> = {};
   const options: Partial<Record<ConfigurationAxis, ConfigurationOption[]>> = {};
@@ -332,9 +383,35 @@ export function configurationInspectionFromSurface(
     selectorProfile = panel.advancedVisible ? "work_advanced_v1" : "work_basic_v1";
   } else if (experience === "chat") {
     const compact = compactChatMenuLooksRecognized(panel);
-    const simplified = compact || chatMenuLooksSimplified(menuItems);
+    const currentCompact = currentCompactChatMenuLooksRecognized(menuItems);
+    const simplified = chatObservation !== undefined || currentCompact || compact || chatMenuLooksSimplified(menuItems);
     selectorProfile = simplified ? "chat_simplified_v1" : detectedProfile;
-    if (compact) {
+    if (chatObservation !== undefined) {
+      const modelOptions = chatModelMenuOptions(chatObservation.modelItems ?? []);
+      if (modelOptions.length > 0) {
+        availableAxes.push("model");
+        options.model = modelOptions.map(menuItemToOption);
+        const selectedModel = selectedChatModelMenuOption(modelOptions);
+        if (selectedModel !== undefined) active.model = selectedModel.label;
+      }
+      if (chatObservation.power !== undefined) {
+        const powerLabel = selectedPowerLabel(chatObservation.power);
+        availableAxes.push("effort");
+        if (powerLabel !== undefined) active.effort = powerLabel;
+        options.effort = chatObservation.power.options.map(option => ({
+          id: normalizeConfigurationId(option.label),
+          label: option.label,
+          selected: option.value === chatObservation.power!.range.current
+        }));
+      }
+    } else if (currentCompact) {
+      const modelOptions = chatModelMenuOptions(menuItems);
+      availableAxes.push("model", "effort");
+      options.model = modelOptions.map(menuItemToOption);
+      const selectedModel = selectedChatModelMenuOption(modelOptions);
+      if (selectedModel !== undefined) active.model = selectedModel.label;
+      if (panel.openerLabel !== undefined) active.effort = panel.openerLabel;
+    } else if (compact) {
       if (panel.openerLabel !== undefined) {
         availableAxes.push("intelligence");
         active.intelligence = panel.openerLabel;
@@ -751,6 +828,15 @@ async function ensureWorkAdvancedPanel(page: PageLike): Promise<boolean> {
   return (await readConfigurationPanel(page)).axisRows.length > 0;
 }
 
+async function ensureChatModelPanel(page: PageLike, items: MenuItem[]): Promise<MenuItem[] | undefined> {
+  if (chatModelMenuOptions(items).length > 0) return items;
+  const opener = findChatModelViewOpener(items);
+  if (opener === undefined || !await clickVisibleMenuItem(page, opener)) return undefined;
+  await page.waitForTimeout?.(200);
+  const modelItems = await enumerateVisibleMenuItems(page);
+  return chatModelMenuOptions(modelItems).length > 0 ? modelItems : undefined;
+}
+
 async function ensureChatAdvancedPanel(page: PageLike, items: MenuItem[]): Promise<boolean> {
   const advanced = items.filter(item => menuItemMatchesConfigurationAxis(item, "advanced"));
   if (advanced.length !== 1 || !await clickVisibleMenuItem(page, advanced[0]!)) {
@@ -867,10 +953,22 @@ function compactChatRootLooksRecognized(
   panel: ConfigurationPanelSnapshot,
   items: MenuItem[]
 ): boolean {
-  return isProConfigurationOpener(panel.openerLabel)
-    && panel.axisRows.length === 0
-    && items.some(item => /\bpower\b/i.test(`${item.label} ${item.ariaLabel ?? ""}`))
-    && items.some(item => menuItemMatchesConfigurationAxis(item, "advanced"));
+  if (panel.axisRows.length > 0
+    || !items.some(item => /\bpower\b/i.test(`${item.label} ${item.ariaLabel ?? ""}`))) {
+    return false;
+  }
+  // Select model is a strong identifier for the current two-view Chat picker,
+  // regardless of which Power value is active. The legacy Advanced root needs
+  // the compact Pro opener to remain distinguishable from Work.
+  return findChatModelViewOpener(items) !== undefined
+    || (isProConfigurationOpener(panel.openerLabel)
+      && items.some(item => menuItemMatchesConfigurationAxis(item, "advanced")));
+}
+
+function currentCompactChatMenuLooksRecognized(items: MenuItem[]): boolean {
+  return items.some(item => /\bpower\b/i.test(`${item.label} ${item.ariaLabel ?? ""}`))
+    && chatModelMenuOptions(items).length > 0
+    && selectedChatModelMenuOption(items) !== undefined;
 }
 
 function isProConfigurationOpener(label: string | undefined): boolean {
@@ -895,6 +993,11 @@ function inferExperienceFromConfigurationPanel(
     return "chat";
   }
   if (compactChatRootLooksRecognized(panel, items)) {
+    return "chat";
+  }
+  if (isProConfigurationOpener(panel.openerLabel)
+    && chatModelMenuOptions(items).length >= 2
+    && selectedChatModelMenuOption(items) !== undefined) {
     return "chat";
   }
   if (chatMenuLooksSimplified(items)) {
@@ -1021,9 +1124,12 @@ function configurationValueMatches(actual: string, requested: string): boolean {
     .some(label => normalizeConfigurationId(label) === normalizedActual);
 }
 
-function selectionEntries(selection: ConfigurationSelection): Array<[ConfigurationAxis, string]> {
+function selectionEntries(
+  selection: ConfigurationSelection,
+  order: readonly ConfigurationAxis[] = CONFIGURATION_AXIS_ORDER
+): Array<[ConfigurationAxis, string]> {
   const entries: Array<[ConfigurationAxis, string]> = [];
-  for (const axis of CONFIGURATION_AXIS_ORDER) {
+  for (const axis of order) {
     const value = selection[axis];
     if (typeof value === "string" && value.trim().length > 0) {
       entries.push([axis, value.trim()]);
@@ -1053,6 +1159,16 @@ function menuItemToOption(item: MenuItem): ConfigurationOption {
   };
   if (item.hasPopup !== undefined) option.hasSubmenu = item.hasPopup;
   return option;
+}
+
+function selectedPowerLabel(discovery: SuccessfulPowerDiscovery): string | undefined {
+  const selected = discovery.options.filter(option => option.value === discovery.range.current);
+  if (selected.length === 1) return selected[0]!.label;
+  if (discovery.valueText === undefined) return undefined;
+  const aliases = Object.values(localeLabels.configurationOptions)
+    .flat()
+    .filter(label => visibleLabelMatches(discovery.valueText!, label));
+  return aliases.length === 1 ? aliases[0] : discovery.valueText;
 }
 
 function dedupeOptions(options: ConfigurationOption[]): ConfigurationOption[] {
@@ -1092,7 +1208,11 @@ function normalizeConfigurationId(value: string): string {
 async function closeConfigurationMenus(page: PageLike): Promise<void> {
   if (!await pressConfigurationEscape(page)) return;
   await page.waitForTimeout?.(50);
-  await pressConfigurationEscape(page);
+  if (await pressConfigurationEscape(page)) {
+    // The carousel root uses a short pointer-grace dismissal. Reopening before
+    // it settles can detach the fresh model view during the next selection.
+    await page.waitForTimeout?.(200);
+  }
 }
 
 async function closeConfigurationSubmenu(page: PageLike): Promise<void> {
@@ -1105,8 +1225,12 @@ async function closeConfigurationSubmenu(page: PageLike): Promise<void> {
 
 async function pressConfigurationEscape(page: PageLike): Promise<boolean> {
   if (page.keyboard?.press !== undefined) {
-    await page.keyboard.press("Escape");
-    return true;
+    try {
+      await page.keyboard.press("Escape");
+      return true;
+    } catch {
+      return false;
+    }
   }
   if (page.cua?.keypress !== undefined) {
     try {

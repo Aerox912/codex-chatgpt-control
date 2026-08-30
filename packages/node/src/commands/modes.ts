@@ -3,13 +3,21 @@ import { enumerateVisibleMenuItems, findUniqueMenuItem, type MenuItem } from "..
 import { localeLabels } from "../dom/locale-labels.js";
 import { isShortLatinToken, normalizeForLabelMatch, visibleLabelMatches } from "../dom/label-match.js";
 import { normalizeLabel, normalizeWhitespace } from "../dom/visible-text.js";
+import {
+  chatModelLabelLooksSelectable,
+  chatModelMenuOptions,
+  chatPowerValueLabels,
+  findChatModelMenuOption,
+  findChatModelViewOpener
+} from "../dom/chat-configuration-menu.js";
 import type { CommandResult, GetModeArgs, LocatorLike, PageLike, RuntimeEnv, SelectToolArgs, SetModeArgs } from "../types.js";
 import type { ModeOptionId } from "../dom/locale/types.js";
 import { contextFromPage } from "./context.js";
 import {
   discoverPowerSlider,
   observedPowerSlider,
-  resolvePowerTarget
+  resolvePowerTarget,
+  type PowerDiscoveryResult
 } from "./power-discovery.js";
 import { ensurePage } from "./session.js";
 
@@ -55,6 +63,7 @@ const THREAD_ACTION_PREFIXES = localeLabels.threadActionPrefixes
   .filter(prefix => prefix.length > 0);
 
 type RequestedMode = {
+  axis: "model" | "intelligence" | "effort";
   requested: string;
   labels: string[];
   modeId?: ModeOptionId;
@@ -78,7 +87,9 @@ export async function setMode(
   try {
     const requested = requestedModeSelections(args);
     const requestedVersion = requestedModelVersion(args);
-    const requestedForOpening = requestedVersion === undefined ? requested : [...requested, requestedModeSelection(requestedVersion)];
+    const requestedForOpening = requestedVersion === undefined
+      ? requested
+      : [...requested, requestedModeSelection(requestedVersion, "model")];
     const opened = await waitForModeMenu(page, requestedForOpening, args.timeoutMs ?? 30000);
     if (requestedVersion === undefined && opened.alreadySelected.length === requested.length) {
       return resultOk({ selected: opened.alreadySelected, candidates: opened.modeButtons }, await contextFromPage(page));
@@ -103,6 +114,29 @@ export async function setMode(
     }
 
     for (const request of requested) {
+      if (request.axis === "model" && chatModelLabelLooksSelectable(request.requested)) {
+        const modelSelection = await selectCompactChatModel(page, request, candidates, args.timeoutMs ?? 30000);
+        observedCandidates.push(...modelSelection.candidates);
+        if (modelSelection.handled) {
+          if (modelSelection.selected === undefined) {
+            const candidateLabels = dedupeLabels(observedCandidates.map(candidate => candidate.label));
+            return {
+              ok: false,
+              status: "unsupported",
+              warnings: [],
+              blocker: selectorDriftBlocker(
+                `Model option "${request.requested}" was not found, was ambiguous, or could not be verified in the active model view.`,
+                candidateLabels
+              ),
+              context: await contextFromPage(page)
+            };
+          }
+          selected.push(modelSelection.selected);
+          candidates = modelSelection.candidates;
+          continue;
+        }
+      }
+
       let match = findModeMenuItem(candidates, request);
       if (match === undefined) {
         const sliderSelection = await selectModeWithPowerSlider(page, request);
@@ -137,7 +171,18 @@ export async function setMode(
 
     let candidateLabels = dedupeLabels(observedCandidates.map(candidate => candidate.label));
     if (requestedVersion !== undefined) {
-      const versionResult = await selectModelVersion(page, requestedVersion, candidates, args.timeoutMs ?? 30000);
+      const compactResult = await selectCompactChatModel(
+        page,
+        requestedModeSelection(requestedVersion, "model"),
+        candidates,
+        args.timeoutMs ?? 30000
+      );
+      const versionResult = compactResult.handled
+        ? {
+            ...(compactResult.selected === undefined ? {} : { selected: compactResult.selected }),
+            candidates: compactResult.candidates.map(candidate => candidate.label)
+          }
+        : await selectModelVersion(page, requestedVersion, candidates, args.timeoutMs ?? 30000);
       candidateLabels = dedupeLabels([...candidateLabels, ...versionResult.candidates]);
       if (!versionResult.selected) {
         return {
@@ -151,7 +196,11 @@ export async function setMode(
       selected.push(versionResult.selected);
     }
 
-    const verificationWarnings = await modeVerificationWarnings(page, requested, selected);
+    const verificationWarnings = await modeVerificationWarnings(
+      page,
+      requested.filter(request => request.axis !== "model" || !chatModelLabelLooksSelectable(request.requested)),
+      selected
+    );
     return resultOk({ selected, candidates: candidateLabels }, await contextFromPage(page), verificationWarnings);
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)), await contextFromPage(page));
@@ -161,23 +210,25 @@ export async function setMode(
 /**
  * Chat's compact picker can expose a Power/reasoning ARIA slider. Discover the
  * control from its semantic relationship to the localized Power axis and its
- * owning menu, then use only a complete, bounded, DOM-provided value mapping.
- * The Advanced submenu remains the fallback for every unrecognized or
- * unprobed shape; in particular, this path never infers labels from a fixed
- * five-position range.
+ * owning menu. Prefer a complete DOM-provided map. The current Chat widget
+ * exposes only a nearby current-value announcement, so its standard five
+ * positions are accepted only when that announced semantic value agrees with
+ * the current ARIA position. Advanced remains the fallback for other shapes.
  */
 async function selectModeWithPowerSlider(
   page: PageLike,
   request: RequestedMode
 ): Promise<PowerSliderSelection | undefined> {
   const discovery = await discoverPowerSlider(page, {
-    powerLabels: localeLabels.configurationAxes.power
+    powerLabels: localeLabels.configurationAxes.power,
+    valueLabels: chatPowerValueLabels
   });
   if (!discovery.ok || await isWorkPowerSurface(page, discovery.evidence.surface)) {
     return undefined;
   }
 
-  const target = resolvePowerTarget(discovery, request.labels);
+  const target = resolvePowerTarget(discovery, request.labels)
+    ?? resolveStandardChatPowerTarget(discovery, request);
   const slider = observedPowerSlider(page, discovery);
   if (target === undefined
     || slider?.count === undefined
@@ -276,6 +327,126 @@ async function openEffortSubmenu(
   await page.waitForTimeout?.(250);
   const nested = await enumerateVisibleMenuItems(page);
   return findModeMenuItem(nested, request) === undefined ? [] : nested;
+}
+
+const STANDARD_CHAT_POWER_OFFSETS: Partial<Record<ModeOptionId, number>> = {
+  instant: 0,
+  medium: 1,
+  high: 2,
+  extraHigh: 3,
+  pro: 4,
+};
+
+function resolveStandardChatPowerTarget(
+  discovery: Extract<PowerDiscoveryResult, { ok: true }>,
+  request: RequestedMode
+): number | undefined {
+  if (discovery.range.count !== 5 || discovery.valueText === undefined || request.modeId === undefined) {
+    return undefined;
+  }
+  const currentModeId = modeOptionIdFor(discovery.valueText);
+  const currentOffset = currentModeId === undefined ? undefined : STANDARD_CHAT_POWER_OFFSETS[currentModeId];
+  const targetOffset = STANDARD_CHAT_POWER_OFFSETS[request.modeId];
+  if (currentOffset === undefined
+    || targetOffset === undefined
+    || discovery.range.minimum + currentOffset !== discovery.range.current) {
+    return undefined;
+  }
+  return discovery.range.minimum + targetOffset;
+}
+
+type CompactChatModelSelection = {
+  handled: boolean;
+  selected?: string;
+  candidates: MenuItem[];
+};
+
+async function selectCompactChatModel(
+  page: PageLike,
+  request: RequestedMode,
+  rootItems: MenuItem[],
+  timeoutMs: number
+): Promise<CompactChatModelSelection> {
+  const opened = await openCompactChatModelView(page, rootItems);
+  if (!opened.handled) return { handled: false, candidates: rootItems };
+
+  const observed = [...rootItems, ...opened.items];
+  const match = findChatModelMenuOption(opened.items, request.requested);
+  if (match === undefined) {
+    await closeModeMenus(page);
+    return { handled: true, candidates: observed };
+  }
+
+  if (match.checked !== true && !await clickResolvedMenuItem(page, match)) {
+    await closeModeMenus(page);
+    return { handled: true, candidates: observed };
+  }
+  if (match.checked !== true) await page.waitForTimeout?.(250);
+
+  const verification = await verifyCompactChatModel(page, request, timeoutMs);
+  observed.push(...verification.items);
+  await closeModeMenus(page);
+  return verification.selected === undefined
+    ? { handled: true, candidates: observed }
+    : { handled: true, selected: verification.selected, candidates: observed };
+}
+
+async function openCompactChatModelView(
+  page: PageLike,
+  items: MenuItem[]
+): Promise<{ handled: boolean; items: MenuItem[] }> {
+  if (chatModelMenuOptions(items).length > 0) {
+    return { handled: true, items };
+  }
+  const opener = findChatModelViewOpener(items);
+  if (opener === undefined) return { handled: false, items };
+  if (!await clickResolvedMenuItem(page, opener)) return { handled: true, items };
+  await page.waitForTimeout?.(250);
+  return { handled: true, items: await enumerateVisibleMenuItems(page) };
+}
+
+async function verifyCompactChatModel(
+  page: PageLike,
+  request: RequestedMode,
+  timeoutMs: number
+): Promise<{ selected?: string; items: MenuItem[] }> {
+  let items = await enumerateVisibleMenuItems(page);
+  if (chatModelMenuOptions(items).length === 0) {
+    if (findChatModelViewOpener(items) === undefined) {
+      const reopened = await waitForModeMenu(page, [request], Math.min(timeoutMs, 5_000));
+      if (!reopened.opened) return { items };
+      await page.waitForTimeout?.(250);
+      items = await enumerateVisibleMenuItems(page);
+    }
+    const modelView = await openCompactChatModelView(page, items);
+    if (!modelView.handled) return { items };
+    items = modelView.items;
+  }
+
+  const selected = findChatModelMenuOption(items, request.requested);
+  return selected?.checked === true
+    ? { selected: selected.label, items }
+    : { items };
+}
+
+async function closeModeMenus(page: PageLike): Promise<void> {
+  if (page.keyboard?.press !== undefined) {
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout?.(50);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout?.(200);
+    return;
+  }
+  if (page.cua?.keypress !== undefined) {
+    try {
+      await page.cua.keypress({ keys: ["ESC"] });
+      await page.waitForTimeout?.(50);
+      await page.cua.keypress({ keys: ["ESC"] });
+      await page.waitForTimeout?.(200);
+    } catch {
+      // Closing is best effort; the verified selection remains authoritative.
+    }
+  }
 }
 
 /**
@@ -608,6 +779,21 @@ async function clickIfUniqueMenuControl(locator: LocatorLike | undefined, item: 
       || style.visibility === "hidden"
       || style.opacity === "0"
       || style.pointerEvents === "none") return false;
+    const viewportWidth = document.documentElement?.clientWidth ?? window.innerWidth;
+    const viewportHeight = document.documentElement?.clientHeight ?? window.innerHeight;
+    if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight) return false;
+    let ancestor = control.parentElement;
+    while (ancestor != null) {
+      const ancestorStyle = window.getComputedStyle(ancestor);
+      const overflowX = ancestorStyle.overflowX || ancestorStyle.overflow;
+      const overflowY = ancestorStyle.overflowY || ancestorStyle.overflow;
+      const ancestorRect = ancestor.getBoundingClientRect();
+      if ((/^(?:auto|clip|hidden|scroll)$/.test(overflowX)
+          && (rect.right <= ancestorRect.left || rect.left >= ancestorRect.right))
+        || (/^(?:auto|clip|hidden|scroll)$/.test(overflowY)
+          && (rect.bottom <= ancestorRect.top || rect.top >= ancestorRect.bottom))) return false;
+      ancestor = ancestor.parentElement;
+    }
     const containers = Array.from(document.querySelectorAll<HTMLElement>(
       "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]"
     )).filter(container => {
@@ -681,17 +867,27 @@ function findUniqueModeMenuItem(items: MenuItem[], wanted: string): MenuItem | u
 }
 
 function requestedModeSelections(args: SetModeArgs): RequestedMode[] {
-  const requested = [args.model, args.intelligence, args.effort].filter((value): value is string => value !== undefined);
-  if (requestedModelVersion(args) !== undefined && requested.length === 0) {
+  const requested = [
+    ["intelligence", args.intelligence],
+    ["effort", args.effort],
+    ["model", args.model],
+  ] as const;
+  const present = requested.filter(
+    (entry): entry is readonly [RequestedMode["axis"], string] => entry[1] !== undefined
+  );
+  if (requestedModelVersion(args) !== undefined && present.length === 0) {
     return [];
   }
-  return (requested.length > 0 ? requested : [DEFAULT_MODE_EFFORT]).map(requestedModeSelection);
+  return present.length > 0
+    ? present.map(([axis, value]) => requestedModeSelection(value, axis))
+    : [requestedModeSelection(DEFAULT_MODE_EFFORT, "effort")];
 }
 
-function requestedModeSelection(requested: string): RequestedMode {
+function requestedModeSelection(requested: string, axis: RequestedMode["axis"]): RequestedMode {
   const modeId = modeOptionIdFor(requested);
   const labels = modeId === undefined ? [requested] : localeLabels.modeOptions[modeId];
   const request: RequestedMode = {
+    axis,
     requested,
     labels: labels.length > 0 ? [...labels] : [requested],
   };
@@ -765,7 +961,7 @@ async function selectModelVersion(
 ): Promise<{ selected?: string; candidates: string[] }> {
   let candidates = await enumerateVisibleMenuItems(page);
   if (!looksLikeModeMenu(candidates)) {
-    const opened = await waitForModeMenu(page, [{ requested: requestedVersion, labels: [requestedVersion] }], timeoutMs);
+    const opened = await waitForModeMenu(page, [{ axis: "model", requested: requestedVersion, labels: [requestedVersion] }], timeoutMs);
     if (opened.opened) {
       await page.waitForTimeout?.(250);
       candidates = await enumerateVisibleMenuItems(page);
@@ -879,12 +1075,30 @@ async function menuItemCenter(
       if (element.hidden || element.closest("[hidden], [inert], [aria-hidden='true']") !== null) return false;
       const rect = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
-      return rect.width > 0
+      const viewportWidth = document.documentElement?.clientWidth ?? window.innerWidth;
+      const viewportHeight = document.documentElement?.clientHeight ?? window.innerHeight;
+      const withinViewport = !Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight)
+        || (rect.right > 0 && rect.bottom > 0 && rect.left < viewportWidth && rect.top < viewportHeight);
+      if (!(rect.width > 0
         && rect.height > 0
         && style.visibility !== "hidden"
         && style.display !== "none"
         && style.opacity !== "0"
-        && style.pointerEvents !== "none";
+        && style.pointerEvents !== "none"
+        && withinViewport)) return false;
+      let ancestor = element.parentElement;
+      while (ancestor != null) {
+        const ancestorStyle = window.getComputedStyle(ancestor);
+        const overflowX = ancestorStyle.overflowX || ancestorStyle.overflow;
+        const overflowY = ancestorStyle.overflowY || ancestorStyle.overflow;
+        const ancestorRect = ancestor.getBoundingClientRect();
+        if ((/^(?:auto|clip|hidden|scroll)$/.test(overflowX)
+            && (rect.right <= ancestorRect.left || rect.left >= ancestorRect.right))
+          || (/^(?:auto|clip|hidden|scroll)$/.test(overflowY)
+            && (rect.bottom <= ancestorRect.top || rect.top >= ancestorRect.bottom))) return false;
+        ancestor = ancestor.parentElement;
+      }
+      return true;
     };
     const containers = Array.from(document.querySelectorAll<HTMLElement>(
       "[role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]"
@@ -1020,18 +1234,21 @@ async function visibleModeButtonLabelList(page: PageLike): Promise<string[]> {
         const rect = typeof element.getBoundingClientRect === "function"
           ? element.getBoundingClientRect()
           : { width: 1, height: 1 };
-        if (rect.width <= 0 && rect.height <= 0) return "";
+        if (rect.width <= 0 || rect.height <= 0) return "";
         if (scopedRoots.length > 0 && !scopedRoots.some(root => root.contains(node))) return "";
         const visibleText = (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim();
         const ariaLabel = (element.getAttribute("aria-label") ?? "").replace(/\s+/g, " ").trim();
-        const label = visibleText.length > 0 ? visibleText : ariaLabel;
         const testId = element.getAttribute("data-testid") ?? "";
+        const semanticText = `${visibleText} ${ariaLabel}`.trim();
+        const structuralModelControl = /model-switcher|model-selector|mode-selector/i.test(testId)
+          || /\b(?:gpt|sol|luna|terra|\d+\.\d+)\b/i.test(semanticText);
+        const label = structuralModelControl && ariaLabel.length > 0
+          ? ariaLabel
+          : visibleText.length > 0 ? visibleText : ariaLabel;
         if (testId === "accounts-profile-button") return "";
         if (/open profile menu/i.test(label)) return "";
         if (visibleText.length === 0 && /feedback|conversation options|dismiss/i.test(ariaLabel)) return "";
         const normalized = label.toLowerCase();
-        const structuralModelControl = /model-switcher|model-selector|mode-selector/i.test(testId)
-          || /\b(?:gpt|sol|luna|terra)\b/i.test(label);
         if (!structuralModelControl && !normalizedModeLabels.some(modeLabel => tokenMatches(normalized, modeLabel))) return "";
         return label;
       })

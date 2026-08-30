@@ -11,6 +11,7 @@ export type MenuItem = {
   hasPopup?: boolean;
   testId?: string;
   ariaLabel?: string;
+  disabled?: boolean;
 };
 
 export function extractMenuItemsFromText(text: string): MenuItem[] {
@@ -28,6 +29,14 @@ export async function enumerateVisibleMenuItems(page: PageLike): Promise<MenuIte
         const html = element as HTMLElement;
         const rect = html.getBoundingClientRect?.();
         if (rect !== undefined && (rect.width <= 0 || rect.height <= 0)) return false;
+        if (rect !== undefined && typeof window !== "undefined") {
+          const viewportWidth = document.documentElement?.clientWidth ?? window.innerWidth;
+          const viewportHeight = document.documentElement?.clientHeight ?? window.innerHeight;
+          if (Number.isFinite(viewportWidth) && Number.isFinite(viewportHeight)
+            && (rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight)) {
+            return false;
+          }
+        }
         let current: Element | null = element;
         while (current !== null) {
           if (current.hasAttribute?.("inert") || current.getAttribute?.("aria-hidden") === "true") {
@@ -38,8 +47,23 @@ export async function enumerateVisibleMenuItems(page: PageLike): Promise<MenuIte
             : undefined;
           if (style?.display === "none"
             || style?.visibility === "hidden"
-            || style?.opacity === "0") {
+            || style?.opacity === "0"
+            || style?.pointerEvents === "none") {
             return false;
+          }
+          if (rect !== undefined && current !== element && style !== undefined) {
+            const overflowX = style.overflowX || style.overflow;
+            const overflowY = style.overflowY || style.overflow;
+            const clipsX = /^(?:auto|clip|hidden|scroll)$/.test(overflowX);
+            const clipsY = /^(?:auto|clip|hidden|scroll)$/.test(overflowY);
+            if (clipsX || clipsY) {
+              const ancestorRect = (current as HTMLElement).getBoundingClientRect?.();
+              if (ancestorRect !== undefined
+                && ((clipsX && (rect.right <= ancestorRect.left || rect.left >= ancestorRect.right))
+                  || (clipsY && (rect.bottom <= ancestorRect.top || rect.top >= ancestorRect.bottom)))) {
+                return false;
+              }
+            }
           }
           current = current.parentElement ?? null;
         }
@@ -58,6 +82,7 @@ export async function enumerateVisibleMenuItems(page: PageLike): Promise<MenuIte
           hasPopup?: boolean;
           testId?: string;
           ariaLabel?: string;
+          disabled?: boolean;
         } = { label };
         const role = element.getAttribute("role");
         if (role !== null) item.role = role;
@@ -71,6 +96,9 @@ export async function enumerateVisibleMenuItems(page: PageLike): Promise<MenuIte
         const testId = element.getAttribute("data-testid");
         if (testId !== null) item.testId = testId;
         if (ariaLabel !== null) item.ariaLabel = ariaLabel;
+        if ((element as HTMLButtonElement).disabled || element.getAttribute("aria-disabled") === "true") {
+          item.disabled = true;
+        }
         return item;
       };
       const allRoleNodes = Array.from(document.querySelectorAll("[role='menuitem'], [role='menuitemradio'], [role='option']"))

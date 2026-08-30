@@ -3,8 +3,11 @@ import {
   classifyPowerSliderObservation,
   discoverPowerSlider,
   MAX_POWER_DOM_NODES,
+  MAX_POWER_SEARCH_NODES,
+  MAX_POWER_SLIDERS,
   resolvePowerTarget,
   type PowerDomObservation,
+  type PowerDiscoveryOptions,
   type PowerSliderDomObservation
 } from "../../src/commands/power-discovery.js";
 import type { LocatorLike, PageLike } from "../../src/types.js";
@@ -140,7 +143,11 @@ function syntheticPowerDom(optionCount = 5): SyntheticDocument {
   return document;
 }
 
-function discoverSynthetic(document: SyntheticDocument, onEvaluate?: (source: string) => void): Promise<Awaited<ReturnType<typeof discoverPowerSlider>>> {
+function discoverSynthetic(
+  document: SyntheticDocument,
+  onEvaluate?: (source: string) => void,
+  options: PowerDiscoveryOptions = {}
+): Promise<Awaited<ReturnType<typeof discoverPowerSlider>>> {
   const previousDocument = (globalThis as { document?: unknown }).document;
   const previousWindow = (globalThis as { window?: unknown }).window;
   const page: PageLike = {
@@ -162,7 +169,29 @@ function discoverSynthetic(document: SyntheticDocument, onEvaluate?: (source: st
       }
     }
   };
-  return discoverPowerSlider(page, { powerLabels: ["Power"] });
+  return discoverPowerSlider(page, { powerLabels: ["Power"], ...options });
+}
+
+function syntheticCurrentChatPowerDom(currentLabel = "Pro", current = 4): SyntheticDocument {
+  const document = new SyntheticDocument();
+  const surface = new SyntheticElement(document, "main", { "data-surface": "chat" });
+  const menu = new SyntheticElement(document, "div", { role: "menu", "aria-label": "Thinking effort" });
+  const status = new SyntheticElement(document, "div");
+  const owner = new SyntheticElement(document, "div", { role: "menuitem", "aria-label": "Power" });
+  const slider = new SyntheticElement(document, "span", {
+    role: "slider",
+    "aria-hidden": "true",
+    "aria-valuemin": "0",
+    "aria-valuemax": "4",
+    "aria-valuenow": String(current)
+  });
+  document.append(surface);
+  surface.append(menu);
+  menu.append(status);
+  status.append(owner);
+  owner.append(slider);
+  status.append(new SyntheticText(document, `${currentLabel}, ${current + 1} of 5. Use Left and Right arrow keys to adjust power.`));
+  return document;
 }
 
 function powerSlider(overrides: Partial<PowerSliderDomObservation> = {}): PowerSliderDomObservation {
@@ -196,6 +225,22 @@ function classify(sliders: PowerDomObservation, options: Parameters<typeof class
 }
 
 describe("dynamic Power slider discovery", () => {
+  it("accepts the current Chat visual slider through its visible Power owner and nearby status", async () => {
+    const result = await discoverSynthetic(syntheticCurrentChatPowerDom(), undefined, {
+      valueLabels: ["Instant", "Medium", "High", "Extra High", "Pro"]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result).toMatchObject({
+      valueText: "Pro",
+      range: { minimum: 0, maximum: 4, current: 4, count: 5 },
+      evidence: { relationship: "owner", ownerRole: "menuitem" }
+    });
+    expect(result.options).toEqual([]);
+    expect(resolvePowerTarget(result, ["Pro"])).toBe(4);
+  });
+
   it("matches a reordered menu by the semantic owner and resolves the explicit value", () => {
     const slider = powerSlider({
       options: [
@@ -420,21 +465,24 @@ describe("dynamic Power slider discovery", () => {
     expect(presses).toBe(0);
   });
 
-  it("uses one bounded SHOW_ALL traversal without selector or page-wide text materialization", async () => {
+  it("uses bounded TreeWalker phases without selector or page-wide text materialization", async () => {
     const document = syntheticPowerDom();
     let callbackSource = "";
     const result = await discoverSynthetic(document, source => { callbackSource = source; });
 
     expect(result.ok).toBe(true);
-    expect(callbackSource).not.toMatch(/querySelectorAll|innerText|textContent|Array\.from/);
+    expect(callbackSource).not.toMatch(/innerText|textContent|Array\.from/);
+    expect(callbackSource.match(/querySelectorAll/g)).toHaveLength(2);
+    expect(callbackSource).toContain("[role='menu'], [role='listbox']");
     expect(document.walkedNodes).toBeGreaterThan(0);
     expect(document.walkedNodes).toBeLessThanOrEqual(MAX_POWER_DOM_NODES);
   });
 
-  it("fails closed at the global node cap before scanning the rest of a noisy page", async () => {
+  it("fails closed at the scoped node cap before scanning the rest of a noisy menu", async () => {
     const document = syntheticPowerDom();
+    const menu = (document.firstChild as SyntheticElement).firstChild as SyntheticElement;
     for (let index = 0; index < MAX_POWER_DOM_NODES; index += 1) {
-      document.append(new SyntheticText(document, "noise"));
+      menu.append(new SyntheticText(document, "noise"));
     }
 
     const result = await discoverSynthetic(document);
@@ -442,7 +490,7 @@ describe("dynamic Power slider discovery", () => {
     expect(result).toMatchObject({ ok: false, reason: "observation_limit_exceeded" });
     // The sentinel node is inspected to prove overflow, but no following
     // sibling is traversed or retained.
-    expect(document.walkedNodes).toBeLessThanOrEqual(MAX_POWER_DOM_NODES + 1);
+    expect(document.walkedNodes).toBeLessThanOrEqual(MAX_POWER_SEARCH_NODES + MAX_POWER_DOM_NODES + 1);
   });
 
   it("fails closed when the semantic option map exceeds its bounded cap", async () => {
@@ -453,7 +501,8 @@ describe("dynamic Power slider discovery", () => {
 
   it("fails closed when bounded text extraction reaches its character budget", async () => {
     const document = syntheticPowerDom();
-    document.append(new SyntheticText(document, "x".repeat(32 * 1024 + 1)));
+    const menu = (document.firstChild as SyntheticElement).firstChild as SyntheticElement;
+    menu.append(new SyntheticText(document, "x".repeat(32 * 1024 + 1)));
 
     const result = await discoverSynthetic(document);
 
@@ -471,6 +520,6 @@ describe("dynamic Power slider discovery", () => {
     const result = await discoverSynthetic(document);
 
     expect(result).toMatchObject({ ok: false, reason: "observation_limit_exceeded" });
-    expect(document.walkedNodes).toBeLessThanOrEqual(34);
+    expect(document.walkedNodes).toBeLessThanOrEqual((MAX_POWER_SLIDERS + 2) * 2);
   });
 });

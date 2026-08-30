@@ -162,8 +162,10 @@ The backend must support:
 discovery. `configuration.apply` is strict by default and must verify the final
 visible state. In a compact Chat composer, the closed configuration control may
 show only the current value, such as `Pro`. Inspection scopes that opener to the
-composer, opens it without changing the selection, and reads the model and
-effort rows before deciding which axes are available. `work.start` defaults to
+composer, reads the root `Power` slider, enters the separate `Select model` view
+to inspect the checked model radio, and closes both layers. Application verifies
+Power before selecting and verifying the model. Legacy combined Advanced rows
+remain supported. `work.start` defaults to
 a fresh task and must not append to a loaded task unless the caller explicitly
 passes `newTask: false`. A partial or
 timeout Work result is recovered through status/wait/read on the same task, not

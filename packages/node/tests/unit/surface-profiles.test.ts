@@ -331,9 +331,9 @@ describe("sanitized Chat and Work surface profiles", () => {
     expect(result.ok).toBe(true);
     expect(result.data?.verified).toBe(true);
     expect(result.data?.selected).toEqual([
-      { axis: "model", requested: "GPT-5.6 Sol", selected: "GPT-5.6 Sol" },
       { axis: "intelligence", requested: "Pro", selected: "Pro" },
-      { axis: "effort", requested: "Pro", selected: "Pro" }
+      { axis: "effort", requested: "Pro", selected: "Pro" },
+      { axis: "model", requested: "GPT-5.6 Sol", selected: "GPT-5.6 Sol" }
     ]);
     expect(page.configurationOpenCount()).toBe(1);
     expect(page.advancedOpenCount()).toBe(1);

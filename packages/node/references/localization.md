@@ -204,7 +204,8 @@ Leave the canonical English first (it comes from `en.ts`), and leave the API key
 (`web_search`, `modeOptions.pro`, `modeOptions.high`, and the other semantic ids)
 unchanged.
 
-Current ChatGPT rollouts may expose a basic Power control and nested Advanced
+Current ChatGPT rollouts may expose a Power slider plus a separate `Select
+model` carousel view, while legacy surfaces may retain nested Advanced
 Model/Effort/Speed rows. Add localized equivalents only after observing those
 exact labels in the target locale. Put legacy broad picker/opening labels in
 `modeLabels`, selectable Chat effort labels under

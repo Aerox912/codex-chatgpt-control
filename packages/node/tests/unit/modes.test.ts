@@ -193,6 +193,29 @@ describe("mode and tool selection blockers", () => {
     expect(page.advancedOpenCount()).toBe(0);
   });
 
+  it("sets Power before entering the current Chat model view and closes both menu layers", async () => {
+    const page = compactPowerModelPickerPage("Extra High", "GPT-5.6 Sol");
+
+    const result = await setMode({ page }, {
+      effort: "Pro",
+      model: "GPT-5.5"
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.selected).toEqual(["Pro", "GPT-5.5"]);
+    expect(page.currentSelection()).toEqual({ effort: "Pro", model: "GPT-5.5" });
+    expect(page.actions()).toEqual([
+      "open",
+      "power:ArrowRight",
+      "select-model",
+      "model:GPT-5.5",
+      "escape:model",
+      "escape:root"
+    ]);
+    expect(page.menuIsOpen()).toBe(false);
+    expect(page.waits()).toContain(200);
+  });
+
   it("uses a localized, reordered Power map through the production mode path", async () => {
     const page = advancedEffortPickerPage("بسیار زیاد", {
       powerSlider: true,
@@ -977,6 +1000,7 @@ type FakeMenuItem = {
   role: "menuitem" | "menuitemradio";
   checked?: boolean;
   hasPopup?: boolean;
+  ariaLabel?: string;
   rect?: { left: number; top: number; width: number; height: number };
 };
 
@@ -1295,6 +1319,178 @@ function advancedEffortPickerPage(
   };
 }
 
+function compactPowerModelPickerPage(
+  initialEffort: string,
+  initialModel: string
+): PageLike & {
+  actions: () => string[];
+  currentSelection: () => { effort: string; model: string };
+  menuIsOpen: () => boolean;
+  waits: () => number[];
+} {
+  const powerLabels = ["Instant", "Medium", "High", "Extra High", "Pro"];
+  const modelLabels = ["GPT-5.6 Sol", "GPT-5.5"];
+  const actions: string[] = [];
+  const waits: number[] = [];
+  let currentEffort = initialEffort;
+  let currentModel = initialModel;
+  let menuOpen = false;
+  let view: "root" | "model" = "root";
+
+  const missing: LocatorLike = {
+    count: async () => 0,
+    click: async () => {},
+    filter: () => missing
+  };
+  const openerLabel = (): string => currentModel === "GPT-5.5" && currentEffort === "Pro"
+    ? "5.5 Pro"
+    : currentEffort;
+  const opener: LocatorLike = {
+    count: async () => menuOpen ? 0 : 1,
+    click: async () => {
+      menuOpen = true;
+      view = "root";
+      actions.push("open");
+    },
+    filter: () => opener
+  };
+  const selectModel: LocatorLike = {
+    count: async () => menuOpen && view === "root" ? 1 : 0,
+    click: async () => {
+      view = "model";
+      actions.push("select-model");
+    },
+    filter: () => selectModel,
+    evaluate: async <T>() => true as T
+  };
+  const modelLocator = (label: string): LocatorLike => ({
+    count: async () => menuOpen && view === "model" && modelLabels.includes(label) ? 1 : 0,
+    click: async () => {
+      currentModel = label;
+      actions.push(`model:${label}`);
+    },
+    filter: () => modelLocator(label),
+    evaluate: async <T>() => true as T
+  });
+  const slider: LocatorLike = {
+    count: async () => menuOpen && view === "root" ? 1 : 0,
+    isVisible: async () => menuOpen && view === "root",
+    evaluate: async fn => fn({
+      getAttribute: (name: string) => name === "aria-valuemin"
+        ? "0"
+        : name === "aria-valuemax"
+          ? "4"
+          : name === "aria-valuenow"
+            ? String(powerLabels.indexOf(currentEffort))
+            : null
+    } as unknown as Element),
+    press: async key => {
+      actions.push(`power:${key}`);
+      const currentIndex = powerLabels.indexOf(currentEffort);
+      const nextIndex = key === "ArrowRight" ? currentIndex + 1 : currentIndex - 1;
+      currentEffort = powerLabels[Math.max(0, Math.min(powerLabels.length - 1, nextIndex))]!;
+    }
+  };
+
+  return {
+    actions: () => [...actions],
+    currentSelection: () => ({ effort: currentEffort, model: currentModel }),
+    menuIsOpen: () => menuOpen,
+    waits: () => [...waits],
+    getByRole: (role, options) => {
+      const name = String((options as { name?: unknown } | undefined)?.name ?? "");
+      if (role === "button" && name === openerLabel()) return opener;
+      if (role === "menuitem" && name === "Select model") return selectModel;
+      if (role === "menuitemradio" && modelLabels.includes(name)) return modelLocator(name);
+      return missing;
+    },
+    getByText: label => {
+      const name = String(label);
+      if (name === "Select model") return selectModel;
+      return modelLabels.includes(name) ? modelLocator(name) : missing;
+    },
+    locator: selector => selector.startsWith("[role='slider']") ? slider : ({
+      ...missing,
+      filter: options => {
+        const wanted = String((options as { hasText?: unknown } | undefined)?.hasText ?? "");
+        if (selector === "button, [role='button']" && wanted === openerLabel()) return opener;
+        if (wanted === "Select model") return selectModel;
+        return modelLabels.includes(wanted) ? modelLocator(wanted) : missing;
+      }
+    }),
+    evaluate: async <T, A = unknown>(fn: (arg: A) => T | Promise<T>, arg?: A) => {
+      const previousDocument = globalThis.document;
+      const previousWindow = globalThis.window;
+      try {
+        const currentPowerDom = fakeCurrentPowerSliderDom(currentEffort, powerLabels);
+        const sliderElement = currentPowerDom.slider;
+        const menuElement = currentPowerDom.menu;
+        const powerNodes = currentPowerDom.nodes;
+        const rootItems = (): FakeMenuItem[] => [
+          { label: currentEffort, ariaLabel: "Select model", role: "menuitem" },
+          { label: "Power", ariaLabel: "Power", role: "menuitem" }
+        ];
+        const modelItems = (): FakeMenuItem[] => modelLabels.map(label => ({
+          label,
+          role: "menuitemradio",
+          checked: label === currentModel
+        }));
+        const documentValue = {
+          nodeType: 9,
+          nodeValue: null,
+          parentNode: null,
+          firstChild: null,
+          lastChild: null,
+          nextSibling: null,
+          querySelectorAll: (query: string) => {
+            if (query === "button, [role='button']") return [fakeElement({ label: openerLabel() })];
+            if (query === "[role='slider']") return menuOpen && view === "root" ? [sliderElement] : [];
+            if (query.includes("menuitem") || query.includes("option")) {
+              if (!menuOpen) return [];
+              return (view === "root" ? rootItems() : modelItems()).map(item => fakeElement(item));
+            }
+            if (query.includes("data-testid")) return [];
+            return [];
+          },
+          createTreeWalker: () => {
+            let index = 0;
+            return { nextNode: () => menuOpen && view === "root" ? powerNodes[index++] ?? null : null };
+          }
+        } as unknown as Document;
+        (menuElement as unknown as { parentNode: Document }).parentNode = documentValue;
+        globalThis.document = documentValue;
+        globalThis.window = {
+          getComputedStyle: () => ({
+            display: "block",
+            opacity: "1",
+            visibility: "visible",
+            pointerEvents: "auto"
+          })
+        } as unknown as Window & typeof globalThis;
+        return await fn(arg as A);
+      } finally {
+        globalThis.document = previousDocument;
+        globalThis.window = previousWindow;
+      }
+    },
+    keyboard: {
+      press: async key => {
+        if (key !== "Escape" || !menuOpen) return;
+        if (view === "model") {
+          view = "root";
+          actions.push("escape:model");
+        } else {
+          menuOpen = false;
+          actions.push("escape:root");
+        }
+      }
+    },
+    waitForTimeout: async milliseconds => { waits.push(milliseconds); },
+    title: async () => "ChatGPT",
+    url: () => "https://chatgpt.com/"
+  };
+}
+
 function fakeElement(item: Partial<FakeMenuItem> & { label: string }): Element {
   const width = item.rect?.width ?? 100;
   const height = item.rect?.height ?? 32;
@@ -1310,7 +1506,7 @@ function fakeElement(item: Partial<FakeMenuItem> & { label: string }): Element {
     hasAttribute: () => false,
     closest: () => null,
     getAttribute: (name: string) => {
-      if (name === "aria-label") return item.label;
+      if (name === "aria-label") return item.ariaLabel ?? item.label;
       if (name === "role") return item.role;
       if (name === "aria-checked" && item.checked !== undefined) return item.checked ? "true" : "false";
       if (name === "aria-haspopup" && item.hasPopup === true) return "menu";
@@ -1331,6 +1527,65 @@ function fakeElement(item: Partial<FakeMenuItem> & { label: string }): Element {
     innerText: item.label,
     textContent: item.label
   } as unknown as Element;
+}
+
+function fakeCurrentPowerSliderDom(
+  current: string,
+  labels: string[]
+): { slider: Element; menu: Element; nodes: Node[] } {
+  const rect = {
+    left: 100,
+    top: 100,
+    right: 300,
+    bottom: 140,
+    width: 200,
+    height: 40,
+    x: 100,
+    y: 100,
+    toJSON: () => ({})
+  };
+  const element = (attributes: Record<string, string>, text = "") => ({
+    nodeType: 1,
+    nodeValue: null,
+    parentNode: null,
+    parentElement: null,
+    firstChild: null,
+    lastChild: null,
+    nextSibling: null,
+    hidden: false,
+    hasAttribute: (name: string) => Object.hasOwn(attributes, name),
+    getAttribute: (name: string) => attributes[name] ?? null,
+    getBoundingClientRect: () => rect,
+    querySelectorAll: () => [],
+    innerText: text,
+    textContent: text
+  }) as unknown as Element;
+  const menu = element({ role: "menu", "aria-label": "Thinking effort" });
+  const status = element({});
+  const owner = element({ role: "menuitem", "aria-label": "Power" });
+  const currentIndex = labels.indexOf(current);
+  const slider = element({
+    role: "slider",
+    "aria-hidden": "true",
+    "aria-valuemin": "0",
+    "aria-valuemax": String(labels.length - 1),
+    "aria-valuenow": String(currentIndex)
+  });
+  const statusText = {
+    nodeType: 3,
+    nodeValue: `${current}, ${currentIndex + 1} of ${labels.length}. Use Left and Right arrow keys to adjust power.`,
+    parentNode: status,
+    firstChild: null,
+    lastChild: null,
+    nextSibling: null
+  } as unknown as Node;
+  (status as unknown as { parentNode: Element; parentElement: Element }).parentNode = menu;
+  (status as unknown as { parentNode: Element; parentElement: Element }).parentElement = menu;
+  (owner as unknown as { parentNode: Element; parentElement: Element }).parentNode = status;
+  (owner as unknown as { parentNode: Element; parentElement: Element }).parentElement = status;
+  (slider as unknown as { parentNode: Element; parentElement: Element }).parentNode = owner;
+  (slider as unknown as { parentNode: Element; parentElement: Element }).parentElement = owner;
+  return { slider, menu, nodes: [menu, status, owner, slider, statusText] };
 }
 
 function fakePowerSliderElement(

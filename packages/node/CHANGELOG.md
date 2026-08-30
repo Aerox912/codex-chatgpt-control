@@ -2,6 +2,11 @@
 
 ## 0.5.1-alpha.3
 
+- Tracks the current compact Chat configuration state machine across Power,
+  Select model, and verified GPT-5.5/GPT-5.6 Sol radio selection, including
+  clipped menus and delayed menu closure.
+- Guards missing Project ancestors before reading their text so selector drift
+  reports promptly instead of waiting on a zero-match locator.
 - Reconstructs source URLs from ChatGPT inline reference pills, accepts exact
   restored drafts without refilling, and clears stale pills before replacement.
 - Adds the transactional `operations.submit`, `collect`, `inspect`, `control`,
