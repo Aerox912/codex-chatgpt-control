@@ -425,6 +425,64 @@ describe("OperationClient", () => {
     expect(adapters[1]).toBe(adapters[0]);
   });
 
+  it("reconstructs an exact pending target for same-request submit recovery", async () => {
+    const baseService = fakeService();
+    const handle = operationHandle({
+      phase: "prepared",
+      mutationBoundary: "none",
+      revision: 3
+    });
+    const anchorDigest = `hmac-sha256:${"9".repeat(64)}`;
+    const target: OperationTargetBindingV1 = {
+      providerId: "chatgpt",
+      browserId: "browser-pending",
+      tabId: "tab-pending",
+      coordinationScope: "process",
+      targetLifecycle: "new_pending",
+      newTargetAnchorDigest: anchorDigest,
+      blankTaskEvidenceDigest: anchorDigest,
+      evidenceProfile: {
+        providerIdentity: "required",
+        stableTabId: "required",
+        stableConversationId: "unavailable",
+        stableUserTurnId: "unavailable",
+        authoritativeTabClaim: "unavailable",
+        replacementTabRecovery: false
+      }
+    };
+    const prepare = vi.fn(async () => ({ handle, state: durableState(handle, target) }));
+    let submittedAdapter: OperationBrowserAdapter | undefined;
+    const submit = vi.fn(async (...args: Parameters<OperationServicePort["submit"]>) => {
+      submittedAdapter = args[2];
+      return baseService.submitResult as never;
+    });
+    const regularFactory = vi.fn(async () => makeAdapter());
+    const recoveredAdapter = makeAdapter();
+    const recoveryFactory = vi.fn(async (context) => {
+      expect(context.target).toEqual(target);
+      expect(context.handle).toEqual(handle);
+      expect(context.state.phase).toBe("prepared");
+      expect(Object.isFrozen(context)).toBe(true);
+      expect(Object.isFrozen(context.target)).toBe(true);
+      expect(JSON.stringify(context)).not.toContain("browser-pending");
+      return recoveredAdapter;
+    });
+    const service = Object.assign(baseService, { prepare, submit }) as unknown as OperationServicePort;
+    const client = new OperationClient(service, makeAdapter(), {
+      adapterFactory: regularFactory,
+      submitRecoveryAdapterFactory: recoveryFactory
+    });
+
+    await client.submit(submitRequest({ target: { type: "new" } }));
+
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(recoveryFactory).toHaveBeenCalledTimes(1);
+    expect(regularFactory).not.toHaveBeenCalled();
+    expect(submittedAdapter).toBeDefined();
+    await submittedAdapter!.resolveTarget({} as never);
+    expect(recoveredAdapter.resolveTarget).toHaveBeenCalledTimes(1);
+  });
+
   it("promotes a handle on access before evicting the least recently used adapter", async () => {
     const baseService = fakeService();
     const handles = [

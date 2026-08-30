@@ -22669,6 +22669,7 @@ var OperationClient = class {
     this.fingerprint = options.fingerprint ?? fingerprintOperationFile;
     this.revalidate = options.revalidate ?? revalidateOperationFile;
     this.adapterFactory = options.adapterFactory;
+    this.submitRecoveryAdapterFactory = options.submitRecoveryAdapterFactory;
     this.handleAdapterFactory = options.handleAdapterFactory;
     this.controlAdapterFactory = options.controlAdapterFactory;
     this.maxCachedAdapters = validateMaxCachedAdapters(options.maxCachedAdapters);
@@ -22678,6 +22679,7 @@ var OperationClient = class {
   fingerprint;
   revalidate;
   adapterFactory;
+  submitRecoveryAdapterFactory;
   handleAdapterFactory;
   controlAdapterFactory;
   maxCachedAdapters;
@@ -22775,6 +22777,42 @@ var OperationClient = class {
   async adapterForSubmit(prepared) {
     const cached = this.cachedAdapterForOperation(prepared.request.operationId);
     if (cached !== void 0) return cached;
+    if (this.submitRecoveryAdapterFactory !== void 0 && this.service.prepare !== void 0) {
+      const checkpoint = await this.service.prepare(
+        prepared.serviceRequest,
+        prepared.manifest,
+        { signal: prepared.signal }
+      );
+      let reconstruction;
+      try {
+        const record = requiredObject(checkpoint, "prepare result");
+        const handle = cloneFrozen(
+          requiredData(record, "handle"),
+          "invalid_operation_handle"
+        );
+        reconstruction = reconstructionContext(checkpoint, handle);
+      } catch (error) {
+        if (!(error instanceof OperationClientError) || error.code !== "target_binding_missing") throw error;
+      }
+      if (reconstruction?.target.targetLifecycle === "new_pending") {
+        if (reconstruction.state.phase !== "prepared" || reconstruction.state.mutationBoundary !== "none") {
+          throw new OperationClientError("invalid_operation_state", "A pending submit target is outside the recoverable pre-Send phase.");
+        }
+        let recovered;
+        try {
+          recovered = await this.submitRecoveryAdapterFactory(
+            makeSubmitRecoveryFactoryContext(prepared, reconstruction)
+          );
+        } catch {
+          recovered = unavailableAdapter("adapter_unavailable");
+        }
+        try {
+          return this.guardAdapter(recovered, prepared.identities, prepared.signal);
+        } catch {
+          throw new OperationClientError("adapter_unavailable", "The pending submit browser adapter could not be recreated.");
+        }
+      }
+    }
     let adapter = this.adapter;
     if (this.adapterFactory !== void 0) {
       try {
@@ -23213,6 +23251,40 @@ function makeFactoryContext(handle, state, target) {
 }
 function makeControlFactoryContext(request, reconstruction) {
   const context = { request };
+  Object.defineProperties(context, {
+    handle: {
+      value: reconstruction.context.handle,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    },
+    state: {
+      value: reconstruction.context.state,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    },
+    target: {
+      value: reconstruction.context.target,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    },
+    durable: {
+      value: reconstruction.context,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    }
+  });
+  return Object.freeze(context);
+}
+function makeSubmitRecoveryFactoryContext(prepared, reconstruction) {
+  const context = {
+    request: prepared.request,
+    files: prepared.identities,
+    signal: prepared.signal
+  };
   Object.defineProperties(context, {
     handle: {
       value: reconstruction.context.handle,
@@ -47932,6 +48004,37 @@ function createChatGPTOperationAdapterFactory(options) {
     return createRuntimeOperationBrowserAdapter(adapterOptions);
   };
 }
+function createChatGPTOperationSubmitRecoveryAdapterFactory(options) {
+  const normalized = normalizeFactoryOptions(options);
+  return async (context) => {
+    const request = snapshotRequest(context.request);
+    const files = Object.freeze([...context.files]);
+    const target = snapshotTargetBinding2(context.target, true);
+    if (target.targetLifecycle !== "new_pending") throw new ChatGPTRuntimeFactoryError();
+    const adapterOptions = {
+      owner: normalized.owner,
+      evidenceDigest: normalized.evidenceDigest,
+      ...normalized.coordinator === void 0 ? {} : { coordinator: normalized.coordinator },
+      ...normalized.transactionTimeoutMs === void 0 ? {} : { transactionTimeoutMs: normalized.transactionTimeoutMs },
+      files,
+      fileManifestDigest: (ordinal, manifest) => normalized.evidenceDigest(
+        "file-manifest",
+        { ordinal, ...manifest }
+      ),
+      exposeStaging: true,
+      exposeControl: true,
+      ...hasTransferDestination(request) ? { exposeArtifacts: true } : {},
+      capture: async (captureRequest) => await captureChatGPTRequest({
+        ...normalized,
+        request,
+        files,
+        captureRequest,
+        recoveryTarget: target
+      })
+    };
+    return createRuntimeOperationBrowserAdapter(adapterOptions);
+  };
+}
 function createChatGPTOperationHandleAdapterFactory(options) {
   const normalized = normalizeFactoryOptions(options);
   return async (context) => {
@@ -48181,22 +48284,23 @@ function snapshotTargetRequest(value) {
       throw new ChatGPTRuntimeFactoryError();
   }
 }
-function snapshotTargetBinding2(value) {
+function snapshotTargetBinding2(value, allowPending = false) {
   const copy = cloneSafeData(value);
   if (copy === null || typeof copy !== "object" || Array.isArray(copy)) throw new ChatGPTRuntimeFactoryError();
   const target = copy;
   if (typeof target.providerId !== "string" || typeof target.browserId !== "string" || typeof target.tabId !== "string" || typeof target.coordinationScope !== "string" || !ID_PATTERN10.test(target.providerId) || !ID_PATTERN10.test(target.browserId) || !ID_PATTERN10.test(target.tabId) || target.coordinationScope !== "process" && target.coordinationScope !== "provider") {
     throw new ChatGPTRuntimeFactoryError();
   }
-  if (target.targetLifecycle === "new_pending") throw new ChatGPTRuntimeFactoryError();
+  if (target.targetLifecycle === "new_pending" && !allowPending) throw new ChatGPTRuntimeFactoryError();
   return Object.freeze(target);
 }
 async function captureChatGPTRequest(options) {
-  const targetRequest = options.recoveryTarget === void 0 ? options.request === void 0 ? void 0 : options.request.target : Object.freeze({ type: "tab_id", tabId: options.recoveryTarget.tabId });
+  const targetRequest = options.request?.target ?? (options.recoveryTarget === void 0 ? void 0 : Object.freeze({ type: "tab_id", tabId: options.recoveryTarget.tabId }));
   if (targetRequest === void 0) throw new ChatGPTRuntimeFactoryError();
+  const acquisitionTarget = options.recoveryTarget === void 0 ? targetRequest : Object.freeze({ type: "tab_id", tabId: options.recoveryTarget.tabId });
   const targetSurface = options.captureRequest.surface;
-  const bootstrap2 = bootstrapArgsForTarget(targetRequest);
-  const bootstrapEnv = bootstrapEnvironment(options.env, targetRequest, options.recoveryTarget);
+  const bootstrap2 = bootstrapArgsForTarget(acquisitionTarget);
+  const bootstrapEnv = bootstrapEnvironment(options.env, acquisitionTarget, options.recoveryTarget);
   const acquisitionOwner = Object.freeze({
     ...options.owner,
     operationId: options.captureRequest.operationId
@@ -48211,7 +48315,7 @@ async function captureChatGPTRequest(options) {
     throw new ChatGPTRuntimeFactoryError();
   }
   let selectedTabId;
-  if (targetRequest.type === "selected_tab") {
+  if (acquisitionTarget.type === "selected_tab") {
     const selected = await selectExactSelectedPage(bootstrapEnv.browser);
     if (selected === void 0) throw new ChatGPTRuntimeFactoryError();
     selectedTabId = tabIdFromPage(selected);
@@ -48233,10 +48337,10 @@ async function captureChatGPTRequest(options) {
   const tabId = tabIdFromPage(attached.page);
   if (tabId === void 0 || !ID_PATTERN10.test(tabId)) throw new ChatGPTRuntimeFactoryError();
   if (attached.tabId !== void 0 && attached.tabId !== tabId) throw new ChatGPTRuntimeFactoryError();
-  if (targetRequest.type === "tab_id" && tabId !== targetRequest.tabId) {
+  if (acquisitionTarget.type === "tab_id" && tabId !== acquisitionTarget.tabId) {
     throw new ChatGPTRuntimeFactoryError();
   }
-  if (targetRequest.type === "selected_tab" && (selectedTabId === void 0 || tabId !== selectedTabId)) {
+  if (acquisitionTarget.type === "selected_tab" && (selectedTabId === void 0 || tabId !== selectedTabId)) {
     throw new ChatGPTRuntimeFactoryError();
   }
   if (options.recoveryTarget !== void 0) {
@@ -49574,7 +49678,7 @@ async function createOperationClientForChatGPT(options, runtimeEnvironment, owne
   };
   const service = new OperationService(journal, serviceOptions);
   const adapter = operationOptions.adapter ?? unavailableOperationAdapter();
-  const hasCustomAdapter = operationOptions.adapter !== void 0 || operationOptions.adapterFactory !== void 0 || operationOptions.handleAdapterFactory !== void 0 || operationOptions.controlAdapterFactory !== void 0;
+  const hasCustomAdapter = operationOptions.adapter !== void 0 || operationOptions.adapterFactory !== void 0 || operationOptions.submitRecoveryAdapterFactory !== void 0 || operationOptions.handleAdapterFactory !== void 0 || operationOptions.controlAdapterFactory !== void 0;
   const evidenceDigest = (domain, material) => {
     if (/^[a-z][a-z0-9-]{0,63}$/u.test(domain)) {
       return journal.evidenceDigest(domain, material);
@@ -49591,6 +49695,11 @@ async function createOperationClientForChatGPT(options, runtimeEnvironment, owne
     owner,
     evidenceDigest
   })(context);
+  const submitRecoveryAdapterFactory = hasCustomAdapter ? operationOptions.submitRecoveryAdapterFactory : async (context) => createChatGPTOperationSubmitRecoveryAdapterFactory({
+    env: runtimeEnvironment(),
+    owner,
+    evidenceDigest
+  })(context);
   const controlAdapterFactory = hasCustomAdapter ? operationOptions.controlAdapterFactory : async (context) => createChatGPTOperationControlAdapterFactory({
     env: runtimeEnvironment(),
     owner,
@@ -49598,6 +49707,7 @@ async function createOperationClientForChatGPT(options, runtimeEnvironment, owne
   })(context);
   return new OperationClient(service, adapter, {
     ...adapterFactory === void 0 ? {} : { adapterFactory },
+    ...submitRecoveryAdapterFactory === void 0 ? {} : { submitRecoveryAdapterFactory },
     ...handleAdapterFactory === void 0 ? {} : { handleAdapterFactory },
     ...controlAdapterFactory === void 0 ? {} : { controlAdapterFactory },
     ...operationOptions.maxCachedAdapters === void 0 ? {} : { maxCachedAdapters: operationOptions.maxCachedAdapters }

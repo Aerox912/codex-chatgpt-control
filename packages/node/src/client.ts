@@ -112,7 +112,8 @@ import {
   type OperationClientRunOptions,
   type OperationClientSubmitOptions,
   type OperationHandleAdapterFactory,
-  type OperationHandleAdapterFactoryContext
+  type OperationHandleAdapterFactoryContext,
+  type OperationSubmitRecoveryAdapterFactory
 } from "./operations/client.js";
 import { OperationJournal } from "./operations/journal.js";
 import {
@@ -141,7 +142,8 @@ import { normalizeBrowserProvider } from "./browser/provider-normalization.js";
 import {
   createChatGPTOperationAdapterFactory,
   createChatGPTOperationControlAdapterFactory,
-  createChatGPTOperationHandleAdapterFactory
+  createChatGPTOperationHandleAdapterFactory,
+  createChatGPTOperationSubmitRecoveryAdapterFactory
 } from "./operations/chatgpt-runtime.js";
 import type { CoordinatorOwner } from "./runtime/tab-coordinator.js";
 
@@ -185,6 +187,7 @@ export type ChatGPTOperationsOptions = Readonly<{
   stateRoot?: string;
   adapter?: OperationBrowserAdapter;
   adapterFactory?: OperationAdapterFactory;
+  submitRecoveryAdapterFactory?: OperationSubmitRecoveryAdapterFactory;
   handleAdapterFactory?: OperationHandleAdapterFactory;
   /** Fresh request-local adapter for Stop or Work steer; never cached. */
   controlAdapterFactory?: OperationControlAdapterFactory;
@@ -1161,6 +1164,7 @@ async function createOperationClientForChatGPT(
   // operations work out of the box and remain lazy until target resolution.
   const hasCustomAdapter = operationOptions.adapter !== undefined
     || operationOptions.adapterFactory !== undefined
+    || operationOptions.submitRecoveryAdapterFactory !== undefined
     || operationOptions.handleAdapterFactory !== undefined
     || operationOptions.controlAdapterFactory !== undefined;
   const evidenceDigest = (domain: string, material: unknown): string => {
@@ -1188,6 +1192,13 @@ async function createOperationClientForChatGPT(
       owner,
       evidenceDigest
     })(context);
+  const submitRecoveryAdapterFactory: OperationSubmitRecoveryAdapterFactory | undefined = hasCustomAdapter
+    ? operationOptions.submitRecoveryAdapterFactory
+    : async context => createChatGPTOperationSubmitRecoveryAdapterFactory({
+      env: runtimeEnvironment(),
+      owner,
+      evidenceDigest
+    })(context);
   const controlAdapterFactory = hasCustomAdapter
     ? operationOptions.controlAdapterFactory
     : async (context: OperationControlAdapterFactoryContext) => createChatGPTOperationControlAdapterFactory({
@@ -1197,6 +1208,7 @@ async function createOperationClientForChatGPT(
     })(context);
   return new OperationClient(service, adapter, {
     ...(adapterFactory === undefined ? {} : { adapterFactory }),
+    ...(submitRecoveryAdapterFactory === undefined ? {} : { submitRecoveryAdapterFactory }),
     ...(handleAdapterFactory === undefined ? {} : { handleAdapterFactory }),
     ...(controlAdapterFactory === undefined ? {} : { controlAdapterFactory }),
     ...(operationOptions.maxCachedAdapters === undefined ? {} : { maxCachedAdapters: operationOptions.maxCachedAdapters })

@@ -6,6 +6,7 @@ import type { BrowserLike, PageLike, RuntimeEnv } from "../../src/types.js";
 import {
   createChatGPTOperationAdapterFactory,
   createChatGPTOperationHandleAdapterFactory,
+  createChatGPTOperationSubmitRecoveryAdapterFactory,
   createChatGPTOperationControlAdapterFactory
 } from "../../src/operations/chatgpt-runtime.js";
 import type { OperationAdapterFactoryContext } from "../../src/operations/client.js";
@@ -538,6 +539,59 @@ describe("default ChatGPT operation runtime", () => {
 
     expect(result.target.targetLifecycle).toBe("new_pending");
     expect(browserValue.pages.get("created-1")?.surface).toBe("work");
+  });
+
+  it("recovers a pending new submit through its exact durable tab without opening another", async () => {
+    const pending = page("pending-tab", "https://chatgpt.com/");
+    const browserValue = browser(pending);
+    const anchorDigest = `hmac-sha256:${"8".repeat(64)}`;
+    const target = {
+      providerId: "chatgpt",
+      browserId: coordinatedBrowserResource(browserValue).key,
+      tabId: "pending-tab",
+      coordinationScope: "process" as const,
+      targetLifecycle: "new_pending" as const,
+      newTargetAnchorDigest: anchorDigest,
+      blankTaskEvidenceDigest: anchorDigest,
+      evidenceProfile: {
+        providerIdentity: "required" as const,
+        stableTabId: "required" as const,
+        stableConversationId: "unavailable" as const,
+        stableUserTurnId: "unavailable" as const,
+        authoritativeTabClaim: "unavailable" as const,
+        replacementTabRecovery: false
+      }
+    };
+    const recoveryFactory = createChatGPTOperationSubmitRecoveryAdapterFactory({
+      env: env(browserValue),
+      owner: { backendSessionId: "backend-session-pending" },
+      evidenceDigest: digest,
+      coordinator: new ProcessTabCoordinator()
+    });
+    const adapter = await recoveryFactory({
+      request: request({ type: "new" }),
+      files: [],
+      signal: new AbortController().signal,
+      handle: {} as never,
+      state: {} as never,
+      target,
+      durable: {} as never
+    });
+    const result = await adapter.resolveTarget({
+      operationId: OPERATION_ID,
+      requestDigest: REQUEST_DIGEST,
+      surface: "chat",
+      target: { type: "new" },
+      signal: new AbortController().signal
+    });
+
+    expect(result.target).toMatchObject({
+      providerId: "chatgpt",
+      tabId: "pending-tab",
+      targetLifecycle: "new_pending"
+    });
+    expect(browserValue.selectedCalls).toBe(0);
+    expect(browserValue.createCalls).toEqual([]);
   });
 
   it("recovers only the durable tab binding", async () => {

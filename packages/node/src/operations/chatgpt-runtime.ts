@@ -78,6 +78,8 @@ import type {
   OperationAdapterFactoryContext,
   OperationHandleAdapterFactory,
   OperationHandleAdapterFactoryContext,
+  OperationSubmitRecoveryAdapterFactory,
+  OperationSubmitRecoveryAdapterFactoryContext,
   OperationControlAdapterFactory,
   OperationControlAdapterFactoryContext
 } from "./client.js";
@@ -246,6 +248,45 @@ export function createChatGPTOperationAdapterFactory(
 
 /** Alias for integrations that use the "runtime" naming first. */
 export const createChatGPTOperationRuntimeFactory = createChatGPTOperationAdapterFactory;
+
+/**
+ * Recreate a request-bearing adapter for an authenticated blank new target
+ * that was bound before Send. Acquisition is exact-tab only; the original
+ * target request is still revalidated before the service accepts the binding.
+ */
+export function createChatGPTOperationSubmitRecoveryAdapterFactory(
+  options: ChatGPTRuntimeFactoryOptions
+): OperationSubmitRecoveryAdapterFactory {
+  const normalized = normalizeFactoryOptions(options);
+  return async (context: OperationSubmitRecoveryAdapterFactoryContext): Promise<OperationBrowserAdapter> => {
+    const request = snapshotRequest(context.request);
+    const files = Object.freeze([...context.files]);
+    const target = snapshotTargetBinding(context.target, true);
+    if (target.targetLifecycle !== "new_pending") throw new ChatGPTRuntimeFactoryError();
+    const adapterOptions: OperationRuntimeAdapterOptions = {
+      owner: normalized.owner,
+      evidenceDigest: normalized.evidenceDigest,
+      ...(normalized.coordinator === undefined ? {} : { coordinator: normalized.coordinator }),
+      ...(normalized.transactionTimeoutMs === undefined ? {} : { transactionTimeoutMs: normalized.transactionTimeoutMs }),
+      files,
+      fileManifestDigest: (ordinal, manifest) => normalized.evidenceDigest(
+        "file-manifest",
+        { ordinal, ...manifest }
+      ),
+      exposeStaging: true,
+      exposeControl: true,
+      ...(hasTransferDestination(request) ? { exposeArtifacts: true } : {}),
+      capture: async captureRequest => await captureChatGPTRequest({
+        ...normalized,
+        request,
+        files,
+        captureRequest,
+        recoveryTarget: target
+      })
+    };
+    return createRuntimeOperationBrowserAdapter(adapterOptions);
+  };
+}
 
 /**
  * Create the restart-safe handle factory.  Recovery always attaches by the
@@ -563,7 +604,10 @@ function snapshotTargetRequest(value: OperationTargetRequestV1): OperationTarget
   }
 }
 
-function snapshotTargetBinding(value: OperationTargetBindingV1): OperationTargetBindingV1 {
+function snapshotTargetBinding(
+  value: OperationTargetBindingV1,
+  allowPending = false
+): OperationTargetBindingV1 {
   const copy = cloneSafeData(value);
   if (copy === null || typeof copy !== "object" || Array.isArray(copy)) throw new ChatGPTRuntimeFactoryError();
   const target = copy as Record<string, unknown>;
@@ -573,18 +617,22 @@ function snapshotTargetBinding(value: OperationTargetBindingV1): OperationTarget
     || (target.coordinationScope !== "process" && target.coordinationScope !== "provider")) {
     throw new ChatGPTRuntimeFactoryError();
   }
-  if (target.targetLifecycle === "new_pending") throw new ChatGPTRuntimeFactoryError();
+  if (target.targetLifecycle === "new_pending" && !allowPending) throw new ChatGPTRuntimeFactoryError();
   return Object.freeze(target) as OperationTargetBindingV1;
 }
 
 async function captureChatGPTRequest(options: CaptureRequestOptions): Promise<OperationRuntimeBrowserCapture> {
-  const targetRequest = options.recoveryTarget === undefined
-    ? options.request === undefined ? undefined : options.request.target
-    : Object.freeze({ type: "tab_id", tabId: options.recoveryTarget.tabId } satisfies OperationTargetRequestV1);
+  const targetRequest = options.request?.target
+    ?? (options.recoveryTarget === undefined
+      ? undefined
+      : Object.freeze({ type: "tab_id", tabId: options.recoveryTarget.tabId } satisfies OperationTargetRequestV1));
   if (targetRequest === undefined) throw new ChatGPTRuntimeFactoryError();
+  const acquisitionTarget = options.recoveryTarget === undefined
+    ? targetRequest
+    : Object.freeze({ type: "tab_id", tabId: options.recoveryTarget.tabId } satisfies OperationTargetRequestV1);
   const targetSurface = options.captureRequest.surface;
-  const bootstrap = bootstrapArgsForTarget(targetRequest);
-  const bootstrapEnv = bootstrapEnvironment(options.env, targetRequest, options.recoveryTarget);
+  const bootstrap = bootstrapArgsForTarget(acquisitionTarget);
+  const bootstrapEnv = bootstrapEnvironment(options.env, acquisitionTarget, options.recoveryTarget);
   const acquisitionOwner = Object.freeze({
     ...options.owner,
     operationId: options.captureRequest.operationId
@@ -599,7 +647,7 @@ async function captureChatGPTRequest(options: CaptureRequestOptions): Promise<Op
     throw new ChatGPTRuntimeFactoryError();
   }
   let selectedTabId: string | undefined;
-  if (targetRequest.type === "selected_tab") {
+  if (acquisitionTarget.type === "selected_tab") {
     // The browser wrapper performs this one read through the same process
     // coordinator. Supplying the resulting exact page prevents the broader
     // user-open-tab fallback from turning "selected" into "first ChatGPT tab".
@@ -624,10 +672,10 @@ async function captureChatGPTRequest(options: CaptureRequestOptions): Promise<Op
   const tabId = tabIdFromPage(attached.page);
   if (tabId === undefined || !ID_PATTERN.test(tabId)) throw new ChatGPTRuntimeFactoryError();
   if (attached.tabId !== undefined && attached.tabId !== tabId) throw new ChatGPTRuntimeFactoryError();
-  if (targetRequest.type === "tab_id" && tabId !== targetRequest.tabId) {
+  if (acquisitionTarget.type === "tab_id" && tabId !== acquisitionTarget.tabId) {
     throw new ChatGPTRuntimeFactoryError();
   }
-  if (targetRequest.type === "selected_tab" && (selectedTabId === undefined || tabId !== selectedTabId)) {
+  if (acquisitionTarget.type === "selected_tab" && (selectedTabId === undefined || tabId !== selectedTabId)) {
     throw new ChatGPTRuntimeFactoryError();
   }
   if (options.recoveryTarget !== undefined) {

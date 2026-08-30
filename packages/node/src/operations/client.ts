@@ -79,6 +79,22 @@ export type OperationAdapterFactory = (
 ) => OperationBrowserAdapter | Promise<OperationBrowserAdapter>;
 
 /**
+ * Authenticated same-request recovery for a pending new target before Send.
+ * Prompt and file paths remain request-local; durable target material is
+ * supplied separately so the factory can reattach only the journal-owned tab.
+ */
+export type OperationSubmitRecoveryAdapterFactoryContext = Readonly<OperationAdapterFactoryContext & {
+  handle: OperationHandleV1;
+  state: OperationAdapterDurableState;
+  target: OperationTargetBindingV1;
+  durable: OperationHandleAdapterFactoryContext;
+}>;
+
+export type OperationSubmitRecoveryAdapterFactory = (
+  context: OperationSubmitRecoveryAdapterFactoryContext
+) => OperationBrowserAdapter | Promise<OperationBrowserAdapter>;
+
+/**
  * Authenticated, redacted state exposed to a post-restart adapter factory.
  *
  * This is intentionally a projection rather than `OperationStateV1`: action
@@ -145,6 +161,8 @@ export type OperationServicePort = Pick<
 export type OperationClientOptions = Readonly<{
   /** Optional request-scoped adapter construction for raw prompt/path closure. */
   adapterFactory?: OperationAdapterFactory;
+  /** Reattach an authenticated prepared/new-pending submit to its exact durable tab. */
+  submitRecoveryAdapterFactory?: OperationSubmitRecoveryAdapterFactory;
   /** Recreate a target-bound adapter after a process/backend restart. */
   handleAdapterFactory?: OperationHandleAdapterFactory;
   /**
@@ -203,6 +221,7 @@ export class OperationClient {
   private readonly fingerprint: OperationFileFingerprinter;
   private readonly revalidate: OperationFileRevalidator;
   private readonly adapterFactory: OperationAdapterFactory | undefined;
+  private readonly submitRecoveryAdapterFactory: OperationSubmitRecoveryAdapterFactory | undefined;
   private readonly handleAdapterFactory: OperationHandleAdapterFactory | undefined;
   private readonly controlAdapterFactory: OperationControlAdapterFactory | undefined;
   private readonly maxCachedAdapters: number;
@@ -216,6 +235,7 @@ export class OperationClient {
     this.fingerprint = options.fingerprint ?? fingerprintOperationFile;
     this.revalidate = options.revalidate ?? revalidateOperationFile;
     this.adapterFactory = options.adapterFactory;
+    this.submitRecoveryAdapterFactory = options.submitRecoveryAdapterFactory;
     this.handleAdapterFactory = options.handleAdapterFactory;
     this.controlAdapterFactory = options.controlAdapterFactory;
     this.maxCachedAdapters = validateMaxCachedAdapters(options.maxCachedAdapters);
@@ -356,6 +376,43 @@ export class OperationClient {
     // therefore still fails browser-free with operation_request_mismatch.
     const cached = this.cachedAdapterForOperation(prepared.request.operationId);
     if (cached !== undefined) return cached;
+
+    if (this.submitRecoveryAdapterFactory !== undefined && this.service.prepare !== undefined) {
+      const checkpoint = await this.service.prepare(
+        prepared.serviceRequest,
+        prepared.manifest,
+        { signal: prepared.signal }
+      );
+      let reconstruction: Reconstruction | undefined;
+      try {
+        const record = requiredObject(checkpoint, "prepare result");
+        const handle = cloneFrozen(
+          requiredData(record, "handle") as OperationHandleV1,
+          "invalid_operation_handle"
+        );
+        reconstruction = reconstructionContext(checkpoint, handle);
+      } catch (error) {
+        if (!(error instanceof OperationClientError) || error.code !== "target_binding_missing") throw error;
+      }
+      if (reconstruction?.target.targetLifecycle === "new_pending") {
+        if (reconstruction.state.phase !== "prepared" || reconstruction.state.mutationBoundary !== "none") {
+          throw new OperationClientError("invalid_operation_state", "A pending submit target is outside the recoverable pre-Send phase.");
+        }
+        let recovered: OperationBrowserAdapter;
+        try {
+          recovered = await this.submitRecoveryAdapterFactory(
+            makeSubmitRecoveryFactoryContext(prepared, reconstruction)
+          );
+        } catch {
+          recovered = unavailableAdapter("adapter_unavailable");
+        }
+        try {
+          return this.guardAdapter(recovered, prepared.identities, prepared.signal);
+        } catch {
+          throw new OperationClientError("adapter_unavailable", "The pending submit browser adapter could not be recreated.");
+        }
+      }
+    }
 
     let adapter = this.adapter;
     if (this.adapterFactory !== undefined) {
@@ -982,6 +1039,44 @@ function makeControlFactoryContext(
   reconstruction: Reconstruction
 ): OperationControlAdapterFactoryContext {
   const context = { request } as OperationControlAdapterFactoryContext;
+  Object.defineProperties(context, {
+    handle: {
+      value: reconstruction.context.handle,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    },
+    state: {
+      value: reconstruction.context.state,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    },
+    target: {
+      value: reconstruction.context.target,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    },
+    durable: {
+      value: reconstruction.context,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    }
+  });
+  return Object.freeze(context);
+}
+
+function makeSubmitRecoveryFactoryContext(
+  prepared: PreparedSubmit,
+  reconstruction: Reconstruction
+): OperationSubmitRecoveryAdapterFactoryContext {
+  const context = {
+    request: prepared.request,
+    files: prepared.identities,
+    signal: prepared.signal
+  } as OperationSubmitRecoveryAdapterFactoryContext;
   Object.defineProperties(context, {
     handle: {
       value: reconstruction.context.handle,
