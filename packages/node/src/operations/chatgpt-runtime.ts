@@ -4,6 +4,7 @@ import {
   resolveChatGPTBrowser,
   tabIdFromPage
 } from "../browser/attach.js";
+import { authorizeBrowserCdp } from "../browser/capability-documentation.js";
 import { CHATGPT_HOME } from "../browser/chatgpt-url.js";
 import { composerTextbox, sendButton } from "../dom/selectors.js";
 import { parseConversationId } from "../browser/page-state.js";
@@ -764,6 +765,7 @@ async function captureChatGPTRequest(options: CaptureRequestOptions): Promise<Op
         revalidateFile: identity => revalidateOperationFile(identity, {
           signal: options.captureRequest.signal
         }),
+        cdpAuthorized: await authorizeBrowserCdp(options.env.agent),
         signal: options.captureRequest.signal
       });
   const production = createProductionOperationPrimitives({

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { downloadLatestArtifact, locatorCountWithTimeout } from "./artifacts.js";
 import { ACTIVE_COMPOSER_FILE_INPUT_CLICK_EXPRESSION } from "../browser/active-composer-file-input.js";
+import { authorizeBrowserCdp } from "../browser/capability-documentation.js";
 import { waitForDownloadFromClick } from "../browser/downloads.js";
 import { nodeErrorCode, resultError, resultOk } from "../errors.js";
 import { addFilesButton, cssSelectors, requiredLocator } from "../dom/selectors.js";
@@ -246,7 +247,8 @@ export async function attachFiles(
       ? rawBaseline
       : { supported: false, inputFiles: [], attachmentLabels: [] };
 
-    await uploadFiles(page, files, deadline, mutationState);
+    const cdpAuthorized = await authorizeBrowserCdp(env.agent);
+    await uploadFiles(page, files, deadline, mutationState, cdpAuthorized);
     const browserInput = args.includeDiagnostics === true
       ? await withinNativeAttachmentDeadline(
           deadline,
@@ -797,7 +799,8 @@ async function uploadFiles(
   page: NonNullable<RuntimeEnv["page"]>,
   files: AttachedFile[],
   deadline: Deadline,
-  mutationState: AttachmentMutationState
+  mutationState: AttachmentMutationState,
+  cdpAuthorized: boolean
 ): Promise<void> {
   const paths = files.map(file => file.path);
   const errors: string[] = [];
@@ -836,13 +839,15 @@ async function uploadFiles(
         await clickFileChooserLocator(page, control, paths, deadline, mutationState);
       }
     },
-    {
+  );
+  if (cdpAuthorized) {
+    attempts.push({
       name: "cdp-file-input-chooser",
       run: async () => {
         await clickHiddenFileInputWithCdp(page, paths, deadline, mutationState);
       }
-    }
-  );
+    });
+  }
   if (activeComposerInput !== undefined) {
     const resolvedInput = activeComposerInput;
     attempts.push({

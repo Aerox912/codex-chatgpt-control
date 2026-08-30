@@ -8,6 +8,17 @@ import { describe, expect, it, vi } from "vitest";
 import { attachFiles, downloadLatestFile, preflightFiles, stripLocalizedDownloadPrefix, validateAttachPaths } from "../../src/commands/files.js";
 import type { BrowserOperationOptions, LocatorLike, PageLike, WaitForEventOptions } from "../../src/types.js";
 
+function agentWithCdpDocumentation() {
+  return {
+    documentation: {
+      get: async (path: string) => {
+        if (path !== "capabilities/tab/cdp") throw new Error("unexpected documentation path");
+        return "CDP documentation";
+      }
+    }
+  };
+}
+
 describe("preflightFiles", () => {
   it("requires absolute paths and returns a structured blocker", async () => {
     const result = await preflightFiles({}, { paths: ["notes.txt"] });
@@ -711,7 +722,7 @@ describe("attachFiles", () => {
       url: () => "https://chatgpt.com/"
     };
 
-    const result = await attachFiles({ page }, { paths: [first, second] });
+    const result = await attachFiles({ page, agent: agentWithCdpDocumentation() }, { paths: [first, second] });
 
     expect(result.ok).toBe(true);
     expect(uploadedPaths).toEqual([first, second]);
@@ -763,7 +774,7 @@ describe("attachFiles", () => {
       url: () => "https://chatgpt.com/"
     };
 
-    const result = await attachFiles({ page }, { paths: [file], timeoutMs: 100 });
+    const result = await attachFiles({ page, agent: agentWithCdpDocumentation() }, { paths: [file], timeoutMs: 100 });
 
     expect(result).toMatchObject({
       ok: false,
@@ -1243,7 +1254,7 @@ describe("attachFiles", () => {
       url: () => "https://chatgpt.com/"
     };
 
-    const result = await attachFiles({ page }, { paths: [file] });
+    const result = await attachFiles({ page, agent: agentWithCdpDocumentation() }, { paths: [file] });
 
     expect(result.ok).toBe(false);
     expect(result.status).toBe("blocked");
@@ -1381,7 +1392,7 @@ describe("attachFiles", () => {
       url: () => "https://chatgpt.com/"
     };
 
-    const result = await attachFiles({ page }, { paths: [file] });
+    const result = await attachFiles({ page, agent: agentWithCdpDocumentation() }, { paths: [file] });
 
     expect(result.ok).toBe(false);
     expect(result.status).toBe("blocked");

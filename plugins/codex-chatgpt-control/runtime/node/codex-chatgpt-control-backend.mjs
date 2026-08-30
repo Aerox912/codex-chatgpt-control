@@ -8129,6 +8129,34 @@ var ACTIVE_COMPOSER_FILE_INPUT_CLICK_EXPRESSION = `(() => {
   return { ok: true };
 })()`;
 
+// src/browser/capability-documentation.ts
+var CDP_DOCUMENTATION_PATH = "capabilities/tab/cdp";
+var authorizedAgents = /* @__PURE__ */ new WeakSet();
+async function authorizeBrowserCdp(agent) {
+  if (!isObjectLike3(agent)) return false;
+  if (authorizedAgents.has(agent)) return true;
+  let documentation;
+  let get;
+  try {
+    documentation = Reflect.get(agent, "documentation", agent);
+    if (!isObjectLike3(documentation)) return false;
+    get = Reflect.get(documentation, "get", documentation);
+  } catch {
+    return false;
+  }
+  if (typeof get !== "function") return false;
+  try {
+    await Promise.resolve(Reflect.apply(get, documentation, [CDP_DOCUMENTATION_PATH]));
+    authorizedAgents.add(agent);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function isObjectLike3(value) {
+  return typeof value === "object" && value !== null || typeof value === "function";
+}
+
 // src/platform/local-paths.ts
 import path from "node:path";
 import { platform as readHostPlatform } from "node:os";
@@ -8318,7 +8346,8 @@ async function attachFiles(env, args) {
       2e3
     ).catch(() => ({ supported: false, inputFiles: [], attachmentLabels: [] }));
     const baseline = rawBaseline !== null && typeof rawBaseline === "object" && Array.isArray(rawBaseline.inputFiles) && Array.isArray(rawBaseline.attachmentLabels) ? rawBaseline : { supported: false, inputFiles: [], attachmentLabels: [] };
-    await uploadFiles(page, files, deadline, mutationState);
+    const cdpAuthorized = await authorizeBrowserCdp(env.agent);
+    await uploadFiles(page, files, deadline, mutationState, cdpAuthorized);
     const browserInput = args.includeDiagnostics === true ? await withinNativeAttachmentDeadline(
       deadline,
       (timeoutMs) => readBrowserInputDiagnostic(page, timeoutMs),
@@ -8770,7 +8799,7 @@ async function readAttachmentReadiness(page, files, baseline, timeoutMs) {
     baseline
   }, { timeoutMs });
 }
-async function uploadFiles(page, files, deadline, mutationState) {
+async function uploadFiles(page, files, deadline, mutationState, cdpAuthorized) {
   const paths = files.map((file) => file.path);
   const errors = [];
   let activeComposerInput;
@@ -8806,14 +8835,16 @@ async function uploadFiles(page, files, deadline, mutationState) {
         await assertControlInUniqueActiveComposer(control, deadline, "Generic Add files control");
         await clickFileChooserLocator(page, control, paths, deadline, mutationState);
       }
-    },
-    {
+    }
+  );
+  if (cdpAuthorized) {
+    attempts.push({
       name: "cdp-file-input-chooser",
       run: async () => {
         await clickHiddenFileInputWithCdp(page, paths, deadline, mutationState);
       }
-    }
-  );
+    });
+  }
   if (activeComposerInput !== void 0) {
     const resolvedInput = activeComposerInput;
     attempts.push({
@@ -35187,7 +35218,7 @@ async function readLocatorVisible(locator, timeoutMs) {
   }
 }
 async function boundedCallback(value, timeoutMs) {
-  if (isObjectLike3(value) && !isNativePromise(value)) throw new Error("provider promise is not native");
+  if (isObjectLike4(value) && !isNativePromise(value)) throw new Error("provider promise is not native");
   if (!isNativePromise(value)) return value;
   let timer;
   const promise = new Promise((resolve8, reject) => {
@@ -35201,7 +35232,7 @@ async function boundedCallback(value, timeoutMs) {
   }
 }
 async function awaitMutatingCallback(value) {
-  if (isObjectLike3(value) && !isNativePromise(value)) throw new Error("provider promise is not native");
+  if (isObjectLike4(value) && !isNativePromise(value)) throw new Error("provider promise is not native");
   if (isNativePromise(value)) return await value;
   return value;
 }
@@ -35370,7 +35401,7 @@ function readPrototype(value) {
   }
 }
 function isSafeProviderObject(value) {
-  if (!isObjectLike3(value)) return false;
+  if (!isObjectLike4(value)) return false;
   try {
     const descriptors2 = Object.getOwnPropertyDescriptors(value);
     for (const key of Reflect.ownKeys(descriptors2)) {
@@ -35405,7 +35436,7 @@ function isSafeDataGraph(value, seen = /* @__PURE__ */ new Set(), depth = 0) {
   }
   return true;
 }
-function isObjectLike3(value) {
+function isObjectLike4(value) {
   return value !== null && (typeof value === "object" || typeof value === "function");
 }
 function hasSafeArrayDescriptors(value) {
@@ -35569,7 +35600,7 @@ function createChatGPTAttachmentProvider(options) {
     const evidence = safeEvidence2(normalized.evidenceDigest, "chatgpt-attachment-precondition", material);
     if (evidence === void 0) return { status: "uncertain", quarantine: "provider" };
     if (current.directActivationSelector === void 0 && current.menuOpenerSelector !== void 0) {
-      const cdpSend = await resolveCdpSend(page, preparationOptions.timeoutMs);
+      const cdpSend = normalized.cdpAuthorized ? await resolveCdpSend(page, preparationOptions.timeoutMs) : void 0;
       if (cdpSend !== void 0) {
         hiddenInputActivation = async ({ timeoutMs }) => {
           const raw = cdpSend("Runtime.evaluate", {
@@ -35668,13 +35699,14 @@ function createChatGPTAttachmentProvider(options) {
 }
 function normalizeOptions6(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid ChatGPT attachment provider options");
-  assertOwnDataKeys(value, ["evidenceDigest", "files", "identityDigest", "revalidateFile", "timeoutMs", "maxCandidates", "locale", "signal"]);
+  assertOwnDataKeys(value, ["evidenceDigest", "files", "identityDigest", "revalidateFile", "timeoutMs", "maxCandidates", "cdpAuthorized", "locale", "signal"]);
   const evidenceDigest = readOwn(value, "evidenceDigest");
   const files = readOwn(value, "files");
   const identityDigest = readOwn(value, "identityDigest");
   const revalidateFile = readOwn(value, "revalidateFile");
   const timeoutValue = readOwn(value, "timeoutMs");
   const maxCandidatesValue = readOwn(value, "maxCandidates");
+  const cdpAuthorized = readOwn(value, "cdpAuthorized") ?? false;
   const locale = readOwn(value, "locale");
   const signal = readOwn(value, "signal");
   if (typeof evidenceDigest !== "function" || !Array.isArray(files) || typeof identityDigest !== "function" || typeof revalidateFile !== "function") {
@@ -35685,6 +35717,7 @@ function normalizeOptions6(value) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS3 || !Number.isSafeInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 512) {
     throw new Error("invalid ChatGPT attachment provider options");
   }
+  if (typeof cdpAuthorized !== "boolean") throw new Error("invalid ChatGPT attachment provider options");
   if (locale !== void 0 && (typeof locale !== "string" || !LOCALE_PATTERN.test(locale))) {
     throw new Error("invalid ChatGPT attachment provider options");
   }
@@ -35728,6 +35761,7 @@ function normalizeOptions6(value) {
     maxCandidates,
     timeoutWasProvided: timeoutValue !== void 0,
     maxCandidatesWasProvided: maxCandidatesValue !== void 0,
+    cdpAuthorized,
     manifestFacts: Object.freeze(snapshot2.map((file) => Object.freeze({ ...file.manifest }))),
     ...locale === void 0 ? {} : { locale },
     ...signal === void 0 ? {} : { signal },
@@ -45861,7 +45895,7 @@ async function materializeDownloadBytes(download, options) {
         () => createReadStream2.call(download),
         options.timeoutMs
       );
-      if (!isObjectLike4(raw)) throw providerError();
+      if (!isObjectLike5(raw)) throw providerError();
       return boundedProviderByteStream(raw, options.maxBytes, options.timeoutMs, options.signal);
     } catch {
       throw providerError();
@@ -46036,7 +46070,7 @@ function boundedProviderByteStream(source, maxBytes, timeoutMs, signal) {
       await close(false);
       throw providerError();
     }
-    if (!isObjectLike4(raw)) {
+    if (!isObjectLike5(raw)) {
       await close(false);
       throw providerError();
     }
@@ -46077,7 +46111,7 @@ function providerAsyncIterator(source) {
           throw providerError();
         }
         const iterator = Reflect.apply(descriptor.value, source, []);
-        if (!isObjectLike4(iterator) || safeMethod3(iterator, "next") === void 0) throw providerError();
+        if (!isObjectLike5(iterator) || safeMethod3(iterator, "next") === void 0) throw providerError();
         return iterator;
       }
       current = Object.getPrototypeOf(current);
@@ -46153,7 +46187,7 @@ async function boundedProviderCall(callback, timeoutMs) {
   });
 }
 function ownDataRecord2(value, allowed) {
-  if (!isObjectLike4(value) || Array.isArray(value)) throw providerError();
+  if (!isObjectLike5(value) || Array.isArray(value)) throw providerError();
   let prototype;
   let descriptors2;
   try {
@@ -46172,7 +46206,7 @@ function ownDataRecord2(value, allowed) {
   return value;
 }
 function isPlainDataRecord4(value) {
-  if (!isObjectLike4(value) || Array.isArray(value)) return false;
+  if (!isObjectLike5(value) || Array.isArray(value)) return false;
   let prototype;
   let descriptors2;
   try {
@@ -46222,7 +46256,7 @@ function safeMethod3(value, key) {
   return void 0;
 }
 function isSafeProviderObject3(value) {
-  if (!isObjectLike4(value)) return false;
+  if (!isObjectLike5(value)) return false;
   try {
     const descriptors2 = Object.getOwnPropertyDescriptors(value);
     for (const key of Reflect.ownKeys(descriptors2)) {
@@ -46261,11 +46295,11 @@ function isSafeDataGraph4(value, seen, depth, capability2 = false) {
 function isGenuineAbortSignal2(value) {
   return typeof AbortSignal !== "undefined" && value instanceof AbortSignal;
 }
-function isObjectLike4(value) {
+function isObjectLike5(value) {
   return value !== null && (typeof value === "object" || typeof value === "function");
 }
 function isPromiseLike2(value) {
-  return isObjectLike4(value) && safeMethod3(value, "then") !== void 0;
+  return isObjectLike5(value) && safeMethod3(value, "then") !== void 0;
 }
 function isArtifactKind(value) {
   return value === "file" || value === "image" || value === "other";
@@ -47798,6 +47832,7 @@ async function captureChatGPTRequest(options) {
     revalidateFile: (identity) => revalidateOperationFile(identity, {
       signal: options.captureRequest.signal
     }),
+    cdpAuthorized: await authorizeBrowserCdp(options.env.agent),
     signal: options.captureRequest.signal
   });
   const production = createProductionOperationPrimitives({

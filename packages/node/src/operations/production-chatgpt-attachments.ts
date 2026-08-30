@@ -36,6 +36,8 @@ export type ChatGPTAttachmentProviderOptions = Readonly<{
   revalidateFile: (identity: OperationFileIdentity) => Promise<void>;
   timeoutMs?: number;
   maxCandidates?: number;
+  /** True only after Browser's required CDP capability documentation was read. */
+  cdpAuthorized?: boolean;
   /** Optional BCP-47 tag used only to select locale-aware DOM labels. */
   locale?: string;
   /** Request-local cancellation.  It is never serialized or returned. */
@@ -326,7 +328,9 @@ export function createChatGPTAttachmentProvider(
     // expression re-proves one visible composer and one owned file input, then
     // the core primitive's already-registered chooser performs setFiles.
     if (current.directActivationSelector === undefined && current.menuOpenerSelector !== undefined) {
-      const cdpSend = await resolveCdpSend(page, preparationOptions.timeoutMs);
+      const cdpSend = normalized.cdpAuthorized
+        ? await resolveCdpSend(page, preparationOptions.timeoutMs)
+        : undefined;
       if (cdpSend !== undefined) {
         hiddenInputActivation = async ({ timeoutMs }) => {
           const raw = cdpSend("Runtime.evaluate", {
@@ -468,6 +472,7 @@ function normalizeOptions(value: ChatGPTAttachmentProviderOptions): Readonly<{
   maxCandidates: number;
   timeoutWasProvided: boolean;
   maxCandidatesWasProvided: boolean;
+  cdpAuthorized: boolean;
   manifestFacts: readonly OperationFileManifestEntryV1[];
   locale?: string;
   signal?: AbortSignal;
@@ -475,13 +480,14 @@ function normalizeOptions(value: ChatGPTAttachmentProviderOptions): Readonly<{
   sendLabelCandidates: readonly string[];
 }> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid ChatGPT attachment provider options");
-  assertOwnDataKeys(value, ["evidenceDigest", "files", "identityDigest", "revalidateFile", "timeoutMs", "maxCandidates", "locale", "signal"]);
+  assertOwnDataKeys(value, ["evidenceDigest", "files", "identityDigest", "revalidateFile", "timeoutMs", "maxCandidates", "cdpAuthorized", "locale", "signal"]);
   const evidenceDigest = readOwn<BrowserObservationDigest>(value, "evidenceDigest");
   const files = readOwn<readonly OperationFileIdentity[]>(value, "files");
   const identityDigest = readOwn<ChatGPTAttachmentProviderOptions["identityDigest"]>(value, "identityDigest");
   const revalidateFile = readOwn<ChatGPTAttachmentProviderOptions["revalidateFile"]>(value, "revalidateFile");
   const timeoutValue = readOwn<number>(value, "timeoutMs");
   const maxCandidatesValue = readOwn<number>(value, "maxCandidates");
+  const cdpAuthorized = readOwn<boolean>(value, "cdpAuthorized") ?? false;
   const locale = readOwn<string>(value, "locale");
   const signal = readOwn<AbortSignal>(value, "signal");
   if (typeof evidenceDigest !== "function" || !Array.isArray(files)
@@ -494,6 +500,7 @@ function normalizeOptions(value: ChatGPTAttachmentProviderOptions): Readonly<{
     || !Number.isSafeInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 512) {
     throw new Error("invalid ChatGPT attachment provider options");
   }
+  if (typeof cdpAuthorized !== "boolean") throw new Error("invalid ChatGPT attachment provider options");
   if (locale !== undefined && (typeof locale !== "string" || !LOCALE_PATTERN.test(locale))) {
     throw new Error("invalid ChatGPT attachment provider options");
   }
@@ -537,6 +544,7 @@ function normalizeOptions(value: ChatGPTAttachmentProviderOptions): Readonly<{
     maxCandidates,
     timeoutWasProvided: timeoutValue !== undefined,
     maxCandidatesWasProvided: maxCandidatesValue !== undefined,
+    cdpAuthorized,
     manifestFacts: Object.freeze(snapshot.map(file => Object.freeze({ ...file.manifest }))),
     ...(locale === undefined ? {} : { locale }),
     ...(signal === undefined ? {} : { signal }),

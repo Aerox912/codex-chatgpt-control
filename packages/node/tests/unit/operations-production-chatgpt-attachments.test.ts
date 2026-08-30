@@ -296,7 +296,8 @@ function providerFor(
     ...(overrides.locale === undefined ? {} : { locale: overrides.locale }),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
     ...(overrides.timeoutMs === undefined ? {} : { timeoutMs: overrides.timeoutMs }),
-    ...(overrides.maxCandidates === undefined ? {} : { maxCandidates: overrides.maxCandidates })
+    ...(overrides.maxCandidates === undefined ? {} : { maxCandidates: overrides.maxCandidates }),
+    ...(overrides.cdpAuthorized === undefined ? {} : { cdpAuthorized: overrides.cdpAuthorized })
   });
   return { provider, evidenceMaterials };
 }
@@ -430,7 +431,7 @@ describe("ChatGPT production attachment provider", () => {
     expect(observed.status).toBe("mismatch");
   });
 
-  it("falls back to a unique semantic menu row when scoped CDP is unavailable", async () => {
+  it("uses a unique semantic menu row without touching unapproved scoped CDP", async () => {
     const page = makePage({ direct: false, menuRow: true });
     let capabilityReads = 0;
     page.capabilities = {
@@ -444,7 +445,7 @@ describe("ChatGPT production attachment provider", () => {
     expect(result.status).toBe("satisfied");
     expect(page.clickCalls).toBe(2);
     expect(page.setFilesCalls).toBe(1);
-    expect(capabilityReads).toBe(1);
+    expect(capabilityReads).toBe(0);
   });
 
   it("uses one fixed scoped CDP gesture for ChatGPT's hidden input and the native chooser for files", async () => {
@@ -474,7 +475,7 @@ describe("ChatGPT production attachment provider", () => {
     }
     const capability = new PrivateCdpCapability();
     page.capabilities = { get: async id => id === "cdp" ? capability : undefined };
-    const { provider } = providerFor(page);
+    const { provider } = providerFor(page, { cdpAuthorized: true });
 
     const result = await provider.handoffFiles(handoffRequest(), page, target);
 
@@ -506,7 +507,7 @@ describe("ChatGPT production attachment provider", () => {
         }
       })
     };
-    const { provider } = providerFor(page, { timeoutMs: 20 });
+    const { provider } = providerFor(page, { timeoutMs: 20, cdpAuthorized: true });
 
     const result = await provider.handoffFiles(handoffRequest(), page, target);
 
