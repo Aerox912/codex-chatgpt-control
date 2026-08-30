@@ -1068,6 +1068,47 @@ class OperationTarget(StrictWireModel):
         return self
 
 
+class OperationAttachmentRearmAuthorization(StrictWireModel):
+    """Redacted authority for one supervised same-operation attachment recovery."""
+
+    schema_version: Literal["chatgpt.browser_control.operation_attachment_rearm.v1"] = Field(alias="schemaVersion")
+    authorization_id: Uuid = Field(alias="authorizationId")
+    action_id: Uuid = Field(alias="actionId")
+    previous_target_binding_digest: Digest = Field(alias="previousTargetBindingDigest")
+    target_binding_digest: Digest = Field(alias="targetBindingDigest")
+    authorization_evidence_digest: Digest = Field(alias="authorizationEvidenceDigest")
+    authorized_at: Instant = Field(alias="authorizedAt")
+
+
+class OperationAttachmentRearm(OperationAttachmentRearmAuthorization):
+    authorized_revision: Revision = Field(alias="authorizedRevision")
+    attempt_intent_revision: Revision | None = Field(default=None, alias="attemptIntentRevision")
+    attempt_intent_at: Instant | None = Field(default=None, alias="attemptIntentAt")
+    preflight_evidence_digest: Digest | None = Field(default=None, alias="preflightEvidenceDigest")
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_null_intent_fields(cls, value: Any) -> Any:
+        return _reject_explicit_nulls(value, ("attemptIntentRevision", "attemptIntentAt", "preflightEvidenceDigest"))
+
+    @model_validator(mode="after")
+    def validate_intent(self) -> "OperationAttachmentRearm":
+        intent_fields = (
+            self.attempt_intent_revision,
+            self.attempt_intent_at,
+            self.preflight_evidence_digest,
+        )
+        if 0 < sum(candidate is not None for candidate in intent_fields) < 3:
+            raise ValueError("attachment rearm intent fields must be all present or all absent")
+        if self.attempt_intent_revision is not None:
+            assert self.attempt_intent_at is not None
+            if self.attempt_intent_revision <= self.authorized_revision:
+                raise ValueError("attachment rearm intent revision must follow authorization")
+            if self.attempt_intent_at < self.authorized_at:
+                raise ValueError("attachment rearm intent cannot precede authorization")
+        return self
+
+
 class OperationActionIntent(StrictWireModel):
     action_id: Uuid = Field(alias="actionId")
     kind: OperationActionKind
@@ -1270,6 +1311,20 @@ class OperationTargetEstablishedEvent(StrictWireModel):
     establishment: OperationTargetEstablishment
 
 
+class OperationAttachmentRearmAuthorizedEvent(StrictWireModel):
+    type: Literal["attachment_rearm_authorized"]
+    authorization: OperationAttachmentRearmAuthorization
+    target: OperationTarget
+
+
+class OperationAttachmentRearmIntentEvent(StrictWireModel):
+    type: Literal["attachment_rearm_intent"]
+    authorization_id: Uuid = Field(alias="authorizationId")
+    action_id: Uuid = Field(alias="actionId")
+    preflight_evidence_digest: Digest = Field(alias="preflightEvidenceDigest")
+    intent_at: Instant = Field(alias="intentAt")
+
+
 class OperationOwnershipBaselineEvent(StrictWireModel):
     type: Literal["ownership_baseline"]
     baseline: OperationOwnershipBaseline
@@ -1366,6 +1421,8 @@ OperationEvent = Annotated[
         OperationCreatedEvent,
         OperationTargetBoundEvent,
         OperationTargetEstablishedEvent,
+        OperationAttachmentRearmAuthorizedEvent,
+        OperationAttachmentRearmIntentEvent,
         OperationOwnershipBaselineEvent,
         OperationSubmissionWitnessEvent,
         OperationActionIntentEvent,
@@ -1403,6 +1460,7 @@ class OperationState(StrictWireModel):
     capture_policy: OperationDurableCapturePolicy | None = Field(default=None, alias="capturePolicy")
     response_format: OperationResponseFormat | None = Field(default=None, alias="responseFormat")
     target: OperationTarget | None = None
+    attachment_rearm: OperationAttachmentRearm | None = Field(default=None, alias="attachmentRearm")
     actions: dict[Uuid, OperationActionRecord]
     ownership_baseline: OperationOwnershipBaseline | None = Field(default=None, alias="ownershipBaseline")
     ownership_baselines: dict[Uuid, OperationOwnershipBaseline] | None = Field(
@@ -1419,7 +1477,7 @@ class OperationState(StrictWireModel):
     @model_validator(mode="before")
     @classmethod
     def reject_null_response_format(cls, value: Any) -> Any:
-        return _reject_explicit_nulls(value, ("capturePolicy", "responseFormat", "ownershipBaselines", "artifactTransfers", "submissionWitnesses"))
+        return _reject_explicit_nulls(value, ("capturePolicy", "responseFormat", "attachmentRearm", "ownershipBaselines", "artifactTransfers", "submissionWitnesses"))
 
     @model_validator(mode="after")
     def validate_state_coherence(self) -> "OperationState":
@@ -1655,6 +1713,31 @@ class OperationState(StrictWireModel):
                 expected_boundary = "control_may_have_occurred"
         if self.mutation_boundary != expected_boundary:
             raise ValueError("mutationBoundary does not match the action ledger")
+        if self.attachment_rearm is not None:
+            rearm = self.attachment_rearm
+            action = self.actions.get(rearm.action_id)
+            if (
+                self.target is None
+                or (self.target.target_lifecycle or "fixed") not in {"new_pending", "new_established"}
+                or action is None
+                or action.kind != "file_handoff"
+                or action.request_digest != self.request_digest
+                or action.target_digest != rearm.previous_target_binding_digest
+            ):
+                raise ValueError("attachment rearm must bind the original handoff and its replacement target")
+            if rearm.authorized_revision > self.revision or rearm.authorized_at > self.updated_at:
+                raise ValueError("attachment rearm authorization follows durable state")
+            if rearm.attempt_intent_revision is not None:
+                assert rearm.attempt_intent_at is not None
+                if (
+                    rearm.attempt_intent_revision > self.revision
+                    or rearm.attempt_intent_at > self.updated_at
+                ):
+                    raise ValueError("attachment rearm intent follows durable state")
+            if has_submit and action.outcome != "satisfied":
+                raise ValueError("Send cannot follow an unproven attachment recovery")
+            if self.phase in {"ready", "send_pending", "submitted", "generating", "capturing", "completed"} and action.outcome != "satisfied":
+                raise ValueError("recovered attachment state requires a satisfied handoff receipt")
         if self.phase == "handoff_pending" and not has_handoff:
             raise ValueError("handoff_pending requires file_handoff intent")
         if self.phase == "send_pending" and not has_submit:
@@ -2041,6 +2124,10 @@ __all__ = [
     "OperationActionIntent",
     "OperationActionIntentEvent",
     "OperationActionPreparedEvent",
+    "OperationAttachmentRearm",
+    "OperationAttachmentRearmAuthorization",
+    "OperationAttachmentRearmAuthorizedEvent",
+    "OperationAttachmentRearmIntentEvent",
     "ArtifactTransferKind",
     "ArtifactTransferStatus",
     "ArtifactTransferIntent",

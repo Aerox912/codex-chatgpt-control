@@ -30,6 +30,7 @@
     "capturePolicy": { "$ref": "#/$defs/capturePolicy" },
     "responseFormat": { "enum": ["markdown", "text"] },
     "target": { "$ref": "#/$defs/target" },
+    "attachmentRearm": { "$ref": "#/$defs/attachmentRearm" },
     "actions": {
       "type": "object",
       "propertyNames": { "$ref": "#/$defs/uuid" },
@@ -201,6 +202,38 @@
           "then": { "type": "object" }
         }
       ]
+    },
+    "attachmentRearm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "authorizationId",
+        "actionId",
+        "previousTargetBindingDigest",
+        "targetBindingDigest",
+        "authorizationEvidenceDigest",
+        "authorizedRevision",
+        "authorizedAt"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_attachment_rearm.v1" },
+        "authorizationId": { "$ref": "#/$defs/uuid" },
+        "actionId": { "$ref": "#/$defs/uuid" },
+        "previousTargetBindingDigest": { "$ref": "#/$defs/digest" },
+        "targetBindingDigest": { "$ref": "#/$defs/digest" },
+        "authorizationEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "authorizedRevision": { "$ref": "#/$defs/revision" },
+        "authorizedAt": { "$ref": "#/$defs/instant" },
+        "attemptIntentRevision": { "$ref": "#/$defs/revision" },
+        "attemptIntentAt": { "$ref": "#/$defs/instant" },
+        "preflightEvidenceDigest": { "$ref": "#/$defs/digest" }
+      },
+      "dependentRequired": {
+        "attemptIntentRevision": ["attemptIntentAt", "preflightEvidenceDigest"],
+        "attemptIntentAt": ["attemptIntentRevision", "preflightEvidenceDigest"],
+        "preflightEvidenceDigest": ["attemptIntentRevision", "attemptIntentAt"]
+      }
     },
     "targetEstablishmentRead": {
       "type": "object",

@@ -1,4 +1,5 @@
 import {
+  OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION,
   OPERATION_ARTIFACT_RECEIPT_SCHEMA_VERSION,
   OPERATION_ARTIFACT_TRANSFER_INTENT_SCHEMA_VERSION,
   OPERATION_ARTIFACT_TRANSFER_RECEIPT_SCHEMA_VERSION,
@@ -10,6 +11,7 @@ import {
   type OperationActionKind,
   type OperationActionOutcome,
   type OperationActionRecordV1,
+  type OperationAttachmentRearmV1,
   type OperationArtifactReceiptV1,
   type OperationArtifactTransferIntentV1,
   type OperationArtifactTransferReceiptV1,
@@ -188,6 +190,18 @@ export function applyOperationEvent(
       assertTimestamp(event.establishment.observedAt, "target_established.observedAt");
       assertTimestampNotBefore(state.updatedAt, event.establishment.observedAt, "target_established.observedAt");
       return withRevision({ ...state, target: establishTarget(state, event.establishment) }, revision, event.establishment.observedAt);
+    case "attachment_rearm_authorized":
+      assertTimestamp(event.authorization.authorizedAt, "attachment_rearm_authorized.authorizedAt");
+      assertTimestampNotBefore(state.updatedAt, event.authorization.authorizedAt, "attachment_rearm_authorized.authorizedAt");
+      return withRevision(
+        applyAttachmentRearmAuthorization(state, event, revision),
+        revision,
+        event.authorization.authorizedAt
+      );
+    case "attachment_rearm_intent":
+      assertTimestamp(event.intentAt, "attachment_rearm_intent.intentAt");
+      assertTimestampNotBefore(state.updatedAt, event.intentAt, "attachment_rearm_intent.intentAt");
+      return withRevision(applyAttachmentRearmIntent(state, event, revision), revision, event.intentAt);
     case "ownership_baseline":
       assertTimestamp(event.baseline.observedAt, "ownership_baseline.observedAt");
       assertTimestampNotBefore(state.updatedAt, event.baseline.observedAt, "ownership_baseline.observedAt");
@@ -291,6 +305,19 @@ export function assertOperationEventShape(value: unknown): asserts value is Oper
       assertExactRecord(event, "target_established", ["type", "establishment"], ["type", "establishment"]);
       assertTargetEstablishmentShape(event.establishment);
       return;
+    case "attachment_rearm_authorized":
+      assertExactRecord(event, "attachment_rearm_authorized", ["type", "authorization", "target"], ["type", "authorization", "target"]);
+      assertAttachmentRearmAuthorizationShape(event.authorization);
+      assertTargetShape(event.target);
+      return;
+    case "attachment_rearm_intent":
+      assertExactRecord(
+        event,
+        "attachment_rearm_intent",
+        ["type", "authorizationId", "actionId", "preflightEvidenceDigest", "intentAt"],
+        ["type", "authorizationId", "actionId", "preflightEvidenceDigest", "intentAt"]
+      );
+      return;
     case "ownership_baseline":
       assertExactRecord(event, "ownership_baseline", ["type", "baseline"], ["type", "baseline"]);
       assertOwnershipBaselineShape(event.baseline);
@@ -343,7 +370,7 @@ export function assertOperationStateShape(value: unknown): asserts value is Oper
   assertExactRecord(
     value,
     "operation state",
-    ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "capturePolicy", "responseFormat", "target", "actions", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "submissionWitness", "lastBlocker", "receipt"],
+    ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "capturePolicy", "responseFormat", "target", "attachmentRearm", "actions", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "submissionWitness", "lastBlocker", "receipt"],
     ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "actions"]
   );
   const state = value as Record<string, unknown>;
@@ -377,6 +404,7 @@ export function assertOperationStateShape(value: unknown): asserts value is Oper
     }
   }
   if (state.target !== undefined) assertTargetShape(state.target);
+  if (state.attachmentRearm !== undefined) assertAttachmentRearmShape(state.attachmentRearm);
   if (!isPlainRecord(state.actions)) {
     throw new OperationStateError("invalid_operation_state", "Operation state actions must be an object.");
   }
@@ -389,6 +417,12 @@ export function assertOperationStateShape(value: unknown): asserts value is Oper
     assertPersistedActionRecord(action as OperationActionRecordV1, state as unknown as OperationStateV1);
   }
   if (state.target !== undefined) validateTargetValues(state.target as NonNullable<OperationStateV1["target"]>);
+  if (state.attachmentRearm !== undefined) {
+    validateAttachmentRearmValues(
+      state.attachmentRearm as OperationAttachmentRearmV1,
+      state as unknown as OperationStateV1
+    );
+  }
   if (state.ownershipBaseline !== undefined) {
     assertOwnershipBaselineShape(state.ownershipBaseline);
     validateOwnershipBaselineValues(state.ownershipBaseline, state as unknown as OperationStateV1);
@@ -515,7 +549,7 @@ function applyActionIntent(
       `Action ${action.kind} requires ${requiredRepeatPolicy(action.kind)}, received ${action.repeatPolicy}.`
     );
   }
-  if (!ACTION_PHASES[action.kind].has(state.phase)) {
+  if (!ACTION_PHASES[action.kind].has(state.phase) && !isAttachmentRearmStagingAction(state, action)) {
     throw new OperationStateError(
       "action_phase_invalid",
       `Action ${action.kind} cannot begin while the operation is ${state.phase}.`
@@ -551,6 +585,20 @@ function applyActionIntent(
     ? actionBoundary
     : state.mutationBoundary;
   return { ...state, mutationBoundary, actions: { ...state.actions, [action.actionId]: record } };
+}
+
+function isAttachmentRearmStagingAction(
+  state: OperationStateV1,
+  action: { kind: OperationActionKind; targetDigest?: string }
+): boolean {
+  if (state.phase !== "uncertain" || state.mutationBoundary !== "handoff_may_have_occurred") return false;
+  const rearm = state.attachmentRearm;
+  if (rearm === undefined || rearm.attemptIntentRevision !== undefined) return false;
+  if (action.targetDigest !== rearm.targetBindingDigest) return false;
+  return action.kind === "configuration_set"
+    || action.kind === "tool_set"
+    || action.kind === "composer_set"
+    || action.kind === "power_select";
 }
 
 function applyActionReceipt(
@@ -1434,6 +1482,23 @@ function validateStateCoherence(state: OperationStateV1): void {
   const hasHandoff = actions.some(action => action.kind === "file_handoff");
   const submitActions = actions.filter(action => action.kind === "send");
   const hasSubmit = submitActions.length > 0;
+  if (state.attachmentRearm !== undefined) {
+    validateAttachmentRearmValues(state.attachmentRearm, state);
+    const rearmedAction = state.actions[state.attachmentRearm.actionId];
+    if (state.target === undefined || !hasHandoff) {
+      throw new OperationStateError("attachment_rearm_target_invalid", "Attachment rearm requires its replacement target and original handoff.");
+    }
+    if (hasSubmit && rearmedAction?.outcome !== "satisfied") {
+      throw new OperationStateError("attachment_rearm_send_invalid", "Send cannot follow an unproven attachment recovery.");
+    }
+    if (
+      (state.phase === "ready" || state.phase === "send_pending" || state.phase === "submitted"
+        || state.phase === "generating" || state.phase === "capturing" || state.phase === "completed")
+      && rearmedAction?.outcome !== "satisfied"
+    ) {
+      throw new OperationStateError("attachment_rearm_phase_invalid", "Recovered attachment state requires a satisfied handoff receipt.");
+    }
+  }
   validateSubmissionWitnessCollection(state);
   const ownershipBaselines = state.ownershipBaselines ?? {};
   for (const [actionId, baseline] of Object.entries(ownershipBaselines)) {
@@ -1580,6 +1645,157 @@ function validatedTarget(state: OperationStateV1, target: NonNullable<OperationS
     throw new OperationStateError("target_binding_mismatch", "Operation target binding is immutable.");
   }
   return target;
+}
+
+function applyAttachmentRearmAuthorization(
+  state: OperationStateV1,
+  event: Extract<OperationEventV1, { type: "attachment_rearm_authorized" }>,
+  revision: number
+): OperationStateV1 {
+  const authorization = event.authorization;
+  assertAttachmentRearmAuthorizationShape(authorization);
+  validateTargetValues(event.target);
+  if (authorization.schemaVersion !== OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION) {
+    throw new OperationStateError("attachment_rearm_schema_invalid", "Attachment rearm schemaVersion is unsupported.");
+  }
+  assertOperationId(authorization.authorizationId, "attachmentRearm.authorizationId");
+  assertOperationId(authorization.actionId, "attachmentRearm.actionId");
+  assertDigest(authorization.previousTargetBindingDigest, "attachmentRearm.previousTargetBindingDigest");
+  assertDigest(authorization.targetBindingDigest, "attachmentRearm.targetBindingDigest");
+  assertDigest(authorization.authorizationEvidenceDigest, "attachmentRearm.authorizationEvidenceDigest");
+  if (state.attachmentRearm !== undefined) {
+    throw new OperationStateError("attachment_rearm_already_authorized", "Attachment recovery may be authorized only once.");
+  }
+  if (
+    state.phase !== "uncertain"
+    || state.mutationBoundary !== "handoff_may_have_occurred"
+  ) {
+    throw new OperationStateError("attachment_rearm_phase_invalid", "Attachment recovery requires an indeterminate handoff state.");
+  }
+  const target = state.target;
+  if (target === undefined || target.targetLifecycle !== "new_pending") {
+    throw new OperationStateError("attachment_rearm_target_invalid", "Attachment recovery requires a pending new target.");
+  }
+  if (Object.values(state.actions).some(action => action.kind === "send")) {
+    throw new OperationStateError("attachment_rearm_after_send", "Attachment recovery cannot be authorized after Send intent.");
+  }
+  const handoffs = Object.values(state.actions).filter(action => action.kind === "file_handoff");
+  const handoff = handoffs.length === 1 ? handoffs[0] : undefined;
+  if (
+    handoff === undefined
+    || handoff.actionId !== authorization.actionId
+    || handoff.outcome !== undefined
+    || handoff.targetDigest !== authorization.previousTargetBindingDigest
+    || handoff.requestDigest !== state.requestDigest
+  ) {
+    throw new OperationStateError("attachment_rearm_action_invalid", "Attachment recovery does not match the unresolved handoff intent.");
+  }
+  assertAttachmentRearmTargetCompatible(target, event.target);
+  const rearm: OperationAttachmentRearmV1 = {
+    ...authorization,
+    authorizedRevision: revision
+  };
+  return { ...state, target: event.target, attachmentRearm: rearm };
+}
+
+function applyAttachmentRearmIntent(
+  state: OperationStateV1,
+  event: Extract<OperationEventV1, { type: "attachment_rearm_intent" }>,
+  revision: number
+): OperationStateV1 {
+  assertOperationId(event.authorizationId, "attachmentRearm.authorizationId");
+  assertOperationId(event.actionId, "attachmentRearm.actionId");
+  assertDigest(event.preflightEvidenceDigest, "attachmentRearm.preflightEvidenceDigest");
+  const rearm = state.attachmentRearm;
+  if (
+    rearm === undefined
+    || rearm.authorizationId !== event.authorizationId
+    || rearm.actionId !== event.actionId
+    || rearm.attemptIntentRevision !== undefined
+  ) {
+    throw new OperationStateError("attachment_rearm_intent_invalid", "Attachment recovery intent does not match one unused authorization.");
+  }
+  if (state.phase !== "uncertain" || state.mutationBoundary !== "handoff_may_have_occurred") {
+    throw new OperationStateError("attachment_rearm_phase_invalid", "Attachment recovery intent requires an indeterminate handoff state.");
+  }
+  const action = state.actions[event.actionId];
+  if (action?.kind !== "file_handoff" || action.outcome !== undefined) {
+    throw new OperationStateError("attachment_rearm_action_invalid", "Attachment recovery intent requires the unresolved original handoff.");
+  }
+  if (Object.values(state.actions).some(candidate => candidate.kind === "send")) {
+    throw new OperationStateError("attachment_rearm_after_send", "Attachment recovery intent cannot follow Send intent.");
+  }
+  return {
+    ...state,
+    attachmentRearm: {
+      ...rearm,
+      attemptIntentRevision: revision,
+      attemptIntentAt: event.intentAt,
+      preflightEvidenceDigest: event.preflightEvidenceDigest
+    }
+  };
+}
+
+function assertAttachmentRearmTargetCompatible(
+  previous: NonNullable<OperationStateV1["target"]>,
+  replacement: NonNullable<OperationStateV1["target"]>
+): void {
+  if (
+    replacement.targetLifecycle !== "new_pending"
+    || replacement.targetEstablishment !== undefined
+    || replacement.conversationId !== undefined
+    || replacement.canonicalThreadUrl !== undefined
+    || replacement.newTargetAnchorDigest === undefined
+    || replacement.blankTaskEvidenceDigest === undefined
+    || replacement.providerId !== previous.providerId
+    || replacement.browserId !== previous.browserId
+    || replacement.coordinationScope !== previous.coordinationScope
+    || replacement.configurationReceiptDigest !== previous.configurationReceiptDigest
+    || canonicalJson(replacement.evidenceProfile) !== canonicalJson(previous.evidenceProfile)
+  ) {
+    throw new OperationStateError("attachment_rearm_target_invalid", "Attachment recovery target does not preserve the pending target contract.");
+  }
+}
+
+function validateAttachmentRearmValues(rearm: OperationAttachmentRearmV1, state: OperationStateV1): void {
+  assertAttachmentRearmShape(rearm);
+  if (rearm.schemaVersion !== OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION) {
+    throw new OperationStateError("attachment_rearm_schema_invalid", "Attachment rearm schemaVersion is unsupported.");
+  }
+  assertOperationId(rearm.authorizationId, "attachmentRearm.authorizationId");
+  assertOperationId(rearm.actionId, "attachmentRearm.actionId");
+  assertDigest(rearm.previousTargetBindingDigest, "attachmentRearm.previousTargetBindingDigest");
+  assertDigest(rearm.targetBindingDigest, "attachmentRearm.targetBindingDigest");
+  assertDigest(rearm.authorizationEvidenceDigest, "attachmentRearm.authorizationEvidenceDigest");
+  assertTimestamp(rearm.authorizedAt, "attachmentRearm.authorizedAt");
+  if (!Number.isSafeInteger(rearm.authorizedRevision) || rearm.authorizedRevision < 1 || rearm.authorizedRevision > state.revision) {
+    throw new OperationStateError("attachment_rearm_revision_invalid", "Attachment rearm authorization revision is invalid.");
+  }
+  const action = state.actions[rearm.actionId];
+  if (
+    action?.kind !== "file_handoff"
+    || action.requestDigest !== state.requestDigest
+    || action.targetDigest !== rearm.previousTargetBindingDigest
+  ) {
+    throw new OperationStateError("attachment_rearm_action_invalid", "Attachment rearm does not match the durable handoff action.");
+  }
+  const intentFields = [rearm.attemptIntentRevision, rearm.attemptIntentAt, rearm.preflightEvidenceDigest];
+  const intentCount = intentFields.filter(value => value !== undefined).length;
+  if (intentCount !== 0 && intentCount !== intentFields.length) {
+    throw new OperationStateError("attachment_rearm_intent_incomplete", "Attachment rearm intent fields must be all present or all absent.");
+  }
+  if (rearm.attemptIntentRevision !== undefined) {
+    if (
+      !Number.isSafeInteger(rearm.attemptIntentRevision)
+      || rearm.attemptIntentRevision <= rearm.authorizedRevision
+      || rearm.attemptIntentRevision > state.revision
+    ) {
+      throw new OperationStateError("attachment_rearm_revision_invalid", "Attachment rearm intent revision is invalid.");
+    }
+    assertTimestamp(rearm.attemptIntentAt!, "attachmentRearm.attemptIntentAt");
+    assertTimestampNotBefore(rearm.authorizedAt, rearm.attemptIntentAt!, "attachmentRearm.attemptIntentAt");
+    assertDigest(rearm.preflightEvidenceDigest!, "attachmentRearm.preflightEvidenceDigest");
+  }
 }
 
 function establishTarget(
@@ -2312,6 +2528,61 @@ function assertActionIntentShape(value: unknown): void {
     "operation action intent",
     ["actionId", "kind", "repeatPolicy", "requestDigest", "parentActionId", "targetDigest"],
     ["actionId", "kind", "repeatPolicy", "requestDigest"]
+  );
+}
+
+function assertAttachmentRearmAuthorizationShape(value: unknown): void {
+  assertExactRecord(
+    value,
+    "attachment rearm authorization",
+    [
+      "schemaVersion",
+      "authorizationId",
+      "actionId",
+      "previousTargetBindingDigest",
+      "targetBindingDigest",
+      "authorizationEvidenceDigest",
+      "authorizedAt"
+    ],
+    [
+      "schemaVersion",
+      "authorizationId",
+      "actionId",
+      "previousTargetBindingDigest",
+      "targetBindingDigest",
+      "authorizationEvidenceDigest",
+      "authorizedAt"
+    ]
+  );
+}
+
+function assertAttachmentRearmShape(value: unknown): void {
+  assertExactRecord(
+    value,
+    "attachment rearm",
+    [
+      "schemaVersion",
+      "authorizationId",
+      "actionId",
+      "previousTargetBindingDigest",
+      "targetBindingDigest",
+      "authorizationEvidenceDigest",
+      "authorizedRevision",
+      "authorizedAt",
+      "attemptIntentRevision",
+      "attemptIntentAt",
+      "preflightEvidenceDigest"
+    ],
+    [
+      "schemaVersion",
+      "authorizationId",
+      "actionId",
+      "previousTargetBindingDigest",
+      "targetBindingDigest",
+      "authorizationEvidenceDigest",
+      "authorizedRevision",
+      "authorizedAt"
+    ]
   );
 }
 

@@ -20252,6 +20252,7 @@ var OPERATION_SUBMISSION_WITNESS_SCHEMA_VERSION = "chatgpt.browser_control.opera
 var OPERATION_OWNERSHIP_BASELINE_SCHEMA_VERSION = "chatgpt.browser_control.operation_ownership_baseline.v1";
 var OPERATION_ARTIFACT_TRANSFER_INTENT_SCHEMA_VERSION = "chatgpt.browser_control.artifact_transfer_intent.v1";
 var OPERATION_ARTIFACT_TRANSFER_RECEIPT_SCHEMA_VERSION = "chatgpt.browser_control.artifact_transfer_receipt.v1";
+var OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION = "chatgpt.browser_control.operation_attachment_rearm.v1";
 
 // src/operations/canonical.ts
 import { createHmac } from "node:crypto";
@@ -20771,6 +20772,18 @@ function applyOperationEvent(state, event, revision) {
       assertTimestamp(event.establishment.observedAt, "target_established.observedAt");
       assertTimestampNotBefore(state.updatedAt, event.establishment.observedAt, "target_established.observedAt");
       return withRevision({ ...state, target: establishTarget(state, event.establishment) }, revision, event.establishment.observedAt);
+    case "attachment_rearm_authorized":
+      assertTimestamp(event.authorization.authorizedAt, "attachment_rearm_authorized.authorizedAt");
+      assertTimestampNotBefore(state.updatedAt, event.authorization.authorizedAt, "attachment_rearm_authorized.authorizedAt");
+      return withRevision(
+        applyAttachmentRearmAuthorization(state, event, revision),
+        revision,
+        event.authorization.authorizedAt
+      );
+    case "attachment_rearm_intent":
+      assertTimestamp(event.intentAt, "attachment_rearm_intent.intentAt");
+      assertTimestampNotBefore(state.updatedAt, event.intentAt, "attachment_rearm_intent.intentAt");
+      return withRevision(applyAttachmentRearmIntent(state, event, revision), revision, event.intentAt);
     case "ownership_baseline":
       assertTimestamp(event.baseline.observedAt, "ownership_baseline.observedAt");
       assertTimestampNotBefore(state.updatedAt, event.baseline.observedAt, "ownership_baseline.observedAt");
@@ -20868,6 +20881,19 @@ function assertOperationEventShape(value) {
       assertExactRecord(event, "target_established", ["type", "establishment"], ["type", "establishment"]);
       assertTargetEstablishmentShape(event.establishment);
       return;
+    case "attachment_rearm_authorized":
+      assertExactRecord(event, "attachment_rearm_authorized", ["type", "authorization", "target"], ["type", "authorization", "target"]);
+      assertAttachmentRearmAuthorizationShape(event.authorization);
+      assertTargetShape(event.target);
+      return;
+    case "attachment_rearm_intent":
+      assertExactRecord(
+        event,
+        "attachment_rearm_intent",
+        ["type", "authorizationId", "actionId", "preflightEvidenceDigest", "intentAt"],
+        ["type", "authorizationId", "actionId", "preflightEvidenceDigest", "intentAt"]
+      );
+      return;
     case "ownership_baseline":
       assertExactRecord(event, "ownership_baseline", ["type", "baseline"], ["type", "baseline"]);
       assertOwnershipBaselineShape(event.baseline);
@@ -20918,7 +20944,7 @@ function assertOperationStateShape(value) {
   assertExactRecord(
     value,
     "operation state",
-    ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "capturePolicy", "responseFormat", "target", "actions", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "submissionWitness", "lastBlocker", "receipt"],
+    ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "capturePolicy", "responseFormat", "target", "attachmentRearm", "actions", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "submissionWitness", "lastBlocker", "receipt"],
     ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "actions"]
   );
   const state = value;
@@ -20952,6 +20978,7 @@ function assertOperationStateShape(value) {
     }
   }
   if (state.target !== void 0) assertTargetShape(state.target);
+  if (state.attachmentRearm !== void 0) assertAttachmentRearmShape(state.attachmentRearm);
   if (!isPlainRecord(state.actions)) {
     throw new OperationStateError("invalid_operation_state", "Operation state actions must be an object.");
   }
@@ -20964,6 +20991,12 @@ function assertOperationStateShape(value) {
     assertPersistedActionRecord(action, state);
   }
   if (state.target !== void 0) validateTargetValues(state.target);
+  if (state.attachmentRearm !== void 0) {
+    validateAttachmentRearmValues(
+      state.attachmentRearm,
+      state
+    );
+  }
   if (state.ownershipBaseline !== void 0) {
     assertOwnershipBaselineShape(state.ownershipBaseline);
     validateOwnershipBaselineValues(state.ownershipBaseline, state);
@@ -21065,7 +21098,7 @@ function applyActionIntent(state, action, revision, intentAt) {
       `Action ${action.kind} requires ${requiredRepeatPolicy(action.kind)}, received ${action.repeatPolicy}.`
     );
   }
-  if (!ACTION_PHASES[action.kind].has(state.phase)) {
+  if (!ACTION_PHASES[action.kind].has(state.phase) && !isAttachmentRearmStagingAction(state, action)) {
     throw new OperationStateError(
       "action_phase_invalid",
       `Action ${action.kind} cannot begin while the operation is ${state.phase}.`
@@ -21096,6 +21129,13 @@ function applyActionIntent(state, action, revision, intentAt) {
   const actionBoundary = boundaryForAction(action.kind);
   const mutationBoundary = actionBoundary !== void 0 && BOUNDARY_RANK[actionBoundary] > BOUNDARY_RANK[state.mutationBoundary] ? actionBoundary : state.mutationBoundary;
   return { ...state, mutationBoundary, actions: { ...state.actions, [action.actionId]: record } };
+}
+function isAttachmentRearmStagingAction(state, action) {
+  if (state.phase !== "uncertain" || state.mutationBoundary !== "handoff_may_have_occurred") return false;
+  const rearm = state.attachmentRearm;
+  if (rearm === void 0 || rearm.attemptIntentRevision !== void 0) return false;
+  if (action.targetDigest !== rearm.targetBindingDigest) return false;
+  return action.kind === "configuration_set" || action.kind === "tool_set" || action.kind === "composer_set" || action.kind === "power_select";
 }
 function applyActionReceipt(state, event, revision) {
   const action = state.actions[event.actionId];
@@ -21811,6 +21851,19 @@ function validateStateCoherence(state) {
   const hasHandoff = actions.some((action) => action.kind === "file_handoff");
   const submitActions = actions.filter((action) => action.kind === "send");
   const hasSubmit = submitActions.length > 0;
+  if (state.attachmentRearm !== void 0) {
+    validateAttachmentRearmValues(state.attachmentRearm, state);
+    const rearmedAction = state.actions[state.attachmentRearm.actionId];
+    if (state.target === void 0 || !hasHandoff) {
+      throw new OperationStateError("attachment_rearm_target_invalid", "Attachment rearm requires its replacement target and original handoff.");
+    }
+    if (hasSubmit && rearmedAction?.outcome !== "satisfied") {
+      throw new OperationStateError("attachment_rearm_send_invalid", "Send cannot follow an unproven attachment recovery.");
+    }
+    if ((state.phase === "ready" || state.phase === "send_pending" || state.phase === "submitted" || state.phase === "generating" || state.phase === "capturing" || state.phase === "completed") && rearmedAction?.outcome !== "satisfied") {
+      throw new OperationStateError("attachment_rearm_phase_invalid", "Recovered attachment state requires a satisfied handoff receipt.");
+    }
+  }
   validateSubmissionWitnessCollection(state);
   const ownershipBaselines = state.ownershipBaselines ?? {};
   for (const [actionId, baseline] of Object.entries(ownershipBaselines)) {
@@ -21926,6 +21979,108 @@ function validatedTarget(state, target) {
     throw new OperationStateError("target_binding_mismatch", "Operation target binding is immutable.");
   }
   return target;
+}
+function applyAttachmentRearmAuthorization(state, event, revision) {
+  const authorization = event.authorization;
+  assertAttachmentRearmAuthorizationShape(authorization);
+  validateTargetValues(event.target);
+  if (authorization.schemaVersion !== OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION) {
+    throw new OperationStateError("attachment_rearm_schema_invalid", "Attachment rearm schemaVersion is unsupported.");
+  }
+  assertOperationId(authorization.authorizationId, "attachmentRearm.authorizationId");
+  assertOperationId(authorization.actionId, "attachmentRearm.actionId");
+  assertDigest(authorization.previousTargetBindingDigest, "attachmentRearm.previousTargetBindingDigest");
+  assertDigest(authorization.targetBindingDigest, "attachmentRearm.targetBindingDigest");
+  assertDigest(authorization.authorizationEvidenceDigest, "attachmentRearm.authorizationEvidenceDigest");
+  if (state.attachmentRearm !== void 0) {
+    throw new OperationStateError("attachment_rearm_already_authorized", "Attachment recovery may be authorized only once.");
+  }
+  if (state.phase !== "uncertain" || state.mutationBoundary !== "handoff_may_have_occurred") {
+    throw new OperationStateError("attachment_rearm_phase_invalid", "Attachment recovery requires an indeterminate handoff state.");
+  }
+  const target = state.target;
+  if (target === void 0 || target.targetLifecycle !== "new_pending") {
+    throw new OperationStateError("attachment_rearm_target_invalid", "Attachment recovery requires a pending new target.");
+  }
+  if (Object.values(state.actions).some((action) => action.kind === "send")) {
+    throw new OperationStateError("attachment_rearm_after_send", "Attachment recovery cannot be authorized after Send intent.");
+  }
+  const handoffs = Object.values(state.actions).filter((action) => action.kind === "file_handoff");
+  const handoff = handoffs.length === 1 ? handoffs[0] : void 0;
+  if (handoff === void 0 || handoff.actionId !== authorization.actionId || handoff.outcome !== void 0 || handoff.targetDigest !== authorization.previousTargetBindingDigest || handoff.requestDigest !== state.requestDigest) {
+    throw new OperationStateError("attachment_rearm_action_invalid", "Attachment recovery does not match the unresolved handoff intent.");
+  }
+  assertAttachmentRearmTargetCompatible(target, event.target);
+  const rearm = {
+    ...authorization,
+    authorizedRevision: revision
+  };
+  return { ...state, target: event.target, attachmentRearm: rearm };
+}
+function applyAttachmentRearmIntent(state, event, revision) {
+  assertOperationId(event.authorizationId, "attachmentRearm.authorizationId");
+  assertOperationId(event.actionId, "attachmentRearm.actionId");
+  assertDigest(event.preflightEvidenceDigest, "attachmentRearm.preflightEvidenceDigest");
+  const rearm = state.attachmentRearm;
+  if (rearm === void 0 || rearm.authorizationId !== event.authorizationId || rearm.actionId !== event.actionId || rearm.attemptIntentRevision !== void 0) {
+    throw new OperationStateError("attachment_rearm_intent_invalid", "Attachment recovery intent does not match one unused authorization.");
+  }
+  if (state.phase !== "uncertain" || state.mutationBoundary !== "handoff_may_have_occurred") {
+    throw new OperationStateError("attachment_rearm_phase_invalid", "Attachment recovery intent requires an indeterminate handoff state.");
+  }
+  const action = state.actions[event.actionId];
+  if (action?.kind !== "file_handoff" || action.outcome !== void 0) {
+    throw new OperationStateError("attachment_rearm_action_invalid", "Attachment recovery intent requires the unresolved original handoff.");
+  }
+  if (Object.values(state.actions).some((candidate) => candidate.kind === "send")) {
+    throw new OperationStateError("attachment_rearm_after_send", "Attachment recovery intent cannot follow Send intent.");
+  }
+  return {
+    ...state,
+    attachmentRearm: {
+      ...rearm,
+      attemptIntentRevision: revision,
+      attemptIntentAt: event.intentAt,
+      preflightEvidenceDigest: event.preflightEvidenceDigest
+    }
+  };
+}
+function assertAttachmentRearmTargetCompatible(previous, replacement) {
+  if (replacement.targetLifecycle !== "new_pending" || replacement.targetEstablishment !== void 0 || replacement.conversationId !== void 0 || replacement.canonicalThreadUrl !== void 0 || replacement.newTargetAnchorDigest === void 0 || replacement.blankTaskEvidenceDigest === void 0 || replacement.providerId !== previous.providerId || replacement.browserId !== previous.browserId || replacement.coordinationScope !== previous.coordinationScope || replacement.configurationReceiptDigest !== previous.configurationReceiptDigest || canonicalJson(replacement.evidenceProfile) !== canonicalJson(previous.evidenceProfile)) {
+    throw new OperationStateError("attachment_rearm_target_invalid", "Attachment recovery target does not preserve the pending target contract.");
+  }
+}
+function validateAttachmentRearmValues(rearm, state) {
+  assertAttachmentRearmShape(rearm);
+  if (rearm.schemaVersion !== OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION) {
+    throw new OperationStateError("attachment_rearm_schema_invalid", "Attachment rearm schemaVersion is unsupported.");
+  }
+  assertOperationId(rearm.authorizationId, "attachmentRearm.authorizationId");
+  assertOperationId(rearm.actionId, "attachmentRearm.actionId");
+  assertDigest(rearm.previousTargetBindingDigest, "attachmentRearm.previousTargetBindingDigest");
+  assertDigest(rearm.targetBindingDigest, "attachmentRearm.targetBindingDigest");
+  assertDigest(rearm.authorizationEvidenceDigest, "attachmentRearm.authorizationEvidenceDigest");
+  assertTimestamp(rearm.authorizedAt, "attachmentRearm.authorizedAt");
+  if (!Number.isSafeInteger(rearm.authorizedRevision) || rearm.authorizedRevision < 1 || rearm.authorizedRevision > state.revision) {
+    throw new OperationStateError("attachment_rearm_revision_invalid", "Attachment rearm authorization revision is invalid.");
+  }
+  const action = state.actions[rearm.actionId];
+  if (action?.kind !== "file_handoff" || action.requestDigest !== state.requestDigest || action.targetDigest !== rearm.previousTargetBindingDigest) {
+    throw new OperationStateError("attachment_rearm_action_invalid", "Attachment rearm does not match the durable handoff action.");
+  }
+  const intentFields = [rearm.attemptIntentRevision, rearm.attemptIntentAt, rearm.preflightEvidenceDigest];
+  const intentCount = intentFields.filter((value) => value !== void 0).length;
+  if (intentCount !== 0 && intentCount !== intentFields.length) {
+    throw new OperationStateError("attachment_rearm_intent_incomplete", "Attachment rearm intent fields must be all present or all absent.");
+  }
+  if (rearm.attemptIntentRevision !== void 0) {
+    if (!Number.isSafeInteger(rearm.attemptIntentRevision) || rearm.attemptIntentRevision <= rearm.authorizedRevision || rearm.attemptIntentRevision > state.revision) {
+      throw new OperationStateError("attachment_rearm_revision_invalid", "Attachment rearm intent revision is invalid.");
+    }
+    assertTimestamp(rearm.attemptIntentAt, "attachmentRearm.attemptIntentAt");
+    assertTimestampNotBefore(rearm.authorizedAt, rearm.attemptIntentAt, "attachmentRearm.attemptIntentAt");
+    assertDigest(rearm.preflightEvidenceDigest, "attachmentRearm.preflightEvidenceDigest");
+  }
 }
 function establishTarget(state, establishment) {
   const target = state.target;
@@ -22519,6 +22674,59 @@ function assertActionIntentShape(value) {
     ["actionId", "kind", "repeatPolicy", "requestDigest"]
   );
 }
+function assertAttachmentRearmAuthorizationShape(value) {
+  assertExactRecord(
+    value,
+    "attachment rearm authorization",
+    [
+      "schemaVersion",
+      "authorizationId",
+      "actionId",
+      "previousTargetBindingDigest",
+      "targetBindingDigest",
+      "authorizationEvidenceDigest",
+      "authorizedAt"
+    ],
+    [
+      "schemaVersion",
+      "authorizationId",
+      "actionId",
+      "previousTargetBindingDigest",
+      "targetBindingDigest",
+      "authorizationEvidenceDigest",
+      "authorizedAt"
+    ]
+  );
+}
+function assertAttachmentRearmShape(value) {
+  assertExactRecord(
+    value,
+    "attachment rearm",
+    [
+      "schemaVersion",
+      "authorizationId",
+      "actionId",
+      "previousTargetBindingDigest",
+      "targetBindingDigest",
+      "authorizationEvidenceDigest",
+      "authorizedRevision",
+      "authorizedAt",
+      "attemptIntentRevision",
+      "attemptIntentAt",
+      "preflightEvidenceDigest"
+    ],
+    [
+      "schemaVersion",
+      "authorizationId",
+      "actionId",
+      "previousTargetBindingDigest",
+      "targetBindingDigest",
+      "authorizationEvidenceDigest",
+      "authorizedRevision",
+      "authorizedAt"
+    ]
+  );
+}
 function assertActionRecordShape(value) {
   assertExactRecord(
     value,
@@ -22730,7 +22938,7 @@ var OperationClient = class {
   /** Fingerprint inputs, then execute the service's one-submit protocol. */
   async submit(request, options = {}) {
     const prepared = await this.prepareSubmit(request, options.signal);
-    const adapter = await this.adapterForSubmit(prepared);
+    const adapter = await this.adapterForSubmit(prepared, options.confirmAttachmentRearm === true);
     const result3 = await this.service.submit(
       prepared.serviceRequest,
       prepared.manifest,
@@ -22767,7 +22975,7 @@ var OperationClient = class {
   /** SDK-only composition of one submit followed by one collect. */
   async run(request, options = {}) {
     const prepared = await this.prepareSubmit(request, options.signal);
-    const adapter = await this.adapterForSubmit(prepared);
+    const adapter = await this.adapterForSubmit(prepared, options.confirmAttachmentRearm === true);
     const result3 = await this.service.run(
       prepared.serviceRequest,
       prepared.manifest,
@@ -22805,9 +23013,9 @@ var OperationClient = class {
       signal
     });
   }
-  async adapterForSubmit(prepared) {
+  async adapterForSubmit(prepared, confirmAttachmentRearm = false) {
     const cached = this.cachedAdapterForOperation(prepared.request.operationId);
-    if (cached !== void 0) return cached;
+    if (!confirmAttachmentRearm && cached !== void 0) return cached;
     if (this.submitRecoveryAdapterFactory !== void 0 && this.service.prepare !== void 0) {
       const checkpoint = await this.service.prepare(
         prepared.serviceRequest,
@@ -22826,21 +23034,27 @@ var OperationClient = class {
         if (!(error instanceof OperationClientError) || error.code !== "target_binding_missing") throw error;
       }
       if (reconstruction?.target.targetLifecycle === "new_pending") {
-        if (reconstruction.state.phase !== "prepared" || reconstruction.state.mutationBoundary !== "none") {
+        const isPreparedRecovery = reconstruction.state.phase === "prepared" && reconstruction.state.mutationBoundary === "none";
+        const isFirstAttachmentRearm = confirmAttachmentRearm && reconstruction.state.phase === "uncertain" && reconstruction.state.mutationBoundary === "handoff_may_have_occurred" && reconstruction.state.attachmentRearm === void 0;
+        const isAttachmentRearmRecovery = confirmAttachmentRearm && reconstruction.state.phase === "uncertain" && reconstruction.state.mutationBoundary === "handoff_may_have_occurred" && reconstruction.state.attachmentRearm !== void 0;
+        if (confirmAttachmentRearm ? !isFirstAttachmentRearm && !isAttachmentRearmRecovery : !isPreparedRecovery) {
           throw new OperationClientError("invalid_operation_state", "A pending submit target is outside the recoverable pre-Send phase.");
         }
-        let recovered;
-        try {
-          recovered = await this.submitRecoveryAdapterFactory(
-            makeSubmitRecoveryFactoryContext(prepared, reconstruction)
-          );
-        } catch {
-          recovered = unavailableAdapter("adapter_unavailable");
-        }
-        try {
-          return this.guardAdapter(recovered, prepared.identities, prepared.signal);
-        } catch {
-          throw new OperationClientError("adapter_unavailable", "The pending submit browser adapter could not be recreated.");
+        if (isFirstAttachmentRearm) {
+        } else {
+          let recovered;
+          try {
+            recovered = await this.submitRecoveryAdapterFactory(
+              makeSubmitRecoveryFactoryContext(prepared, reconstruction)
+            );
+          } catch {
+            recovered = unavailableAdapter("adapter_unavailable");
+          }
+          try {
+            return this.guardAdapter(recovered, prepared.identities, prepared.signal);
+          } catch {
+            throw new OperationClientError("adapter_unavailable", "The pending submit browser adapter could not be recreated.");
+          }
         }
       }
     }
@@ -23092,15 +23306,22 @@ var OperationClient = class {
 };
 function reconstructionContext(inspected, requestedHandle) {
   const inspectedRecord = requiredObject(inspected, "inspect result");
-  const freshHandle = normalizeHandle(requiredData(inspectedRecord, "handle"), requestedHandle);
   const rawState = requiredData(inspectedRecord, "state");
   const stateRecord = requiredObject(rawState, "durable operation state");
+  const stateRevision = requiredSafeInteger(stateRecord, "revision");
+  const attachmentRearmValue = optionalDataProperty(stateRecord, "attachmentRearm");
+  const attachmentRearm = attachmentRearmValue === void 0 ? void 0 : normalizeAttachmentRearm(attachmentRearmValue, stateRevision);
+  const freshHandle = normalizeHandle(
+    requiredData(inspectedRecord, "handle"),
+    requestedHandle,
+    attachmentRearm
+  );
   const state = normalizeDurableState(stateRecord, freshHandle);
   const target = state.target;
   const context = makeFactoryContext(freshHandle, state, target);
   return Object.freeze({ context, state, target });
 }
-function normalizeHandle(value, requested) {
+function normalizeHandle(value, requested, attachmentRearm) {
   const record = requiredObject(value, "operation handle");
   const schemaVersion = requiredString(record, "schemaVersion");
   const operationId = requiredString(record, "operationId");
@@ -23110,7 +23331,8 @@ function normalizeHandle(value, requested) {
   const phase = requiredString(record, "phase");
   const mutationBoundary = requiredString(record, "mutationBoundary");
   const targetBindingDigest = optionalString(record, "targetBindingDigest");
-  if (schemaVersion !== requested.schemaVersion || operationId !== requested.operationId || requestDigest !== requested.requestDigest || surface !== requested.surface || revision < requested.revision || !isOperationSurface(surface) || !isOperationPhase(phase) || !isMutationBoundary(mutationBoundary) || targetBindingDigest !== void 0 && !isDigest(targetBindingDigest) || requested.targetBindingDigest !== void 0 && targetBindingDigest !== requested.targetBindingDigest || revision === requested.revision && (phase !== requested.phase || mutationBoundary !== requested.mutationBoundary || targetBindingDigest !== requested.targetBindingDigest)) {
+  const crossesAttachmentRearm = attachmentRearm !== void 0 && requested.targetBindingDigest === attachmentRearm.previousTargetBindingDigest && targetBindingDigest === attachmentRearm.targetBindingDigest && requested.revision < attachmentRearm.authorizedRevision;
+  if (schemaVersion !== requested.schemaVersion || operationId !== requested.operationId || requestDigest !== requested.requestDigest || surface !== requested.surface || revision < requested.revision || !isOperationSurface(surface) || !isOperationPhase(phase) || !isMutationBoundary(mutationBoundary) || targetBindingDigest !== void 0 && !isDigest(targetBindingDigest) || requested.targetBindingDigest !== void 0 && targetBindingDigest !== requested.targetBindingDigest && !crossesAttachmentRearm || revision === requested.revision && (phase !== requested.phase || mutationBoundary !== requested.mutationBoundary || targetBindingDigest !== requested.targetBindingDigest)) {
     throw new OperationClientError("invalid_operation_handle", "The authenticated operation handle is inconsistent.");
   }
   return Object.freeze({
@@ -23134,12 +23356,14 @@ function normalizeDurableState(value, handle) {
   const revision = requiredSafeInteger(value, "revision");
   const capturePolicyValue = optionalDataProperty(value, "capturePolicy");
   if (capturePolicyValue !== void 0) assertDurableCapturePolicyShape(capturePolicyValue);
+  const attachmentRearmValue = optionalDataProperty(value, "attachmentRearm");
+  const attachmentRearm = attachmentRearmValue === void 0 ? void 0 : normalizeAttachmentRearm(attachmentRearmValue, revision);
   const targetValue = optionalDataProperty(value, "target");
   if (targetValue === void 0) {
     throw new OperationClientError("target_binding_missing", "The durable operation has no target binding.");
   }
   const target = normalizeTarget(targetValue);
-  if (schemaVersion !== "chatgpt.browser_control.operation.v1" || operationId !== handle.operationId || requestDigest !== handle.requestDigest || surface !== handle.surface || revision !== handle.revision || phase !== handle.phase || mutationBoundary !== handle.mutationBoundary || handle.targetBindingDigest === void 0 || target.targetEstablishment !== void 0 && target.targetEstablishment.targetBindingDigest !== handle.targetBindingDigest || !isOperationSurface(surface) || !isOperationPhase(phase) || !isMutationBoundary(mutationBoundary)) {
+  if (schemaVersion !== "chatgpt.browser_control.operation.v1" || operationId !== handle.operationId || requestDigest !== handle.requestDigest || surface !== handle.surface || revision !== handle.revision || phase !== handle.phase || mutationBoundary !== handle.mutationBoundary || handle.targetBindingDigest === void 0 || attachmentRearm !== void 0 && attachmentRearm.targetBindingDigest !== handle.targetBindingDigest || target.targetEstablishment !== void 0 && target.targetEstablishment.targetBindingDigest !== handle.targetBindingDigest || !isOperationSurface(surface) || !isOperationPhase(phase) || !isMutationBoundary(mutationBoundary)) {
     throw new OperationClientError("invalid_operation_state", "The authenticated operation state is inconsistent.");
   }
   return Object.freeze({
@@ -23151,7 +23375,42 @@ function normalizeDurableState(value, handle) {
     mutationBoundary,
     revision,
     target,
+    ...attachmentRearm === void 0 ? {} : { attachmentRearm },
     ...capturePolicyValue === void 0 ? {} : { capturePolicy: capturePolicyValue }
+  });
+}
+function normalizeAttachmentRearm(value, stateRevision) {
+  const record = requiredObject(value, "attachment rearm authorization");
+  const schemaVersion = requiredString(record, "schemaVersion");
+  const authorizationId = requiredString(record, "authorizationId");
+  const actionId = requiredString(record, "actionId");
+  const previousTargetBindingDigest = requiredDigest(record, "previousTargetBindingDigest");
+  const targetBindingDigest = requiredDigest(record, "targetBindingDigest");
+  const authorizationEvidenceDigest = requiredDigest(record, "authorizationEvidenceDigest");
+  const authorizedRevision = requiredSafeInteger(record, "authorizedRevision");
+  const authorizedAt = requiredString(record, "authorizedAt");
+  const attemptIntentRevisionValue = optionalDataProperty(record, "attemptIntentRevision");
+  const attemptIntentRevision = attemptIntentRevisionValue === void 0 ? void 0 : requiredSafeInteger(record, "attemptIntentRevision");
+  const attemptIntentAt = optionalString(record, "attemptIntentAt");
+  const preflightEvidenceDigest = optionalDigest(record, "preflightEvidenceDigest");
+  const intentCount = [attemptIntentRevision, attemptIntentAt, preflightEvidenceDigest].filter((candidate) => candidate !== void 0).length;
+  if (schemaVersion !== OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION || !UUID_PATTERN2.test(authorizationId) || !UUID_PATTERN2.test(actionId) || authorizedRevision < 1 || authorizedRevision > stateRevision || !isCanonicalInstant(authorizedAt) || intentCount !== 0 && intentCount !== 3 || attemptIntentRevision !== void 0 && (attemptIntentRevision <= authorizedRevision || attemptIntentRevision > stateRevision || !isCanonicalInstant(attemptIntentAt) || Date.parse(attemptIntentAt) < Date.parse(authorizedAt))) {
+    throw new OperationClientError("invalid_operation_state", "The attachment rearm authorization is invalid.");
+  }
+  return Object.freeze({
+    schemaVersion: OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION,
+    authorizationId,
+    actionId,
+    previousTargetBindingDigest,
+    targetBindingDigest,
+    authorizationEvidenceDigest,
+    authorizedRevision,
+    authorizedAt,
+    ...attemptIntentRevision === void 0 ? {} : {
+      attemptIntentRevision,
+      attemptIntentAt,
+      preflightEvidenceDigest
+    }
   });
 }
 function normalizeTarget(value) {
@@ -23404,7 +23663,8 @@ function freezeIdentity(identity) {
 function forwardSubmitOptions(options, signal) {
   return Object.freeze({
     signal,
-    ...options.deadlineAt === void 0 ? {} : { deadlineAt: options.deadlineAt }
+    ...options.deadlineAt === void 0 ? {} : { deadlineAt: options.deadlineAt },
+    ...options.confirmAttachmentRearm === void 0 ? {} : { confirmAttachmentRearm: options.confirmAttachmentRearm }
   });
 }
 function forwardCollectorOptions(options) {
@@ -23431,6 +23691,7 @@ function forwardRunOptions(options, signal) {
   const forwarded = {
     signal,
     ...options.deadlineAt === void 0 ? {} : { deadlineAt: options.deadlineAt },
+    ...options.confirmAttachmentRearm === void 0 ? {} : { confirmAttachmentRearm: options.confirmAttachmentRearm },
     ...options.wait === void 0 ? {} : { wait: options.wait },
     ...options.timeoutMs === void 0 ? {} : { timeoutMs: options.timeoutMs },
     ...options.maxAttempts === void 0 ? {} : { maxAttempts: options.maxAttempts },
@@ -23604,6 +23865,10 @@ function isPlainDataPrototype(prototype) {
 function isDigest(value) {
   return DIGEST_PATTERN2.test(value);
 }
+function isCanonicalInstant(value) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
 function isOperationSurface(value) {
   return value === "chat" || value === "work";
 }
@@ -23619,6 +23884,7 @@ function isAvailability(value) {
 var MAX_SAFE_DATA_DEPTH = 24;
 var MAX_SAFE_DATA_NODES = 4096;
 var DIGEST_PATTERN2 = /^hmac-sha256:[0-9a-f]{64}$/u;
+var UUID_PATTERN2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 function requiredObject(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new OperationClientError("invalid_operation_state", `The ${label} is invalid.`);
@@ -24106,7 +24372,15 @@ function validateOperationHandleImpl(key, handle, state) {
     throw new OperationHandleError("operation_handle_state_mismatch", "Operation handle phase cannot precede the current durable phase.");
   }
   const current = operationHandleFromStateImpl(key, state);
-  if (handleTargetBindingDigest !== current.targetBindingDigest && !(handleTargetBindingDigest === void 0 && handleRevision < stateRevision)) {
+  const attachmentRearm = readData(stateRecord, "attachmentRearm");
+  let matchesPreRearmTarget = false;
+  if (attachmentRearm !== void 0 && typeof attachmentRearm === "object" && attachmentRearm !== null) {
+    snapshotRecord(attachmentRearm, "operation attachment rearm", "invalid_operation_handle");
+    const authorizedRevision = readData(attachmentRearm, "authorizedRevision");
+    const previousTargetBindingDigest = readData(attachmentRearm, "previousTargetBindingDigest");
+    matchesPreRearmTarget = Number.isSafeInteger(authorizedRevision) && handleRevision < authorizedRevision && typeof previousTargetBindingDigest === "string" && DIGEST_PATTERN3.test(previousTargetBindingDigest) && handleTargetBindingDigest === previousTargetBindingDigest;
+  }
+  if (handleTargetBindingDigest !== current.targetBindingDigest && !(handleTargetBindingDigest === void 0 && handleRevision < stateRevision) && !matchesPreRearmTarget) {
     throw new OperationHandleError("operation_handle_target_mismatch", "Operation handle target binding does not match durable state.");
   }
   if (handleRevision === stateRevision && (handlePhase !== statePhase || handleBoundary !== stateMutationBoundary)) {
@@ -27147,7 +27421,7 @@ var MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 var MAX_RESPONSE_CHARS = 8 * 1024 * 1024;
 var HMAC_DIGEST_PATTERN = /^hmac-sha256:[0-9a-f]{64}$/;
 var CONTENT_DIGEST_PATTERN = /^(?:hmac-sha256:|sha256:)[0-9a-f]{64}$/;
-var UUID_PATTERN2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+var UUID_PATTERN3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 var ID_PATTERN = /^[A-Za-z0-9._:-]{1,512}$/;
 var TRANSFER_OUTPUT_KEY_PATTERN2 = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 var BLOCKER_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
@@ -27914,7 +28188,7 @@ function progressPhaseReached(current, desired) {
 function safeHandleIdentity(handle) {
   const candidate = isRecord8(handle) ? handle : {};
   return {
-    operationId: typeof candidate.operationId === "string" && UUID_PATTERN2.test(candidate.operationId) ? candidate.operationId : "invalid-operation",
+    operationId: typeof candidate.operationId === "string" && UUID_PATTERN3.test(candidate.operationId) ? candidate.operationId : "invalid-operation",
     requestDigest: typeof candidate.requestDigest === "string" && HMAC_DIGEST_PATTERN.test(candidate.requestDigest) ? candidate.requestDigest : "invalid-request"
   };
 }
@@ -27929,7 +28203,7 @@ function assertId2(value, label) {
   if (typeof value !== "string" || !ID_PATTERN.test(value)) throw new TypeError(`${label} is invalid.`);
 }
 function assertOperationId2(value, label) {
-  if (typeof value !== "string" || !UUID_PATTERN2.test(value)) throw new TypeError(`${label} is invalid.`);
+  if (typeof value !== "string" || !UUID_PATTERN3.test(value)) throw new TypeError(`${label} is invalid.`);
 }
 function assertDigest3(value, label) {
   if (typeof value !== "string" || !HMAC_DIGEST_PATTERN.test(value)) throw new TypeError(`${label} is invalid.`);
@@ -27966,7 +28240,7 @@ function isAbortSignal(value) {
 var DIGEST_PATTERN5 = /^hmac-sha256:[0-9a-f]{64}$/;
 var OPAQUE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,512}$/;
 var OPAQUE_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-var UUID_PATTERN3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+var UUID_PATTERN4 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 var SHA256_PATTERN3 = /^[0-9a-f]{64}$/;
 var CODE_PATTERN2 = /^[a-z][a-z0-9_]{0,63}$/;
 var OUTPUT_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -28215,6 +28489,54 @@ async function runAtomicSubmission(operation, expected, ports, options = {}) {
   await persistBlockerBestEffort(ports, blockerEvidence(base, envelope, verificationCode, verification.evidenceDigest));
   return uncertainBase(base, verificationCode, "send_may_have_occurred", verification.evidenceDigest);
 }
+async function preflightAttachmentRearm(operation, expected, ports, options = {}) {
+  const identity = safeIdentity(operation);
+  let envelope;
+  try {
+    envelope = validateInput2(operation, expected, ports, options);
+  } catch (error) {
+    const code = error instanceof SubmissionInputError ? error.code : "port_protocol_violation";
+    return { kind: "result", result: blockedResult(identity, expected, code, false) };
+  }
+  const base = {
+    operationId: operation.state.operationId,
+    requestDigest: operation.state.requestDigest,
+    surface: operation.state.surface,
+    targetBindingDigest: envelope.targetBindingDigest
+  };
+  const cancellation = cancellationCode(options);
+  if (cancellation !== void 0) {
+    return { kind: "result", result: cancelledResult(base, cancellation, operation.state.mutationBoundary) };
+  }
+  const send = findUniqueAction(operation.state, "send");
+  const handoff = findUniqueAction(operation.state, "file_handoff");
+  const rearm = operation.state.attachmentRearm;
+  if (send === "corrupt" || handoff === "corrupt" || send !== void 0 || handoff === void 0 || rearm === void 0 || rearm.actionId !== handoff.actionId || rearm.attemptIntentRevision !== void 0 || !coherentSubmissionState(operation.state, send, handoff, envelope.targetBindingDigest, envelope.attachmentManifest.count) || !targetBindingMatches(operation, envelope)) {
+    return { kind: "result", result: blockedBase(base, "operation_state_corrupt", false, operation.state.mutationBoundary) };
+  }
+  const staging = await observeStaging(base, envelope, ports);
+  if (staging.kind !== "ok") return { kind: "result", result: staging.result };
+  const request = {
+    operationId: base.operationId,
+    requestDigest: base.requestDigest,
+    surface: base.surface,
+    targetBindingDigest: envelope.targetBindingDigest,
+    manifest: cloneManifest(envelope.attachmentManifest)
+  };
+  const observed = await observeAttachmentsSafely(ports, request, envelope.attachmentManifest);
+  if (observed.status === "exact") return { kind: "already_satisfied", evidenceDigest: observed.evidenceDigest };
+  if (observed.status === "absent") return { kind: "absent", evidenceDigest: observed.evidenceDigest };
+  if (observed.status === "unavailable") {
+    return {
+      kind: "result",
+      result: blockedBase(base, "target_evidence_unavailable", false, operation.state.mutationBoundary, observed.evidenceDigest)
+    };
+  }
+  return {
+    kind: "result",
+    result: uncertainBase(base, "ambiguous_file_handoff", operation.state.mutationBoundary, observed.evidenceDigest)
+  };
+}
 async function observeStaging(base, expected, ports) {
   const request = {
     operationId: base.operationId,
@@ -28258,7 +28580,9 @@ async function ensureAttachments(base, expected, operation, existingHandoff, por
   } catch {
     return { kind: "result", result: blockedBase(base, "port_protocol_violation", false, "none") };
   }
-  if (existingHandoff !== void 0 && (existingHandoff.targetDigest !== expected.targetBindingDigest || existingHandoff.requestDigest !== base.requestDigest || existingHandoff.repeatPolicy !== "observe_only_after_intent")) {
+  const rearm = operation.state.attachmentRearm;
+  const rearmedTarget = existingHandoff !== void 0 && rearm !== void 0 && rearm.actionId === existingHandoff.actionId && rearm.previousTargetBindingDigest === existingHandoff.targetDigest && rearm.targetBindingDigest === expected.targetBindingDigest;
+  if (existingHandoff !== void 0 && (!rearmedTarget && existingHandoff.targetDigest !== expected.targetBindingDigest || existingHandoff.requestDigest !== base.requestDigest || existingHandoff.repeatPolicy !== "observe_only_after_intent")) {
     return { kind: "result", result: blockedBase(base, "operation_state_corrupt", true, "handoff_may_have_occurred") };
   }
   if (observed.status === "exact") {
@@ -28319,11 +28643,12 @@ async function ensureAttachments(base, expected, operation, existingHandoff, por
       intentAt: (/* @__PURE__ */ new Date()).toISOString()
     };
   }
-  if (handoff.targetDigest !== expected.targetBindingDigest || handoff.requestDigest !== base.requestDigest || handoff.repeatPolicy !== "observe_only_after_intent") {
+  if (!rearmedTarget && handoff.targetDigest !== expected.targetBindingDigest || handoff.requestDigest !== base.requestDigest || handoff.repeatPolicy !== "observe_only_after_intent") {
     return { kind: "result", result: blockedBase(base, "operation_state_corrupt", true, "handoff_may_have_occurred") };
   }
+  const authorizedRearm = existingHandoff !== void 0 && rearmedTarget && rearm?.attemptIntentRevision !== void 0 && rearm.authorizationId === options.authorizedAttachmentRearmId;
   let handoffResult;
-  if (existingHandoff === void 0) {
+  if (existingHandoff === void 0 || authorizedRearm) {
     try {
       handoffResult = await ports.executeFileHandoffOnce({
         operationId: base.operationId,
@@ -28611,7 +28936,7 @@ function validateInput2(operation, expected, ports, options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new SubmissionInputError("port_protocol_violation", "Submission options are invalid.");
   }
-  assertExactRecord2(options, ["signal", "deadlineAt"], []);
+  assertExactRecord2(options, ["signal", "deadlineAt", "authorizedAttachmentRearmId"], []);
   if (!operation || typeof operation !== "object" || !operation.state || !operation.handle || !operation.actionIds) {
     throw new SubmissionInputError("port_protocol_violation", "Submission operation snapshot is invalid.");
   }
@@ -28621,7 +28946,7 @@ function validateInput2(operation, expected, ports, options) {
   const handle = operation.handle;
   assertExactRecord2(
     state,
-    ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "capturePolicy", "responseFormat", "target", "actions", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "lastBlocker", "receipt", "submissionWitness"],
+    ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "capturePolicy", "responseFormat", "target", "attachmentRearm", "actions", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "lastBlocker", "receipt", "submissionWitness"],
     ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "actions"]
   );
   assertExactRecord2(
@@ -28710,6 +29035,7 @@ function validateInput2(operation, expected, ports, options) {
     }
     validateActionRecord(action);
   }
+  if (state.attachmentRearm !== void 0) validateAttachmentRearm(state);
   const recordedSend = findUniqueAction(state, "send");
   const recordedHandoff = findUniqueAction(state, "file_handoff");
   if (recordedSend === "corrupt" || recordedHandoff === "corrupt") {
@@ -28743,6 +29069,12 @@ function validateInput2(operation, expected, ports, options) {
   }
   if (options.deadlineAt !== void 0 && (!Number.isFinite(options.deadlineAt) || !Number.isSafeInteger(options.deadlineAt) || options.deadlineAt < 0 || options.deadlineAt > MAX_DEADLINE_AT)) {
     throw new SubmissionInputError("port_protocol_violation", "Deadline is invalid.");
+  }
+  if (options.authorizedAttachmentRearmId !== void 0) {
+    const rearm = state.attachmentRearm;
+    if (!isUuid(options.authorizedAttachmentRearmId) || rearm === void 0 || rearm.authorizationId !== options.authorizedAttachmentRearmId || rearm.attemptIntentRevision === void 0 || rearm.actionId !== recordedHandoff?.actionId || recordedSend !== void 0) {
+      throw new SubmissionInputError("operation_state_corrupt", "Attachment rearm authority is invalid.");
+    }
   }
   if (!ports || typeof ports !== "object" || Array.isArray(ports) || typeof ports.observeStaging !== "function" || typeof ports.persistActionIntent !== "function" || typeof ports.executeFileHandoffOnce !== "function" || typeof ports.observeAttachments !== "function" || typeof ports.persistReceiptEvidence !== "function") {
     throw new SubmissionInputError("port_protocol_violation", "Submission ports are incomplete.");
@@ -28905,6 +29237,51 @@ function validateTargetBinding(value) {
     } catch {
       throw new SubmissionInputError("operation_state_corrupt", "Target establishment evidence is invalid.");
     }
+  }
+}
+function validateAttachmentRearm(state) {
+  const rearm = state.attachmentRearm;
+  if (rearm === void 0) return;
+  assertExactRecord2(
+    rearm,
+    [
+      "schemaVersion",
+      "authorizationId",
+      "actionId",
+      "previousTargetBindingDigest",
+      "targetBindingDigest",
+      "authorizationEvidenceDigest",
+      "authorizedRevision",
+      "authorizedAt",
+      "attemptIntentRevision",
+      "attemptIntentAt",
+      "preflightEvidenceDigest"
+    ],
+    [
+      "schemaVersion",
+      "authorizationId",
+      "actionId",
+      "previousTargetBindingDigest",
+      "targetBindingDigest",
+      "authorizationEvidenceDigest",
+      "authorizedRevision",
+      "authorizedAt"
+    ]
+  );
+  if (rearm.schemaVersion !== OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION || !isUuid(rearm.authorizationId) || !isUuid(rearm.actionId) || !isDigest3(rearm.previousTargetBindingDigest) || !isDigest3(rearm.targetBindingDigest) || !isDigest3(rearm.authorizationEvidenceDigest) || !Number.isSafeInteger(rearm.authorizedRevision) || rearm.authorizedRevision < 1 || rearm.authorizedRevision > state.revision || !isIsoInstant(rearm.authorizedAt)) {
+    throw new SubmissionInputError("operation_state_corrupt", "Attachment rearm authorization is invalid.");
+  }
+  const intentValues = [rearm.attemptIntentRevision, rearm.attemptIntentAt, rearm.preflightEvidenceDigest];
+  const intentCount = intentValues.filter((value) => value !== void 0).length;
+  if (intentCount !== 0 && intentCount !== intentValues.length) {
+    throw new SubmissionInputError("operation_state_corrupt", "Attachment rearm intent is incomplete.");
+  }
+  if (rearm.attemptIntentRevision !== void 0 && (!Number.isSafeInteger(rearm.attemptIntentRevision) || rearm.attemptIntentRevision <= rearm.authorizedRevision || rearm.attemptIntentRevision > state.revision || !isIsoInstant(rearm.attemptIntentAt) || Date.parse(rearm.attemptIntentAt) < Date.parse(rearm.authorizedAt) || !isDigest3(rearm.preflightEvidenceDigest))) {
+    throw new SubmissionInputError("operation_state_corrupt", "Attachment rearm intent evidence is invalid.");
+  }
+  const action = state.actions[rearm.actionId];
+  if (action?.kind !== "file_handoff" || action.targetDigest !== rearm.previousTargetBindingDigest || state.target === void 0) {
+    throw new SubmissionInputError("operation_state_corrupt", "Attachment rearm is not bound to the original handoff and replacement target.");
   }
 }
 function cloneOwnershipBaseline(value) {
@@ -29145,9 +29522,12 @@ function findUniqueAction(state, kind) {
 }
 function coherentSubmissionState(state, sendAction, handoffAction, targetBindingDigest, manifestCount) {
   if (sendAction === "corrupt" || handoffAction === "corrupt") return false;
+  const rearm = state.attachmentRearm;
+  const rearmedTarget = handoffAction !== void 0 && rearm !== void 0 && rearm.actionId === handoffAction.actionId && rearm.previousTargetBindingDigest === handoffAction.targetDigest && rearm.targetBindingDigest === targetBindingDigest;
   if (sendAction !== void 0 && (sendAction.kind !== "send" || sendAction.targetDigest !== targetBindingDigest || sendAction.requestDigest !== state.requestDigest || sendAction.repeatPolicy !== "observe_only_after_intent" || !isUuid(sendAction.actionId))) return false;
-  if (handoffAction !== void 0 && (handoffAction.kind !== "file_handoff" || handoffAction.targetDigest !== targetBindingDigest || handoffAction.requestDigest !== state.requestDigest || handoffAction.repeatPolicy !== "observe_only_after_intent" || !isUuid(handoffAction.actionId))) return false;
+  if (handoffAction !== void 0 && (handoffAction.kind !== "file_handoff" || !rearmedTarget && handoffAction.targetDigest !== targetBindingDigest || handoffAction.requestDigest !== state.requestDigest || handoffAction.repeatPolicy !== "observe_only_after_intent" || !isUuid(handoffAction.actionId))) return false;
   if (handoffAction !== void 0 && state.mutationBoundary === "none") return false;
+  if (rearm !== void 0 && (!rearmedTarget || state.mutationBoundary !== "handoff_may_have_occurred" || sendAction !== void 0 && handoffAction?.outcome !== "satisfied")) return false;
   if (sendAction !== void 0 && BOUNDARY_RANK3[state.mutationBoundary] < BOUNDARY_RANK3.send_may_have_occurred) return false;
   if (manifestCount === 0 && handoffAction !== void 0) return false;
   if (manifestCount > 0 && state.phase !== "prepared" && handoffAction === void 0) return false;
@@ -29341,7 +29721,7 @@ function isOpaqueKey(value) {
   return typeof value === "string" && OPAQUE_KEY_PATTERN.test(value);
 }
 function isUuid(value) {
-  return typeof value === "string" && UUID_PATTERN3.test(value);
+  return typeof value === "string" && UUID_PATTERN4.test(value);
 }
 function isBlockerCode(value) {
   return typeof value === "string" && [
@@ -29378,7 +29758,7 @@ function isBlockerCode(value) {
 
 // src/operations/control.ts
 var CONTROL_COORDINATOR_SCHEMA_VERSION = "chatgpt.browser_control.operation_control_coordinator.v1";
-var UUID_PATTERN4 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+var UUID_PATTERN5 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 var DIGEST_PATTERN6 = /^hmac-sha256:[0-9a-f]{64}$/;
 var ID_PATTERN2 = /^[A-Za-z0-9._:-]{1,512}$/;
 var CODE_PATTERN3 = /^[a-z][a-z0-9_]{0,63}$/;
@@ -30547,10 +30927,10 @@ function assertExactRecord3(value, allowed, required) {
   for (const key of required) if (!Object.prototype.hasOwnProperty.call(value, key)) throw new ControlInputError("operation_state_corrupt", "Boundary value is missing a required field.");
 }
 function assertUuid(value, label) {
-  if (typeof value !== "string" || !UUID_PATTERN4.test(value)) throw new ControlInputError("operation_state_corrupt", `${label} is not a canonical UUID.`);
+  if (typeof value !== "string" || !UUID_PATTERN5.test(value)) throw new ControlInputError("operation_state_corrupt", `${label} is not a canonical UUID.`);
 }
 function isUuid2(value) {
-  return typeof value === "string" && UUID_PATTERN4.test(value);
+  return typeof value === "string" && UUID_PATTERN5.test(value);
 }
 function assertDigest5(value, label) {
   if (typeof value !== "string" || !DIGEST_PATTERN6.test(value)) throw new ControlInputError("operation_state_corrupt", `${label} is not a canonical digest.`);
@@ -30683,7 +31063,7 @@ function isRecord9(value) {
 
 // src/operations/staging.ts
 var OPERATION_STAGING_RECEIPT_SCHEMA_VERSION = "chatgpt.browser_control.operation_staging_receipt.v1";
-var UUID_PATTERN5 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+var UUID_PATTERN6 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 var DIGEST_PATTERN7 = /^hmac-sha256:[0-9a-f]{64}$/u;
 var CODE_PATTERN4 = /^[a-z][a-z0-9_]{0,63}$/u;
 var INSTANT_PATTERN3 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
@@ -30983,7 +31363,7 @@ function normalizeIdentity(request) {
   }
   const value = request;
   for (const key of ["operationId", "actionId"]) {
-    if (typeof value[key] !== "string" || !UUID_PATTERN5.test(value[key])) {
+    if (typeof value[key] !== "string" || !UUID_PATTERN6.test(value[key])) {
       throw new OperationStagingInputError("operation_state_corrupt", `${key} is not a canonical UUID.`);
     }
   }
@@ -31171,7 +31551,7 @@ function isStagingKind(value) {
   return value === "configuration_set" || value === "tool_set" || value === "composer_set" || value === "power_select";
 }
 function isUuid3(value) {
-  return typeof value === "string" && UUID_PATTERN5.test(value);
+  return typeof value === "string" && UUID_PATTERN6.test(value);
 }
 function isDigest5(value) {
   return typeof value === "string" && DIGEST_PATTERN7.test(value);
@@ -31240,7 +31620,7 @@ function resultBase(identity) {
 
 // src/operations/service.ts
 var DIGEST_PATTERN8 = /^hmac-sha256:[0-9a-f]{64}$/;
-var UUID_PATTERN6 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+var UUID_PATTERN7 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 var MAX_CAS_RETRIES = 12;
 var UNCERTAIN_SUBMISSION_BLOCKERS = /* @__PURE__ */ new Set([
   "ambiguous_file_handoff",
@@ -31347,12 +31727,18 @@ var OperationService = class {
     const signal = options.signal ?? new AbortController().signal;
     if (!isAbortSignal3(signal)) throw new OperationServiceError("invalid_signal", "Submission signal must be an AbortSignal.");
     if (signal.aborted) throw new OperationServiceError("operation_cancelled", "The operation was cancelled before submission.");
+    if (options.confirmAttachmentRearm !== void 0 && options.confirmAttachmentRearm !== true) {
+      throw new OperationServiceError("invalid_attachment_rearm_confirmation", "Attachment rearm confirmation must be the literal value true.");
+    }
     let loaded = await this.ensureCreated(request, requestDigest);
     if (loaded.state.phase === "completed" && loaded.state.receipt !== void 0) {
       return {
         handle: this.journal.handleFromState(loaded.state),
         submission: submissionFromCompleted(loaded.state)
       };
+    }
+    if (options.confirmAttachmentRearm === true) {
+      return await this.submitWithAttachmentRearm(request, files, adapter, options, requestDigest, signal, loaded);
     }
     let resolution;
     try {
@@ -31422,6 +31808,207 @@ var OperationService = class {
     await this.persistReturnedSubmissionBlocker(submission);
     const fresh = await this.journal.load(request.operationId, requestDigest);
     return { handle: this.journal.handleFromState(fresh.state), submission };
+  }
+  async submitWithAttachmentRearm(request, files, adapter, options, requestDigest, signal, initial) {
+    if (files.length === 0 || adapter.staging === void 0) {
+      throw new OperationServiceError("attachment_rearm_unavailable", "Attachment rearm requires files and a complete staging adapter.");
+    }
+    let authorization;
+    try {
+      authorization = await this.authorizeAttachmentRearm(request, requestDigest, adapter, signal, initial);
+    } catch (error) {
+      const current = await this.journal.load(request.operationId, requestDigest);
+      const handle = this.journal.handleFromState(current.state);
+      const submission2 = submissionFromTargetResolutionFailure(current.state, handle, error, signal);
+      await this.persistReturnedSubmissionBlocker(submission2);
+      const fresh2 = await this.journal.load(request.operationId, requestDigest);
+      return { handle: this.journal.handleFromState(fresh2.state), submission: submission2 };
+    }
+    let loaded = authorization.loaded;
+    if (loaded.state.attachmentRearm?.attemptIntentRevision === void 0) {
+      const staging = await this.stageRequest(
+        request,
+        requestDigest,
+        authorization.targetBindingDigest,
+        adapter.staging,
+        signal,
+        options.deadlineAt
+      );
+      if (staging !== void 0) {
+        await this.persistReturnedSubmissionBlocker(staging);
+        const fresh2 = await this.journal.load(request.operationId, requestDigest);
+        return { handle: this.journal.handleFromState(fresh2.state), submission: staging };
+      }
+      loaded = await this.journal.load(request.operationId, requestDigest);
+    }
+    const attachmentManifest = files.map((file, ordinal) => ({
+      identityDigest: this.journal.evidenceDigest("file-manifest", { ordinal, ...file }),
+      ordinal
+    }));
+    const expected = {
+      surface: request.surface,
+      targetBindingDigest: authorization.targetBindingDigest,
+      configurationReceiptDigest: authorization.configurationReceiptDigest,
+      composerReceiptDigest: authorization.composerReceiptDigest,
+      attachmentManifest: {
+        count: attachmentManifest.length,
+        orderPolicy: "exact",
+        identities: attachmentManifest
+      }
+    };
+    const handoff = uniqueAction(loaded.state, "file_handoff");
+    if (handoff === void 0) {
+      throw new OperationServiceError("attachment_rearm_unavailable", "Attachment rearm requires one unresolved handoff intent.");
+    }
+    const operationFor = (state) => ({
+      state,
+      handle: this.journal.handleFromState(state),
+      actionIds: {
+        sendActionId: uniqueAction(state, "send")?.actionId ?? randomUUID4(),
+        fileHandoffActionId: handoff.actionId
+      }
+    });
+    const ports = this.submissionPorts(adapter.submission);
+    let authorizedAttachmentRearmId;
+    if (loaded.state.attachmentRearm?.attemptIntentRevision === void 0) {
+      const preflight = await preflightAttachmentRearm(
+        operationFor(loaded.state),
+        expected,
+        ports,
+        { signal, ...options.deadlineAt === void 0 ? {} : { deadlineAt: options.deadlineAt } }
+      );
+      if (preflight.kind === "result") {
+        await this.persistReturnedSubmissionBlocker(preflight.result);
+        const fresh2 = await this.journal.load(request.operationId, requestDigest);
+        return { handle: this.journal.handleFromState(fresh2.state), submission: preflight.result };
+      }
+      if (preflight.kind === "absent") {
+        const intent = await this.appendAttachmentRearmIntent(
+          loaded,
+          preflight.evidenceDigest
+        );
+        loaded = intent.loaded;
+        if (intent.executeAllowed) authorizedAttachmentRearmId = authorization.authorizationId;
+      }
+    }
+    const submission = await runAtomicSubmission(
+      operationFor(loaded.state),
+      expected,
+      ports,
+      {
+        signal,
+        ...options.deadlineAt === void 0 ? {} : { deadlineAt: options.deadlineAt },
+        ...authorizedAttachmentRearmId === void 0 ? {} : { authorizedAttachmentRearmId }
+      }
+    );
+    await this.persistReturnedSubmissionBlocker(submission);
+    const fresh = await this.journal.load(request.operationId, requestDigest);
+    return { handle: this.journal.handleFromState(fresh.state), submission };
+  }
+  async authorizeAttachmentRearm(request, requestDigest, adapter, signal, initial) {
+    const handoff = uniqueAction(initial.state, "file_handoff");
+    if (initial.state.phase !== "uncertain" || initial.state.mutationBoundary !== "handoff_may_have_occurred" || initial.state.target?.targetLifecycle !== "new_pending" || handoff === void 0 || handoff.outcome !== void 0 || uniqueAction(initial.state, "send") !== void 0) {
+      throw new OperationServiceError("attachment_rearm_unavailable", "Operation is not eligible for supervised attachment rearm.");
+    }
+    let resolution;
+    try {
+      resolution = await adapter.resolveTarget({
+        operationId: request.operationId,
+        requestDigest,
+        surface: request.surface,
+        target: request.target,
+        signal
+      });
+    } catch (error) {
+      throw error;
+    }
+    validateTargetResolution(resolution);
+    const configurationReceiptDigest = this.journal.evidenceDigest("configuration-request", requestDigest);
+    const composerReceiptDigest = this.journal.evidenceDigest("composer-request", requestDigest);
+    if (resolution.configurationReceiptDigest !== void 0 && resolution.configurationReceiptDigest !== configurationReceiptDigest || resolution.composerReceiptDigest !== void 0 && resolution.composerReceiptDigest !== composerReceiptDigest || resolution.target.configurationReceiptDigest !== void 0 && resolution.target.configurationReceiptDigest !== configurationReceiptDigest) {
+      throw new OperationServiceError("configuration_drift", "Attachment rearm target does not match the immutable staging request.");
+    }
+    const target = {
+      ...resolution.target,
+      configurationReceiptDigest
+    };
+    if (initial.state.attachmentRearm !== void 0) {
+      if (canonicalJson(initial.state.target) !== canonicalJson(target)) {
+        throw new OperationServiceError("target_binding_mismatch", "Attachment rearm target is already bound to a different exact tab.");
+      }
+      return {
+        loaded: initial,
+        authorizationId: initial.state.attachmentRearm.authorizationId,
+        targetBindingDigest: initial.state.attachmentRearm.targetBindingDigest,
+        configurationReceiptDigest,
+        composerReceiptDigest
+      };
+    }
+    const previousTargetBindingDigest = this.targetBindingDigest(initial.state);
+    const provisional = { ...initial.state, target };
+    const targetBindingDigest = this.journal.handleFromState(provisional).targetBindingDigest;
+    if (targetBindingDigest === void 0) {
+      throw new OperationServiceError("target_binding_missing", "Attachment rearm target binding is unavailable.");
+    }
+    const authorizationId = randomUUID4();
+    const authorizedAt = this.timestamp(initial.state.updatedAt);
+    const event = {
+      type: "attachment_rearm_authorized",
+      authorization: {
+        schemaVersion: OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION,
+        authorizationId,
+        actionId: handoff.actionId,
+        previousTargetBindingDigest,
+        targetBindingDigest,
+        authorizationEvidenceDigest: this.journal.evidenceDigest("attachment-rearm-authorization", {
+          operationId: request.operationId,
+          requestDigest,
+          actionId: handoff.actionId,
+          previousTargetBindingDigest,
+          targetBindingDigest
+        }),
+        authorizedAt
+      },
+      target
+    };
+    let loaded;
+    try {
+      loaded = await this.journal.append(request.operationId, initial.state.revision, event);
+    } catch (error) {
+      const observed = await this.journal.load(request.operationId, requestDigest);
+      if (observed.state.attachmentRearm?.authorizationId !== authorizationId || canonicalJson(observed.state.target) !== canonicalJson(target)) {
+        throw this.serviceError(error, "journal_unavailable");
+      }
+      loaded = observed;
+    }
+    return { loaded, authorizationId, targetBindingDigest, configurationReceiptDigest, composerReceiptDigest };
+  }
+  async appendAttachmentRearmIntent(loaded, preflightEvidenceDigest) {
+    const rearm = loaded.state.attachmentRearm;
+    if (rearm === void 0 || !DIGEST_PATTERN8.test(preflightEvidenceDigest)) {
+      throw new OperationServiceError("attachment_rearm_unavailable", "Attachment rearm authorization or preflight evidence is unavailable.");
+    }
+    if (rearm.attemptIntentRevision !== void 0) return { loaded, executeAllowed: false };
+    const event = {
+      type: "attachment_rearm_intent",
+      authorizationId: rearm.authorizationId,
+      actionId: rearm.actionId,
+      preflightEvidenceDigest,
+      intentAt: this.timestamp(loaded.state.updatedAt)
+    };
+    try {
+      return {
+        loaded: await this.journal.append(loaded.state.operationId, loaded.state.revision, event),
+        executeAllowed: true
+      };
+    } catch (error) {
+      const observed = await this.journal.load(loaded.state.operationId, loaded.state.requestDigest);
+      const durable = observed.state.attachmentRearm;
+      if (durable?.authorizationId === rearm.authorizationId && durable.actionId === rearm.actionId && durable.attemptIntentRevision !== void 0) {
+        return { loaded: observed, executeAllowed: false };
+      }
+      throw this.serviceError(error, "journal_unavailable");
+    }
   }
   /**
    * Collect from a caller locator. It reloads the journal for every collector
@@ -31871,7 +32458,7 @@ var OperationService = class {
     };
   }
   async persistActionIntent(request) {
-    if (!UUID_PATTERN6.test(request.actionId) || !DIGEST_PATTERN8.test(request.requestDigest) || !DIGEST_PATTERN8.test(request.targetBindingDigest)) {
+    if (!UUID_PATTERN7.test(request.actionId) || !DIGEST_PATTERN8.test(request.requestDigest) || !DIGEST_PATTERN8.test(request.targetBindingDigest)) {
       throw new OperationServiceError("invalid_action_intent", "Action intent identity is invalid.");
     }
     const durableRequestDigest = request.durableRequestDigest ?? request.requestDigest;
@@ -31947,7 +32534,7 @@ var OperationService = class {
    * commit-then-throw or concurrent convergence is observation-only.
    */
   async persistPreparedSend(request) {
-    if (!UUID_PATTERN6.test(request.operationId) || !UUID_PATTERN6.test(request.actionId) || !DIGEST_PATTERN8.test(request.requestDigest) || !DIGEST_PATTERN8.test(request.durableRequestDigest) || !DIGEST_PATTERN8.test(request.targetBindingDigest) || request.requestDigest !== request.durableRequestDigest || request.kind !== "send" || request.repeatPolicy !== "observe_only_after_intent" || request.surface !== "chat" && request.surface !== "work") {
+    if (!UUID_PATTERN7.test(request.operationId) || !UUID_PATTERN7.test(request.actionId) || !DIGEST_PATTERN8.test(request.requestDigest) || !DIGEST_PATTERN8.test(request.durableRequestDigest) || !DIGEST_PATTERN8.test(request.targetBindingDigest) || request.requestDigest !== request.durableRequestDigest || request.kind !== "send" || request.repeatPolicy !== "observe_only_after_intent" || request.surface !== "chat" && request.surface !== "work") {
       return { status: "not_committed", blockerCode: "operation_state_corrupt" };
     }
     let baselineSnapshot;
@@ -32079,7 +32666,7 @@ var OperationService = class {
    */
   async persistSteerIntentAndBaseline(request) {
     const schemaVersion = CONTROL_COORDINATOR_SCHEMA_VERSION;
-    if (request.schemaVersion !== schemaVersion || request.action !== "steer" || !UUID_PATTERN6.test(request.parentOperationId) || !UUID_PATTERN6.test(request.controlActionId) || !DIGEST_PATTERN8.test(request.parentRequestDigest) || !DIGEST_PATTERN8.test(request.parentTargetBindingDigest) || !DIGEST_PATTERN8.test(request.requestDigest) || request.requestDigest === request.parentRequestDigest || !DIGEST_PATTERN8.test(request.baselineSnapshotDigest) || !DIGEST_PATTERN8.test(request.preparedDigest) || !isSafeOpaqueId(request.expectedAssistantTurnId) || !isSafeOpaqueId(request.assistantBranchId) || !isSafeOpaqueId(request.assistantParentTurnId)) {
+    if (request.schemaVersion !== schemaVersion || request.action !== "steer" || !UUID_PATTERN7.test(request.parentOperationId) || !UUID_PATTERN7.test(request.controlActionId) || !DIGEST_PATTERN8.test(request.parentRequestDigest) || !DIGEST_PATTERN8.test(request.parentTargetBindingDigest) || !DIGEST_PATTERN8.test(request.requestDigest) || request.requestDigest === request.parentRequestDigest || !DIGEST_PATTERN8.test(request.baselineSnapshotDigest) || !DIGEST_PATTERN8.test(request.preparedDigest) || !isSafeOpaqueId(request.expectedAssistantTurnId) || !isSafeOpaqueId(request.assistantBranchId) || !isSafeOpaqueId(request.assistantParentTurnId)) {
       throw new OperationServiceError("operation_state_corrupt", "Work-steer persistence identity is invalid.");
     }
     let material;
@@ -33144,7 +33731,7 @@ var OperationService = class {
   }
   async persistControlReceipt(request) {
     const receipt = request.receipt;
-    if (receipt.schemaVersion !== OPERATION_CONTROL_RECEIPT_SCHEMA_VERSION || receipt.action !== "stop" && receipt.action !== "steer" || !UUID_PATTERN6.test(receipt.parentOperationId) || !DIGEST_PATTERN8.test(receipt.parentRequestDigest) || !DIGEST_PATTERN8.test(receipt.parentTargetBindingDigest) || !DIGEST_PATTERN8.test(receipt.requestDigest) || !UUID_PATTERN6.test(receipt.controlActionId) || !isSafeOpaqueId(receipt.expectedAssistantTurnId) || !isCanonicalTimestamp(receipt.observedAt)) {
+    if (receipt.schemaVersion !== OPERATION_CONTROL_RECEIPT_SCHEMA_VERSION || receipt.action !== "stop" && receipt.action !== "steer" || !UUID_PATTERN7.test(receipt.parentOperationId) || !DIGEST_PATTERN8.test(receipt.parentRequestDigest) || !DIGEST_PATTERN8.test(receipt.parentTargetBindingDigest) || !DIGEST_PATTERN8.test(receipt.requestDigest) || !UUID_PATTERN7.test(receipt.controlActionId) || !isSafeOpaqueId(receipt.expectedAssistantTurnId) || !isCanonicalTimestamp(receipt.observedAt)) {
       throw new OperationServiceError("operation_state_corrupt", "Control receipt identity is invalid.");
     }
     const current = await this.journal.load(receipt.parentOperationId, receipt.parentRequestDigest);
@@ -33388,7 +33975,7 @@ function validateTargetResolution(value) {
   if (value.composerReceiptDigest !== void 0) assertDigest7(value.composerReceiptDigest, "composerReceiptDigest");
 }
 function validateSubmissionWitnessInput(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value) || value.schemaVersion !== OPERATION_SUBMISSION_WITNESS_SCHEMA_VERSION || !UUID_PATTERN6.test(value.actionId) || value.actionKind !== "send" && value.actionKind !== "work_steer" || !DIGEST_PATTERN8.test(value.targetBindingDigest) || !DIGEST_PATTERN8.test(value.baselineSnapshotDigest) || !DIGEST_PATTERN8.test(value.postSendDeltaDigest) || !DIGEST_PATTERN8.test(value.operationUserEvidenceDigest) || value.userTurnId !== void 0 && !isSafeOpaqueId(value.userTurnId) || !isCanonicalTimestamp(value.observedAt)) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || value.schemaVersion !== OPERATION_SUBMISSION_WITNESS_SCHEMA_VERSION || !UUID_PATTERN7.test(value.actionId) || value.actionKind !== "send" && value.actionKind !== "work_steer" || !DIGEST_PATTERN8.test(value.targetBindingDigest) || !DIGEST_PATTERN8.test(value.baselineSnapshotDigest) || !DIGEST_PATTERN8.test(value.postSendDeltaDigest) || !DIGEST_PATTERN8.test(value.operationUserEvidenceDigest) || value.userTurnId !== void 0 && !isSafeOpaqueId(value.userTurnId) || !isCanonicalTimestamp(value.observedAt)) {
     throw new OperationServiceError("invalid_submission_witness", "Submission witness evidence is invalid.");
   }
 }
@@ -33429,7 +34016,7 @@ function validateTargetEstablishmentRequest(value) {
       throw new OperationServiceError("invalid_target_establishment", `${label} is invalid.`);
     }
   }
-  if (!UUID_PATTERN6.test(normalized.operationId) || !UUID_PATTERN6.test(normalized.causalSendActionId)) {
+  if (!UUID_PATTERN7.test(normalized.operationId) || !UUID_PATTERN7.test(normalized.causalSendActionId)) {
     throw new OperationServiceError("invalid_target_establishment", "Target establishment operation/action identity is invalid.");
   }
   for (const [label, digest4] of [
@@ -39179,7 +39766,7 @@ var UNKNOWN_PROVIDER_ID = "operation-context-provider-identity-unavailable";
 var UNKNOWN_BROWSER_ID2 = "operation-context-browser-identity-unavailable";
 var MAX_ID_LENGTH = 512;
 var MAX_DIGEST_LENGTH2 = 1024;
-var UUID_PATTERN7 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+var UUID_PATTERN8 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 var HMAC_DIGEST_PATTERN2 = /^hmac-sha256:[0-9a-f]{64}$/;
 var OperationRuntimeContextError = class extends Error {
   code;
@@ -39288,8 +39875,8 @@ function normalizeOwner3(value) {
   assertExactKeys6(value, "owner", ["backendSessionId", "operationId"]);
   const backendSessionId = validateRequiredString(value.backendSessionId, "owner.backendSessionId");
   const operationId = validateRequiredString(value.operationId, "owner.operationId");
-  if (!UUID_PATTERN7.test(backendSessionId)) throw invalid3("owner.backendSessionId must be a canonical UUID");
-  if (!UUID_PATTERN7.test(operationId)) throw invalid3("owner.operationId must be a canonical UUID");
+  if (!UUID_PATTERN8.test(backendSessionId)) throw invalid3("owner.backendSessionId must be a canonical UUID");
+  if (!UUID_PATTERN8.test(operationId)) throw invalid3("owner.operationId must be a canonical UUID");
   return Object.freeze({
     backendSessionId,
     operationId
@@ -39488,7 +40075,7 @@ var OperationRuntimeContext = class _OperationRuntimeContext {
     assertRecord(options, "child options");
     assertExactKeys6(options, "child options", ["operationId", "targetBindingDigest"]);
     const operationId = options.operationId === void 0 ? this.owner.operationId : validateRequiredString(options.operationId, "child options.operationId");
-    if (!UUID_PATTERN7.test(operationId)) throw invalid3("child options.operationId must be a canonical UUID");
+    if (!UUID_PATTERN8.test(operationId)) throw invalid3("child options.operationId must be a canonical UUID");
     const targetBindingDigest = options.targetBindingDigest === void 0 ? this.targetBindingDigest : validateTargetBindingDigest(options.targetBindingDigest, "child options.targetBindingDigest");
     return new _OperationRuntimeContext(
       this.providerId,
@@ -42328,7 +42915,7 @@ var SCHEMA_VERSION = ARTIFACT_TRANSFER_SCHEMA_VERSION;
 var INTENT_SCHEMA_VERSION = ARTIFACT_TRANSFER_INTENT_SCHEMA_VERSION;
 var RECEIPT_SCHEMA_VERSION = ARTIFACT_TRANSFER_RECEIPT_SCHEMA_VERSION;
 var DIGEST_PATTERN16 = /^hmac-sha256:[0-9a-f]{64}$/;
-var UUID_PATTERN8 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+var UUID_PATTERN9 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 var SHA256_PATTERN4 = /^[0-9a-f]{64}$/;
 var OUTPUT_KEY_PATTERN2 = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 var CODE_PATTERN5 = /^[a-z][a-z0-9_]{0,63}$/;
@@ -42902,7 +43489,7 @@ function prepare(options) {
     "extensionHint",
     "mimeTypeHint"
   ]);
-  const operationId = requiredString2(record, "operationId", UUID_PATTERN8, 128);
+  const operationId = requiredString2(record, "operationId", UUID_PATTERN9, 128);
   const requestDigest = requiredString2(record, "requestDigest", DIGEST_PATTERN16, 128);
   const targetBindingDigest = requiredString2(record, "targetBindingDigest", DIGEST_PATTERN16, 128);
   const assistantTurnId = requiredOpaqueId(record, "assistantTurnId");
@@ -42911,7 +43498,7 @@ function prepare(options) {
   const limits = readLimits(record.limits);
   assertGraphBounds2(record, /* @__PURE__ */ new Set(), 0, limits.maxDepth);
   const ordinal = requiredOrdinal(record.ordinal, limits.maxCount);
-  const transferActionId = requiredString2(record, "transferActionId", UUID_PATTERN8, 128);
+  const transferActionId = requiredString2(record, "transferActionId", UUID_PATTERN9, 128);
   const outputDirectory = requiredString2(record, "outputDirectory", void 0, limits.maxStringBytes);
   if (!isAbsolutePath(outputDirectory)) throw invalidOptions2();
   const canonicalDestination = resolve7(outputDirectory);
@@ -46958,7 +47545,7 @@ function providerError() {
 // src/operations/production-work-steer.ts
 var PRODUCTION_WORK_STEER_SCHEMA_VERSION = "chatgpt.browser_control.production_work_steer.v1";
 var DIGEST_PATTERN19 = /^hmac-sha256:[0-9a-f]{64}$/u;
-var UUID_PATTERN9 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+var UUID_PATTERN10 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 var ID_PATTERN9 = /^[A-Za-z0-9._:-]{1,512}$/u;
 var CAPABILITY_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u;
 var MAX_PROMPT_BYTES2 = 8 * 1024 * 1024;
@@ -47852,7 +48439,7 @@ function assertIdentifier3(value, label) {
   if (!isSafeIdentifier2(value)) throw new ProductionWorkSteerPrimitiveError(`invalid_${label}`);
 }
 function assertUuid2(value, label) {
-  if (typeof value !== "string" || !UUID_PATTERN9.test(value)) throw new ProductionWorkSteerPrimitiveError(`invalid_${label}`);
+  if (typeof value !== "string" || !UUID_PATTERN10.test(value)) throw new ProductionWorkSteerPrimitiveError(`invalid_${label}`);
 }
 function assertDigest8(value, label) {
   if (typeof value !== "string" || !DIGEST_PATTERN19.test(value)) throw new ProductionWorkSteerPrimitiveError(`invalid_${label}`);

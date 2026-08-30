@@ -2,6 +2,9 @@
 
 ## 0.5.1a3
 
+- Adds strict event and state-model parity for the Node-owned supervised
+  attachment-rearm journal records without adding a separate Python browser
+  mutation path.
 - Adds strict Project operation-target and `project_chat_v1` profile parity for
   the Node-owned exact Project routing and Project Chat detection behavior.
 - Includes the Project-creation uncertainty blocker in the shared typed

@@ -2,6 +2,10 @@
 
 ## 0.5.1-alpha.3
 
+- Adds an explicit, one-use supervised attachment rearm for an indeterminate
+  pre-Send file handoff. It preserves the operation and request identity,
+  requires an exact fresh target plus an attachment-absence preflight, and
+  remains observation-only after the durable retry intent.
 - Supports durable operation journals in processless Browser hosts without
   allowing another Node process to reclaim an opaque live lock, while retaining
   normal dead-process recovery where liveness probes are available.

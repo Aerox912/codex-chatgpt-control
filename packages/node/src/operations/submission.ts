@@ -13,6 +13,7 @@ import type { OwnershipBaseline } from "./turn-ownership.js";
 import { assertDurableCapturePolicyShape, assertOwnershipBaselineShape } from "./state-machine.js";
 import {
   OPERATION_ARTIFACT_RECEIPT_SCHEMA_VERSION,
+  OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION,
   OPERATION_HANDLE_SCHEMA_VERSION,
   OPERATION_RECEIPT_SCHEMA_VERSION,
   OPERATION_SUBMISSION_WITNESS_SCHEMA_VERSION,
@@ -523,7 +524,7 @@ export async function runAtomicSubmission(
   operation: SubmissionOperationSnapshot,
   expected: SubmissionExpectedEnvelope,
   ports: SubmissionPorts,
-  options: Readonly<{ signal?: AbortSignal; deadlineAt?: number }> = {}
+  options: Readonly<{ signal?: AbortSignal; deadlineAt?: number; authorizedAttachmentRearmId?: string }> = {}
 ): Promise<SubmissionResult> {
   const identity = safeIdentity(operation);
   let envelope: SubmissionExpectedEnvelope;
@@ -792,6 +793,82 @@ export async function runAtomicSubmission(
   return uncertainBase(base, verificationCode, "send_may_have_occurred", verification.evidenceDigest);
 }
 
+export type AttachmentRearmPreflightResult = Readonly<
+  | { kind: "absent"; evidenceDigest: string }
+  | { kind: "already_satisfied"; evidenceDigest: string }
+  | { kind: "result"; result: SubmissionResult }
+>;
+
+/**
+ * Re-check every reversible precondition before a supervised handoff retry
+ * intent is made durable. This function performs no mutation and persists no
+ * event; the service must append the one-use intent before authorizing the
+ * normal submission core to execute the provider handoff.
+ */
+export async function preflightAttachmentRearm(
+  operation: SubmissionOperationSnapshot,
+  expected: SubmissionExpectedEnvelope,
+  ports: SubmissionPorts,
+  options: Readonly<{ signal?: AbortSignal; deadlineAt?: number }> = {}
+): Promise<AttachmentRearmPreflightResult> {
+  const identity = safeIdentity(operation);
+  let envelope: SubmissionExpectedEnvelope;
+  try {
+    envelope = validateInput(operation, expected, ports, options);
+  } catch (error) {
+    const code = error instanceof SubmissionInputError ? error.code : "port_protocol_violation";
+    return { kind: "result", result: blockedResult(identity, expected, code, false) };
+  }
+  const base: SubmissionResultBase = {
+    operationId: operation.state.operationId,
+    requestDigest: operation.state.requestDigest,
+    surface: operation.state.surface,
+    targetBindingDigest: envelope.targetBindingDigest
+  };
+  const cancellation = cancellationCode(options);
+  if (cancellation !== undefined) {
+    return { kind: "result", result: cancelledResult(base, cancellation, operation.state.mutationBoundary) };
+  }
+  const send = findUniqueAction(operation.state, "send");
+  const handoff = findUniqueAction(operation.state, "file_handoff");
+  const rearm = operation.state.attachmentRearm;
+  if (
+    send === "corrupt"
+    || handoff === "corrupt"
+    || send !== undefined
+    || handoff === undefined
+    || rearm === undefined
+    || rearm.actionId !== handoff.actionId
+    || rearm.attemptIntentRevision !== undefined
+    || !coherentSubmissionState(operation.state, send, handoff, envelope.targetBindingDigest, envelope.attachmentManifest.count)
+    || !targetBindingMatches(operation, envelope)
+  ) {
+    return { kind: "result", result: blockedBase(base, "operation_state_corrupt", false, operation.state.mutationBoundary) };
+  }
+  const staging = await observeStaging(base, envelope, ports);
+  if (staging.kind !== "ok") return { kind: "result", result: staging.result };
+  const request: SubmissionAttachmentRequest = {
+    operationId: base.operationId,
+    requestDigest: base.requestDigest,
+    surface: base.surface,
+    targetBindingDigest: envelope.targetBindingDigest,
+    manifest: cloneManifest(envelope.attachmentManifest)
+  };
+  const observed = await observeAttachmentsSafely(ports, request, envelope.attachmentManifest);
+  if (observed.status === "exact") return { kind: "already_satisfied", evidenceDigest: observed.evidenceDigest };
+  if (observed.status === "absent") return { kind: "absent", evidenceDigest: observed.evidenceDigest };
+  if (observed.status === "unavailable") {
+    return {
+      kind: "result",
+      result: blockedBase(base, "target_evidence_unavailable", false, operation.state.mutationBoundary, observed.evidenceDigest)
+    };
+  }
+  return {
+    kind: "result",
+    result: uncertainBase(base, "ambiguous_file_handoff", operation.state.mutationBoundary, observed.evidenceDigest)
+  };
+}
+
 async function observeStaging(
   base: SubmissionResultBase,
   expected: SubmissionExpectedEnvelope,
@@ -831,7 +908,7 @@ async function ensureAttachments(
   operation: SubmissionOperationSnapshot,
   existingHandoff: OperationActionRecordV1 | undefined,
   ports: SubmissionPorts,
-  options: Readonly<{ signal?: AbortSignal; deadlineAt?: number }>
+  options: Readonly<{ signal?: AbortSignal; deadlineAt?: number; authorizedAttachmentRearmId?: string }>
 ): Promise<{ kind: "ok"; evidenceDigest: string; mutationBoundary: MutationBoundary; actionId?: string } | { kind: "result"; result: SubmissionResult }> {
   const request: SubmissionAttachmentRequest = {
     operationId: base.operationId,
@@ -847,8 +924,14 @@ async function ensureAttachments(
   } catch {
     return { kind: "result", result: blockedBase(base, "port_protocol_violation", false, "none") };
   }
+  const rearm = operation.state.attachmentRearm;
+  const rearmedTarget = existingHandoff !== undefined
+    && rearm !== undefined
+    && rearm.actionId === existingHandoff.actionId
+    && rearm.previousTargetBindingDigest === existingHandoff.targetDigest
+    && rearm.targetBindingDigest === expected.targetBindingDigest;
   if (existingHandoff !== undefined && (
-    existingHandoff.targetDigest !== expected.targetBindingDigest ||
+    (!rearmedTarget && existingHandoff.targetDigest !== expected.targetBindingDigest) ||
     existingHandoff.requestDigest !== base.requestDigest ||
     existingHandoff.repeatPolicy !== "observe_only_after_intent"
   )) {
@@ -917,15 +1000,24 @@ async function ensureAttachments(
       intentAt: new Date().toISOString()
     };
   }
-  if (handoff.targetDigest !== expected.targetBindingDigest || handoff.requestDigest !== base.requestDigest || handoff.repeatPolicy !== "observe_only_after_intent") {
+  if (
+    (!rearmedTarget && handoff.targetDigest !== expected.targetBindingDigest)
+    || handoff.requestDigest !== base.requestDigest
+    || handoff.repeatPolicy !== "observe_only_after_intent"
+  ) {
     return { kind: "result", result: blockedBase(base, "operation_state_corrupt", true, "handoff_may_have_occurred") };
   }
 
+  const authorizedRearm = existingHandoff !== undefined
+    && rearmedTarget
+    && rearm?.attemptIntentRevision !== undefined
+    && rearm.authorizationId === options.authorizedAttachmentRearmId;
   // The presence of an intent, including one recovered after a crash, forbids
-  // calling executeFileHandoffOnce again.  Existing intents are observation
-  // only; a newly persisted intent authorizes exactly this one call.
+  // calling executeFileHandoffOnce again. Existing intents are observation
+  // only unless this exact invocation just committed the separate supervised
+  // rearm intent; that authority is request-local and can be consumed once.
   let handoffResult: SubmissionHandoffResult | undefined;
-  if (existingHandoff === undefined) {
+  if (existingHandoff === undefined || authorizedRearm) {
     try {
       handoffResult = await ports.executeFileHandoffOnce({
         operationId: base.operationId,
@@ -1084,7 +1176,7 @@ async function verifyPreparedSendSafely(
   prepared: SubmissionPreparedSend,
   activation: "activated" | "activation_threw",
   ports: SubmissionPorts,
-  options: Readonly<{ signal?: AbortSignal; deadlineAt?: number }>
+  options: Readonly<{ signal?: AbortSignal; deadlineAt?: number; authorizedAttachmentRearmId?: string }>
 ): Promise<SubmissionFinalTransactionResult> {
   if (ports.verifyPreparedSend === undefined) return { status: "uncertain", quarantine: "caller" };
   try {
@@ -1278,7 +1370,7 @@ function validateInput(
   operation: SubmissionOperationSnapshot,
   expected: SubmissionExpectedEnvelope,
   ports: SubmissionPorts,
-  options: Readonly<{ signal?: AbortSignal; deadlineAt?: number }>
+  options: Readonly<{ signal?: AbortSignal; deadlineAt?: number; authorizedAttachmentRearmId?: string }>
 ): SubmissionExpectedEnvelope {
   // Reject accessor-backed plain data before any validation property access.
   // This matters both for privacy (no hostile getter can expose a secret) and
@@ -1293,7 +1385,7 @@ function validateInput(
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new SubmissionInputError("port_protocol_violation", "Submission options are invalid.");
   }
-  assertExactRecord(options, ["signal", "deadlineAt"], []);
+  assertExactRecord(options, ["signal", "deadlineAt", "authorizedAttachmentRearmId"], []);
   if (!operation || typeof operation !== "object" || !operation.state || !operation.handle || !operation.actionIds) {
     throw new SubmissionInputError("port_protocol_violation", "Submission operation snapshot is invalid.");
   }
@@ -1303,7 +1395,7 @@ function validateInput(
   const handle = operation.handle;
   assertExactRecord(
     state,
-    ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "capturePolicy", "responseFormat", "target", "actions", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "lastBlocker", "receipt", "submissionWitness"],
+    ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "capturePolicy", "responseFormat", "target", "attachmentRearm", "actions", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "lastBlocker", "receipt", "submissionWitness"],
     ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "actions"]
   );
   assertExactRecord(
@@ -1401,6 +1493,7 @@ function validateInput(
     }
     validateActionRecord(action);
   }
+  if (state.attachmentRearm !== undefined) validateAttachmentRearm(state);
   const recordedSend = findUniqueAction(state, "send");
   const recordedHandoff = findUniqueAction(state, "file_handoff");
   if (recordedSend === "corrupt" || recordedHandoff === "corrupt") {
@@ -1448,6 +1541,19 @@ function validateInput(
     (!Number.isFinite(options.deadlineAt) || !Number.isSafeInteger(options.deadlineAt) || options.deadlineAt < 0 || options.deadlineAt > MAX_DEADLINE_AT)
   ) {
     throw new SubmissionInputError("port_protocol_violation", "Deadline is invalid.");
+  }
+  if (options.authorizedAttachmentRearmId !== undefined) {
+    const rearm = state.attachmentRearm;
+    if (
+      !isUuid(options.authorizedAttachmentRearmId)
+      || rearm === undefined
+      || rearm.authorizationId !== options.authorizedAttachmentRearmId
+      || rearm.attemptIntentRevision === undefined
+      || rearm.actionId !== recordedHandoff?.actionId
+      || recordedSend !== undefined
+    ) {
+      throw new SubmissionInputError("operation_state_corrupt", "Attachment rearm authority is invalid.");
+    }
   }
   if (!ports || typeof ports !== "object" || Array.isArray(ports) || typeof ports.observeStaging !== "function" || typeof ports.persistActionIntent !== "function" || typeof ports.executeFileHandoffOnce !== "function" || typeof ports.observeAttachments !== "function" || typeof ports.persistReceiptEvidence !== "function") {
     throw new SubmissionInputError("port_protocol_violation", "Submission ports are incomplete.");
@@ -1625,6 +1731,60 @@ function validateTargetBinding(value: NonNullable<OperationStateV1["target"]>): 
     } catch {
       throw new SubmissionInputError("operation_state_corrupt", "Target establishment evidence is invalid.");
     }
+  }
+}
+
+function validateAttachmentRearm(state: OperationStateV1): void {
+  const rearm = state.attachmentRearm;
+  if (rearm === undefined) return;
+  assertExactRecord(
+    rearm,
+    [
+      "schemaVersion", "authorizationId", "actionId", "previousTargetBindingDigest",
+      "targetBindingDigest", "authorizationEvidenceDigest", "authorizedRevision", "authorizedAt",
+      "attemptIntentRevision", "attemptIntentAt", "preflightEvidenceDigest"
+    ],
+    [
+      "schemaVersion", "authorizationId", "actionId", "previousTargetBindingDigest",
+      "targetBindingDigest", "authorizationEvidenceDigest", "authorizedRevision", "authorizedAt"
+    ]
+  );
+  if (
+    rearm.schemaVersion !== OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION
+    || !isUuid(rearm.authorizationId)
+    || !isUuid(rearm.actionId)
+    || !isDigest(rearm.previousTargetBindingDigest)
+    || !isDigest(rearm.targetBindingDigest)
+    || !isDigest(rearm.authorizationEvidenceDigest)
+    || !Number.isSafeInteger(rearm.authorizedRevision)
+    || rearm.authorizedRevision < 1
+    || rearm.authorizedRevision > state.revision
+    || !isIsoInstant(rearm.authorizedAt)
+  ) {
+    throw new SubmissionInputError("operation_state_corrupt", "Attachment rearm authorization is invalid.");
+  }
+  const intentValues = [rearm.attemptIntentRevision, rearm.attemptIntentAt, rearm.preflightEvidenceDigest];
+  const intentCount = intentValues.filter(value => value !== undefined).length;
+  if (intentCount !== 0 && intentCount !== intentValues.length) {
+    throw new SubmissionInputError("operation_state_corrupt", "Attachment rearm intent is incomplete.");
+  }
+  if (rearm.attemptIntentRevision !== undefined && (
+    !Number.isSafeInteger(rearm.attemptIntentRevision)
+    || rearm.attemptIntentRevision <= rearm.authorizedRevision
+    || rearm.attemptIntentRevision > state.revision
+    || !isIsoInstant(rearm.attemptIntentAt!)
+    || Date.parse(rearm.attemptIntentAt!) < Date.parse(rearm.authorizedAt)
+    || !isDigest(rearm.preflightEvidenceDigest!)
+  )) {
+    throw new SubmissionInputError("operation_state_corrupt", "Attachment rearm intent evidence is invalid.");
+  }
+  const action = state.actions[rearm.actionId];
+  if (
+    action?.kind !== "file_handoff"
+    || action.targetDigest !== rearm.previousTargetBindingDigest
+    || state.target === undefined
+  ) {
+    throw new SubmissionInputError("operation_state_corrupt", "Attachment rearm is not bound to the original handoff and replacement target.");
   }
 }
 
@@ -1963,6 +2123,12 @@ function coherentSubmissionState(
   manifestCount: number
 ): boolean {
   if (sendAction === "corrupt" || handoffAction === "corrupt") return false;
+  const rearm = state.attachmentRearm;
+  const rearmedTarget = handoffAction !== undefined
+    && rearm !== undefined
+    && rearm.actionId === handoffAction.actionId
+    && rearm.previousTargetBindingDigest === handoffAction.targetDigest
+    && rearm.targetBindingDigest === targetBindingDigest;
   if (sendAction !== undefined && (
     sendAction.kind !== "send" ||
     sendAction.targetDigest !== targetBindingDigest ||
@@ -1972,12 +2138,17 @@ function coherentSubmissionState(
   )) return false;
   if (handoffAction !== undefined && (
     handoffAction.kind !== "file_handoff" ||
-    handoffAction.targetDigest !== targetBindingDigest ||
+    (!rearmedTarget && handoffAction.targetDigest !== targetBindingDigest) ||
     handoffAction.requestDigest !== state.requestDigest ||
     handoffAction.repeatPolicy !== "observe_only_after_intent" ||
     !isUuid(handoffAction.actionId)
   )) return false;
   if (handoffAction !== undefined && state.mutationBoundary === "none") return false;
+  if (rearm !== undefined && (
+    !rearmedTarget
+    || state.mutationBoundary !== "handoff_may_have_occurred"
+    || (sendAction !== undefined && handoffAction?.outcome !== "satisfied")
+  )) return false;
   if (sendAction !== undefined && BOUNDARY_RANK[state.mutationBoundary] < BOUNDARY_RANK.send_may_have_occurred) return false;
   if (manifestCount === 0 && handoffAction !== undefined) return false;
   if (manifestCount > 0 && state.phase !== "prepared" && handoffAction === undefined) return false;

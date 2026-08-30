@@ -47,6 +47,7 @@ from .operation_models import (
     OpaqueId,
     OpaqueKey,
     OperationActionRecord,
+    OperationAttachmentRearm,
     OperationBlocker,
     OperationBlockerObservation,
     BackendCompatibilityReport,
@@ -590,6 +591,7 @@ class OperationWireState(StrictWireModel):
     capture_policy: OperationDurableCapturePolicy | None = Field(default=None, alias="capturePolicy")
     response_format: OperationResponseFormat | None = Field(default=None, alias="responseFormat")
     target: OperationTarget | None = None
+    attachment_rearm: OperationAttachmentRearm | None = Field(default=None, alias="attachmentRearm")
     actions: dict[Uuid, OperationActionRecord]
     ownership_baseline: OperationOwnershipBaseline | None = Field(default=None, alias="ownershipBaseline")
     ownership_baselines: dict[Uuid, OperationOwnershipBaseline] | None = Field(default=None, alias="ownershipBaselines")
@@ -603,7 +605,7 @@ class OperationWireState(StrictWireModel):
     @classmethod
     def reject_null_optional_fields(cls, value: Any) -> Any:
         _reject_explicit_null_values(value)
-        return _reject_explicit_nulls(value, ("capturePolicy", "responseFormat", "target", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "submissionWitness", "lastBlocker", "receipt"))
+        return _reject_explicit_nulls(value, ("capturePolicy", "responseFormat", "target", "attachmentRearm", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "submissionWitness", "lastBlocker", "receipt"))
 
     @model_validator(mode="after")
     def validate_state(self) -> "OperationWireState":

@@ -311,7 +311,32 @@ Common blockers:
 - `rate_limit`: wait or ask the user how to proceed.
 - `needs_confirmation`: the workflow requires explicit user confirmation.
 
-Two mutation outcomes are deliberately non-resumable. Browser-native deadlines terminate these requests before return, so neither can mutate later, but the mutation may already have taken effect. For `stop_generation_unverified`, inspect whether generation is still active and never retry Stop automatically. For `attachment_outcome_indeterminate`, inspect the current composer, do not submit, and never repeat the attachment automatically.
+Browser-native deadlines terminate timed-out requests before return, but a
+mutation may already have taken effect. For `stop_generation_unverified`,
+inspect whether generation is still active and never retry Stop automatically.
+For `attachment_outcome_indeterminate` or durable
+`ambiguous_file_handoff`, inspect the current composer, do not submit, and
+never repeat the attachment automatically.
+
+There is one supervised exception for an operations request after the user
+explicitly confirms the retry. Reuse the exact immutable request and operation
+ID, keep the exact Project/Chat target, and call:
+
+```js
+const retry = await chatgpt.operations.submit(originalRequest, {
+  confirmAttachmentRearm: true
+});
+```
+
+This option is valid only for an uncertain operation whose original
+`file_handoff` intent is unresolved. The runtime binds one replacement target,
+restages the exact request, verifies read-only that the requested attachment
+manifest is absent, and durably spends one rearm intent before the provider
+handoff. If the original upload appears, it is accepted without another
+handoff. If persistence or the provider result is indeterminate, every later
+call is observation-only. Never create a new operation ID, fall back to global
+Chat, change the request/files, or call `submit` again to poll; continue from
+the returned handle with `operations.collect` or `operations.inspect`.
 
 See `references/troubleshooting.md` before diagnosing selector, tab-claim, upload, or bridge issues.
 

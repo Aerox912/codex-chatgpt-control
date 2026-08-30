@@ -562,7 +562,7 @@ function validateLiveResponseReceiptCoherence(
 
 function validateState(value: unknown, operationId: string, requestDigest: string): asserts value is OperationStateV1 {
   if (!isRecord(value)) throw new OperationWireResultError("invalid_state", "Inspect result state must be an object.");
-  assertExactKeys(value, ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "capturePolicy", "responseFormat", "target", "actions", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "submissionWitness", "lastBlocker", "receipt"]);
+  assertExactKeys(value, ["schemaVersion", "operationId", "requestDigest", "surface", "phase", "mutationBoundary", "revision", "createdAt", "updatedAt", "capturePolicy", "responseFormat", "target", "attachmentRearm", "actions", "ownershipBaseline", "ownershipBaselines", "artifactTransfers", "submissionWitnesses", "submissionWitness", "lastBlocker", "receipt"]);
   if (value.schemaVersion !== "chatgpt.browser_control.operation.v1") throw new OperationWireResultError("unsupported_state", "Inspect state schemaVersion is unsupported.");
   if (value.operationId !== operationId || value.requestDigest !== requestDigest) throw new OperationWireResultError("state_identity_mismatch", "Inspect state identity does not match the result.");
   assertDigest(value.requestDigest, "state.requestDigest");
@@ -585,6 +585,7 @@ function validateState(value: unknown, operationId: string, requestDigest: strin
   if (!isRecord(value.actions)) throw new OperationWireResultError("invalid_state", "Inspect state actions must be an object.");
   for (const [actionId, action] of Object.entries(value.actions)) validateStateAction(actionId, action, operationId, requestDigest);
   if (value.target !== undefined) validateStateTarget(value.target);
+  if (value.attachmentRearm !== undefined) validateStateAttachmentRearm(value.attachmentRearm, value.revision);
   if (value.lastBlocker !== undefined) validateStateBlocker(value.lastBlocker);
   if (value.receipt !== undefined) validateReceipt(value.receipt, operationId, requestDigest);
   if (value.phase === "completed" && value.receipt === undefined) throw new OperationWireResultError("invalid_state", "Completed inspect state requires a receipt.");
@@ -595,6 +596,50 @@ function validateState(value: unknown, operationId: string, requestDigest: strin
     // The durable validator may mention persisted identifiers while explaining
     // a failed invariant. Keep wire diagnostics fixed and privacy-safe.
     throw new OperationWireResultError("invalid_state", "Inspect state failed durable invariant validation.");
+  }
+}
+
+function validateStateAttachmentRearm(value: unknown, stateRevision: number): void {
+  if (!isRecord(value)) throw new OperationWireResultError("invalid_state", "Inspect attachment rearm must be an object.");
+  assertExactKeys(value, [
+    "schemaVersion", "authorizationId", "actionId", "previousTargetBindingDigest",
+    "targetBindingDigest", "authorizationEvidenceDigest", "authorizedRevision", "authorizedAt",
+    "attemptIntentRevision", "attemptIntentAt", "preflightEvidenceDigest"
+  ]);
+  if (value.schemaVersion !== "chatgpt.browser_control.operation_attachment_rearm.v1") {
+    throw new OperationWireResultError("invalid_state", "Inspect attachment rearm schemaVersion is unsupported.");
+  }
+  if (typeof value.authorizationId !== "string" || !UUID_PATTERN.test(value.authorizationId)) {
+    throw new OperationWireResultError("invalid_state", "Inspect attachment rearm authorization ID is invalid.");
+  }
+  if (typeof value.actionId !== "string" || !UUID_PATTERN.test(value.actionId)) {
+    throw new OperationWireResultError("invalid_state", "Inspect attachment rearm action ID is invalid.");
+  }
+  assertDigest(value.previousTargetBindingDigest, "attachmentRearm.previousTargetBindingDigest");
+  assertDigest(value.targetBindingDigest, "attachmentRearm.targetBindingDigest");
+  assertDigest(value.authorizationEvidenceDigest, "attachmentRearm.authorizationEvidenceDigest");
+  if (!isSafeInteger(value.authorizedRevision) || value.authorizedRevision < 1 || value.authorizedRevision > stateRevision) {
+    throw new OperationWireResultError("invalid_state", "Inspect attachment rearm authorization revision is invalid.");
+  }
+  assertInstant(value.authorizedAt, "attachmentRearm.authorizedAt");
+  const intentFields = [value.attemptIntentRevision, value.attemptIntentAt, value.preflightEvidenceDigest];
+  const intentCount = intentFields.filter(candidate => candidate !== undefined).length;
+  if (intentCount !== 0 && intentCount !== 3) {
+    throw new OperationWireResultError("invalid_state", "Inspect attachment rearm intent is incomplete.");
+  }
+  if (value.attemptIntentRevision !== undefined) {
+    if (
+      !isSafeInteger(value.attemptIntentRevision)
+      || value.attemptIntentRevision <= value.authorizedRevision
+      || value.attemptIntentRevision > stateRevision
+    ) {
+      throw new OperationWireResultError("invalid_state", "Inspect attachment rearm intent revision is invalid.");
+    }
+    assertInstant(value.attemptIntentAt, "attachmentRearm.attemptIntentAt");
+    if (value.attemptIntentAt < value.authorizedAt) {
+      throw new OperationWireResultError("invalid_state", "Inspect attachment rearm intent precedes authorization.");
+    }
+    assertDigest(value.preflightEvidenceDigest, "attachmentRearm.preflightEvidenceDigest");
   }
 }
 

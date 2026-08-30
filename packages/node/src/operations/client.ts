@@ -25,13 +25,15 @@ import {
   type OperationSubmitOptions,
   type OperationSubmitResult
 } from "./service.js";
-import type {
-  OperationControlRequestV1,
-  OperationDurableCapturePolicyV1,
-  OperationHandleV1,
-  OperationStateV1,
-  OperationTargetBindingV1,
-  OperationSubmitRequestV1
+import {
+  OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION,
+  type OperationAttachmentRearmV1,
+  type OperationControlRequestV1,
+  type OperationDurableCapturePolicyV1,
+  type OperationHandleV1,
+  type OperationStateV1,
+  type OperationTargetBindingV1,
+  type OperationSubmitRequestV1
 } from "./types.js";
 
 /**
@@ -106,6 +108,8 @@ export type OperationAdapterDurableState = Readonly<Pick<
   "schemaVersion" | "operationId" | "requestDigest" | "surface" | "phase" | "mutationBoundary" | "revision"
 > & {
   target: OperationTargetBindingV1;
+  /** Present only after one supervised same-operation attachment recovery was authorized. */
+  attachmentRearm?: OperationAttachmentRearmV1;
   /** Path-free immutable capture contract; absent only on legacy records. */
   capturePolicy?: OperationDurableCapturePolicyV1;
 }>;
@@ -180,7 +184,7 @@ export type OperationClientOptions = Readonly<{
 }>;
 
 export type OperationClientSubmitOptions = Readonly<
-  Pick<OperationSubmitOptions, "signal" | "deadlineAt">
+  Pick<OperationSubmitOptions, "signal" | "deadlineAt" | "confirmAttachmentRearm">
 >;
 
 export type OperationClientPrepareOptions = Readonly<
@@ -263,7 +267,7 @@ export class OperationClient {
     options: OperationClientSubmitOptions = {}
   ): Promise<OperationSubmitResult> {
     const prepared = await this.prepareSubmit(request, options.signal);
-    const adapter = await this.adapterForSubmit(prepared);
+    const adapter = await this.adapterForSubmit(prepared, options.confirmAttachmentRearm === true);
     const result = await this.service.submit(
       prepared.serviceRequest,
       prepared.manifest,
@@ -321,7 +325,7 @@ export class OperationClient {
     options: OperationClientRunOptions = {}
   ): Promise<OperationRunResult> {
     const prepared = await this.prepareSubmit(request, options.signal);
-    const adapter = await this.adapterForSubmit(prepared);
+    const adapter = await this.adapterForSubmit(prepared, options.confirmAttachmentRearm === true);
     const result = await this.service.run(
       prepared.serviceRequest,
       prepared.manifest,
@@ -366,7 +370,10 @@ export class OperationClient {
     });
   }
 
-  private async adapterForSubmit(prepared: PreparedSubmit): Promise<OperationBrowserAdapter> {
+  private async adapterForSubmit(
+    prepared: PreparedSubmit,
+    confirmAttachmentRearm = false
+  ): Promise<OperationBrowserAdapter> {
     // A non-terminal submit result deliberately retains its request-scoped
     // adapter so an identical same-operation retry can reconcile the durable
     // Send boundary observation-only.  The client cannot recompute the
@@ -375,7 +382,7 @@ export class OperationClient {
     // digest before it invokes any adapter method; a changed same-ID request
     // therefore still fails browser-free with operation_request_mismatch.
     const cached = this.cachedAdapterForOperation(prepared.request.operationId);
-    if (cached !== undefined) return cached;
+    if (!confirmAttachmentRearm && cached !== undefined) return cached;
 
     if (this.submitRecoveryAdapterFactory !== undefined && this.service.prepare !== undefined) {
       const checkpoint = await this.service.prepare(
@@ -395,21 +402,41 @@ export class OperationClient {
         if (!(error instanceof OperationClientError) || error.code !== "target_binding_missing") throw error;
       }
       if (reconstruction?.target.targetLifecycle === "new_pending") {
-        if (reconstruction.state.phase !== "prepared" || reconstruction.state.mutationBoundary !== "none") {
+        const isPreparedRecovery = reconstruction.state.phase === "prepared"
+          && reconstruction.state.mutationBoundary === "none";
+        const isFirstAttachmentRearm = confirmAttachmentRearm
+          && reconstruction.state.phase === "uncertain"
+          && reconstruction.state.mutationBoundary === "handoff_may_have_occurred"
+          && reconstruction.state.attachmentRearm === undefined;
+        const isAttachmentRearmRecovery = confirmAttachmentRearm
+          && reconstruction.state.phase === "uncertain"
+          && reconstruction.state.mutationBoundary === "handoff_may_have_occurred"
+          && reconstruction.state.attachmentRearm !== undefined;
+        if (
+          confirmAttachmentRearm
+            ? !isFirstAttachmentRearm && !isAttachmentRearmRecovery
+            : !isPreparedRecovery
+        ) {
           throw new OperationClientError("invalid_operation_state", "A pending submit target is outside the recoverable pre-Send phase.");
         }
-        let recovered: OperationBrowserAdapter;
-        try {
-          recovered = await this.submitRecoveryAdapterFactory(
-            makeSubmitRecoveryFactoryContext(prepared, reconstruction)
-          );
-        } catch {
-          recovered = unavailableAdapter("adapter_unavailable");
-        }
-        try {
-          return this.guardAdapter(recovered, prepared.identities, prepared.signal);
-        } catch {
-          throw new OperationClientError("adapter_unavailable", "The pending submit browser adapter could not be recreated.");
+        if (isFirstAttachmentRearm) {
+          // The first confirmed recovery must resolve a fresh exact Project or
+          // Chat target. Reattaching the old pending tab would make the
+          // supervised replacement indistinguishable from an automatic retry.
+        } else {
+          let recovered: OperationBrowserAdapter;
+          try {
+            recovered = await this.submitRecoveryAdapterFactory(
+              makeSubmitRecoveryFactoryContext(prepared, reconstruction)
+            );
+          } catch {
+            recovered = unavailableAdapter("adapter_unavailable");
+          }
+          try {
+            return this.guardAdapter(recovered, prepared.identities, prepared.signal);
+          } catch {
+            throw new OperationClientError("adapter_unavailable", "The pending submit browser adapter could not be recreated.");
+          }
         }
       }
     }
@@ -770,16 +797,29 @@ function reconstructionContext(
   requestedHandle: OperationHandleV1
 ): Reconstruction {
   const inspectedRecord = requiredObject(inspected, "inspect result");
-  const freshHandle = normalizeHandle(requiredData(inspectedRecord, "handle"), requestedHandle);
   const rawState = requiredData(inspectedRecord, "state");
   const stateRecord = requiredObject(rawState, "durable operation state");
+  const stateRevision = requiredSafeInteger(stateRecord, "revision");
+  const attachmentRearmValue = optionalDataProperty(stateRecord, "attachmentRearm");
+  const attachmentRearm = attachmentRearmValue === undefined
+    ? undefined
+    : normalizeAttachmentRearm(attachmentRearmValue, stateRevision);
+  const freshHandle = normalizeHandle(
+    requiredData(inspectedRecord, "handle"),
+    requestedHandle,
+    attachmentRearm
+  );
   const state = normalizeDurableState(stateRecord, freshHandle);
   const target = state.target;
   const context = makeFactoryContext(freshHandle, state, target);
   return Object.freeze({ context, state, target });
 }
 
-function normalizeHandle(value: unknown, requested: OperationHandleV1): OperationHandleV1 {
+function normalizeHandle(
+  value: unknown,
+  requested: OperationHandleV1,
+  attachmentRearm?: OperationAttachmentRearmV1
+): OperationHandleV1 {
   const record = requiredObject(value, "operation handle");
   const schemaVersion = requiredString(record, "schemaVersion");
   const operationId = requiredString(record, "operationId");
@@ -789,6 +829,10 @@ function normalizeHandle(value: unknown, requested: OperationHandleV1): Operatio
   const phase = requiredString(record, "phase");
   const mutationBoundary = requiredString(record, "mutationBoundary");
   const targetBindingDigest = optionalString(record, "targetBindingDigest");
+  const crossesAttachmentRearm = attachmentRearm !== undefined
+    && requested.targetBindingDigest === attachmentRearm.previousTargetBindingDigest
+    && targetBindingDigest === attachmentRearm.targetBindingDigest
+    && requested.revision < attachmentRearm.authorizedRevision;
   if (
     schemaVersion !== requested.schemaVersion
     || operationId !== requested.operationId
@@ -800,7 +844,8 @@ function normalizeHandle(value: unknown, requested: OperationHandleV1): Operatio
     || !isMutationBoundary(mutationBoundary)
     || (targetBindingDigest !== undefined && !isDigest(targetBindingDigest))
     || (requested.targetBindingDigest !== undefined
-      && targetBindingDigest !== requested.targetBindingDigest)
+      && targetBindingDigest !== requested.targetBindingDigest
+      && !crossesAttachmentRearm)
     || (revision === requested.revision
       && (phase !== requested.phase
         || mutationBoundary !== requested.mutationBoundary
@@ -833,6 +878,10 @@ function normalizeDurableState(
   const revision = requiredSafeInteger(value, "revision");
   const capturePolicyValue = optionalDataProperty(value, "capturePolicy");
   if (capturePolicyValue !== undefined) assertDurableCapturePolicyShape(capturePolicyValue);
+  const attachmentRearmValue = optionalDataProperty(value, "attachmentRearm");
+  const attachmentRearm = attachmentRearmValue === undefined
+    ? undefined
+    : normalizeAttachmentRearm(attachmentRearmValue, revision);
   const targetValue = optionalDataProperty(value, "target");
   if (targetValue === undefined) {
     throw new OperationClientError("target_binding_missing", "The durable operation has no target binding.");
@@ -847,6 +896,7 @@ function normalizeDurableState(
     || phase !== handle.phase
     || mutationBoundary !== handle.mutationBoundary
     || handle.targetBindingDigest === undefined
+    || (attachmentRearm !== undefined && attachmentRearm.targetBindingDigest !== handle.targetBindingDigest)
     || (target.targetEstablishment !== undefined
       && target.targetEstablishment.targetBindingDigest !== handle.targetBindingDigest)
     || !isOperationSurface(surface)
@@ -864,7 +914,60 @@ function normalizeDurableState(
     mutationBoundary: mutationBoundary as OperationStateV1["mutationBoundary"],
     revision,
     target,
+    ...(attachmentRearm === undefined ? {} : { attachmentRearm }),
     ...(capturePolicyValue === undefined ? {} : { capturePolicy: capturePolicyValue as OperationDurableCapturePolicyV1 })
+  });
+}
+
+function normalizeAttachmentRearm(value: unknown, stateRevision: number): OperationAttachmentRearmV1 {
+  const record = requiredObject(value, "attachment rearm authorization");
+  const schemaVersion = requiredString(record, "schemaVersion");
+  const authorizationId = requiredString(record, "authorizationId");
+  const actionId = requiredString(record, "actionId");
+  const previousTargetBindingDigest = requiredDigest(record, "previousTargetBindingDigest");
+  const targetBindingDigest = requiredDigest(record, "targetBindingDigest");
+  const authorizationEvidenceDigest = requiredDigest(record, "authorizationEvidenceDigest");
+  const authorizedRevision = requiredSafeInteger(record, "authorizedRevision");
+  const authorizedAt = requiredString(record, "authorizedAt");
+  const attemptIntentRevisionValue = optionalDataProperty(record, "attemptIntentRevision");
+  const attemptIntentRevision = attemptIntentRevisionValue === undefined
+    ? undefined
+    : requiredSafeInteger(record, "attemptIntentRevision");
+  const attemptIntentAt = optionalString(record, "attemptIntentAt");
+  const preflightEvidenceDigest = optionalDigest(record, "preflightEvidenceDigest");
+  const intentCount = [attemptIntentRevision, attemptIntentAt, preflightEvidenceDigest]
+    .filter(candidate => candidate !== undefined).length;
+  if (
+    schemaVersion !== OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION
+    || !UUID_PATTERN.test(authorizationId)
+    || !UUID_PATTERN.test(actionId)
+    || authorizedRevision < 1
+    || authorizedRevision > stateRevision
+    || !isCanonicalInstant(authorizedAt)
+    || (intentCount !== 0 && intentCount !== 3)
+    || (attemptIntentRevision !== undefined && (
+      attemptIntentRevision <= authorizedRevision
+      || attemptIntentRevision > stateRevision
+      || !isCanonicalInstant(attemptIntentAt!)
+      || Date.parse(attemptIntentAt!) < Date.parse(authorizedAt)
+    ))
+  ) {
+    throw new OperationClientError("invalid_operation_state", "The attachment rearm authorization is invalid.");
+  }
+  return Object.freeze({
+    schemaVersion: OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION,
+    authorizationId,
+    actionId,
+    previousTargetBindingDigest,
+    targetBindingDigest,
+    authorizationEvidenceDigest,
+    authorizedRevision,
+    authorizedAt,
+    ...(attemptIntentRevision === undefined ? {} : {
+      attemptIntentRevision,
+      attemptIntentAt: attemptIntentAt!,
+      preflightEvidenceDigest: preflightEvidenceDigest!
+    })
   });
 }
 
@@ -1180,7 +1283,8 @@ function forwardSubmitOptions(
 ): OperationSubmitOptions {
   return Object.freeze({
     signal,
-    ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt })
+    ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+    ...(options.confirmAttachmentRearm === undefined ? {} : { confirmAttachmentRearm: options.confirmAttachmentRearm })
   });
 }
 
@@ -1210,6 +1314,7 @@ function forwardRunOptions(options: OperationClientRunOptions, signal: AbortSign
   const forwarded: OperationSubmitOptions & CollectorOptions = {
     signal,
     ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+    ...(options.confirmAttachmentRearm === undefined ? {} : { confirmAttachmentRearm: options.confirmAttachmentRearm }),
     ...(options.wait === undefined ? {} : { wait: options.wait }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
@@ -1416,6 +1521,11 @@ function isDigest(value: string): boolean {
   return DIGEST_PATTERN.test(value);
 }
 
+function isCanonicalInstant(value: string): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
 function isOperationSurface(value: string): value is OperationHandleV1["surface"] {
   return value === "chat" || value === "work";
 }
@@ -1446,6 +1556,7 @@ function isAvailability(value: string): boolean {
 const MAX_SAFE_DATA_DEPTH = 24;
 const MAX_SAFE_DATA_NODES = 4096;
 const DIGEST_PATTERN = /^hmac-sha256:[0-9a-f]{64}$/u;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 function requiredObject(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {

@@ -360,9 +360,22 @@ function validateOperationHandleImpl(
     throw new OperationHandleError("operation_handle_state_mismatch", "Operation handle phase cannot precede the current durable phase.");
   }
   const current = operationHandleFromStateImpl(key, state);
+  const attachmentRearm = readData(stateRecord, "attachmentRearm");
+  let matchesPreRearmTarget = false;
+  if (attachmentRearm !== undefined && typeof attachmentRearm === "object" && attachmentRearm !== null) {
+    snapshotRecord(attachmentRearm, "operation attachment rearm", "invalid_operation_handle");
+    const authorizedRevision = readData(attachmentRearm, "authorizedRevision");
+    const previousTargetBindingDigest = readData(attachmentRearm, "previousTargetBindingDigest");
+    matchesPreRearmTarget = Number.isSafeInteger(authorizedRevision)
+      && (handleRevision as number) < (authorizedRevision as number)
+      && typeof previousTargetBindingDigest === "string"
+      && DIGEST_PATTERN.test(previousTargetBindingDigest)
+      && handleTargetBindingDigest === previousTargetBindingDigest;
+  }
   if (
     handleTargetBindingDigest !== current.targetBindingDigest
     && !(handleTargetBindingDigest === undefined && (handleRevision as number) < (stateRevision as number))
+    && !matchesPreRearmTarget
   ) {
     throw new OperationHandleError("operation_handle_target_mismatch", "Operation handle target binding does not match durable state.");
   }

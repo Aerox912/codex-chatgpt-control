@@ -158,6 +158,28 @@
         }
       ]
     },
+    "attachmentRearmAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "authorizationId",
+        "actionId",
+        "previousTargetBindingDigest",
+        "targetBindingDigest",
+        "authorizationEvidenceDigest",
+        "authorizedAt"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "chatgpt.browser_control.operation_attachment_rearm.v1" },
+        "authorizationId": { "$ref": "#/$defs/uuid" },
+        "actionId": { "$ref": "#/$defs/uuid" },
+        "previousTargetBindingDigest": { "$ref": "#/$defs/digest" },
+        "targetBindingDigest": { "$ref": "#/$defs/digest" },
+        "authorizationEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "authorizedAt": { "$ref": "#/$defs/instant" }
+      }
+    },
     "targetEstablishmentRead": {
       "type": "object",
       "additionalProperties": false,
@@ -657,6 +679,28 @@
           "properties": {
             "type": { "const": "target_established" },
             "establishment": { "$ref": "#/$defs/targetEstablishment" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "authorization", "target"],
+          "properties": {
+            "type": { "const": "attachment_rearm_authorized" },
+            "authorization": { "$ref": "#/$defs/attachmentRearmAuthorization" },
+            "target": { "$ref": "#/$defs/target" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "authorizationId", "actionId", "preflightEvidenceDigest", "intentAt"],
+          "properties": {
+            "type": { "const": "attachment_rearm_intent" },
+            "authorizationId": { "$ref": "#/$defs/uuid" },
+            "actionId": { "$ref": "#/$defs/uuid" },
+            "preflightEvidenceDigest": { "$ref": "#/$defs/digest" },
+            "intentAt": { "$ref": "#/$defs/instant" }
           }
         },
         {

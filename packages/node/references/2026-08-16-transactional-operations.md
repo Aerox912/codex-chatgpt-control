@@ -214,6 +214,26 @@ outcomes. The backend and Python facades convert this to the strict
 - `uncertain`: a handoff or Send may have crossed a non-repeatable boundary;
   observe/recover, do not resubmit.
 
+An indeterminate attachment handoff remains observation-only by default. If
+the user explicitly authorizes one retry, the in-process facade can rearm the
+same immutable operation once:
+
+```ts
+const retry = await chatgpt.operations.submit(request, {
+  confirmAttachmentRearm: true
+});
+```
+
+The durable `attachmentRearm` record binds the unresolved original
+`file_handoff` action, its prior target digest, one replacement target digest,
+and a separate one-use attempt intent. The runtime restages the replacement
+target and proves the exact attachment manifest absent before appending that
+intent. Only the invocation that directly committed the intent may call the
+provider handoff; commit-then-throw, concurrent, restarted, and repeated calls
+are observation-only. If exact attachments are already visible, the original
+handoff is receipted without spending the rearm attempt. The operation ID,
+request, file order, and requested Project/Chat target remain immutable.
+
 ### Collect and inspect
 
 Always carry forward the freshest returned handle. `inspect` reads the

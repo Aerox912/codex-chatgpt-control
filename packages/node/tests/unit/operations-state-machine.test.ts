@@ -3,6 +3,7 @@ import {
   OPERATION_ARTIFACT_RECEIPT_SCHEMA_VERSION,
   OPERATION_ARTIFACT_TRANSFER_INTENT_SCHEMA_VERSION,
   OPERATION_ARTIFACT_TRANSFER_RECEIPT_SCHEMA_VERSION,
+  OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION,
   OPERATION_OWNERSHIP_BASELINE_SCHEMA_VERSION,
   OPERATION_RECEIPT_SCHEMA_VERSION,
   OPERATION_SUBMISSION_WITNESS_SCHEMA_VERSION,
@@ -248,6 +249,79 @@ describe("operation state machine", () => {
       phase("uncertain", "submitted", "send_may_have_occurred", SEND_ID, EVIDENCE_DIGEST)
     ]));
     expect(recovered.phase).toBe("submitted");
+  });
+
+  it("authorizes one supervised attachment rearm while accepting a delayed original receipt", () => {
+    const replacement: OperationTargetBindingV1 = {
+      ...NEW_PENDING_TARGET,
+      tabId: "tab-replacement",
+      newTargetAnchorDigest: ACTION_DIGEST,
+      blankTaskEvidenceDigest: ACTION_DIGEST
+    };
+    const prefix = [
+      created(),
+      { type: "target_bound", target: NEW_PENDING_TARGET, observedAt: AT },
+      actionIntent(HANDOFF_ID, "file_handoff", "observe_only_after_intent"),
+      phase("prepared", "handoff_pending", "handoff_may_have_occurred", HANDOFF_ID),
+      phase("handoff_pending", "uncertain", "handoff_may_have_occurred", HANDOFF_ID),
+      {
+        type: "blocker_observed",
+        blocker: {
+          code: "ambiguous_file_handoff",
+          messageDigest: EVIDENCE_DIGEST,
+          recoverable: false,
+          observedAt: AT
+        }
+      },
+      {
+        type: "attachment_rearm_authorized",
+        authorization: {
+          schemaVersion: OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION,
+          authorizationId: STEER_ID,
+          actionId: HANDOFF_ID,
+          previousTargetBindingDigest: EVIDENCE_DIGEST,
+          targetBindingDigest: ACTION_DIGEST,
+          authorizationEvidenceDigest: EVIDENCE_DIGEST,
+          authorizedAt: AT
+        },
+        target: replacement
+      }
+    ] satisfies OperationEventV1[];
+
+    const authorized = reduceOperationEvents(prefix);
+    expect(authorized.target?.tabId).toBe("tab-replacement");
+    expect(authorized.attachmentRearm).toMatchObject({
+      authorizationId: STEER_ID,
+      actionId: HANDOFF_ID,
+      authorizedRevision: 7
+    });
+
+    const delayedOriginal = reduceOperationEvents([
+      ...prefix,
+      actionReceipt(HANDOFF_ID, "satisfied", EVIDENCE_DIGEST),
+      phase("uncertain", "ready", "handoff_may_have_occurred", HANDOFF_ID, EVIDENCE_DIGEST)
+    ]);
+    expect(delayedOriginal.phase).toBe("ready");
+    expect(delayedOriginal.attachmentRearm?.attemptIntentRevision).toBeUndefined();
+
+    expect(() => reduceOperationEvents([...prefix, prefix.at(-1)!])).toThrow(/only once/);
+    expect(() => reduceOperationEvents([
+      ...prefix,
+      {
+        type: "attachment_rearm_intent",
+        authorizationId: STEER_ID,
+        actionId: HANDOFF_ID,
+        preflightEvidenceDigest: EVIDENCE_DIGEST,
+        intentAt: AT
+      },
+      {
+        type: "attachment_rearm_intent",
+        authorizationId: STEER_ID,
+        actionId: HANDOFF_ID,
+        preflightEvidenceDigest: EVIDENCE_DIGEST,
+        intentAt: AT
+      }
+    ])).toThrow(/one unused authorization/);
   });
 
   it("raises the mutation boundary as soon as a non-repeatable intent is durable", () => {

@@ -1861,6 +1861,142 @@ describe("durable operation service", () => {
     expect(state.lastBlocker?.code).toBe("ambiguous_submit");
   });
 
+  it("requires explicit confirmation and executes one supervised attachment rearm on a replacement target", async () => {
+    const journal = await openJournal("attachment-rearm");
+    const service = new OperationService(journal, { now: () => Date.parse(AT) });
+    const operationRequest = attachmentRequest(OPERATION_ID);
+    let originalAttempts = 0;
+    const originalAdapter = makeAdapter({
+      resolveTarget: async () => ({ target: newPendingTarget() }),
+      submission: {
+        observeAttachments: async () => absentAttachmentObservation(),
+        executeFileHandoffOnce: async () => {
+          originalAttempts += 1;
+          return { status: "uncertain", quarantine: "caller" };
+        }
+      }
+    });
+
+    const first = await service.submit(operationRequest, ATTACHMENT_MANIFEST, originalAdapter);
+    expect(first.submission).toMatchObject({
+      kind: "uncertain",
+      blocker: { code: "ambiguous_file_handoff" }
+    });
+    expect(originalAttempts).toBe(1);
+
+    let uploaded = false;
+    let rearmAttempts = 0;
+    const replacement = replacementPendingTarget();
+    const retryAdapter = makeAdapter({
+      resolveTarget: async () => ({ target: replacement }),
+      staging: exactStagingAdapter(),
+      submission: {
+        observeAttachments: async request => uploaded
+          ? exactAttachmentObservation(request.manifest.identities.map(identity => identity.identityDigest))
+          : absentAttachmentObservation(),
+        executeFileHandoffOnce: async () => {
+          rearmAttempts += 1;
+          uploaded = true;
+          return { status: "satisfied", evidenceDigest: digest("h") };
+        }
+      },
+      executeFinalTabTransaction: async request => ({
+        status: "submitted",
+        targetBindingDigest: request.expected.targetBindingDigest,
+        evidenceDigest: digest("s"),
+        userTurnId: "user-rearmed",
+        userTurnEvidenceDigest: digest("u"),
+        postSendDeltaDigest: digest("d"),
+        targetEstablishment: {
+          targetBindingDigest: request.expected.targetBindingDigest,
+          anchorDigest: replacement.newTargetAnchorDigest!,
+          causalSendActionId: request.actionId,
+          conversationId: "conversation-rearmed",
+          canonicalThreadUrl: "https://chatgpt.com/c/conversation-rearmed",
+          userTurnId: "user-rearmed",
+          userTurnEvidenceDigest: digest("u"),
+          postSendDeltaDigest: digest("d"),
+          evidenceDigest: digest("e")
+        }
+      })
+    });
+
+    const unconfirmed = await service.submit(operationRequest, ATTACHMENT_MANIFEST, retryAdapter);
+    expect(unconfirmed.submission).toMatchObject({
+      kind: "uncertain",
+      blocker: { code: "target_binding_mismatch" }
+    });
+    expect(rearmAttempts).toBe(0);
+    expect((await service.inspect(unconfirmed.handle)).state.attachmentRearm).toBeUndefined();
+
+    const retried = await service.submit(
+      operationRequest,
+      ATTACHMENT_MANIFEST,
+      retryAdapter,
+      { confirmAttachmentRearm: true }
+    );
+    expect(retried.submission.kind).toBe("submitted");
+    expect(rearmAttempts).toBe(1);
+    const state = (await service.inspect(retried.handle)).state;
+    expect(state.attachmentRearm).toMatchObject({
+      actionId: Object.values(state.actions).find(action => action.kind === "file_handoff")?.actionId,
+      attemptIntentRevision: expect.any(Number)
+    });
+    expect(Object.values(state.actions).filter(action => action.kind === "file_handoff")).toHaveLength(1);
+    expect(Object.values(state.actions).find(action => action.kind === "file_handoff")?.outcome).toBe("satisfied");
+    const inspectedFromPreRearmHandle = await service.inspect(first.handle);
+    expect(inspectedFromPreRearmHandle.handle.targetBindingDigest).toBe(retried.handle.targetBindingDigest);
+    expect(inspectedFromPreRearmHandle.state.target?.tabId).toBe("tab-replacement");
+
+    await service.submit(operationRequest, ATTACHMENT_MANIFEST, retryAdapter, { confirmAttachmentRearm: true });
+    expect(rearmAttempts).toBe(1);
+  });
+
+  it("does not execute attachment rearm when its durable attempt intent committed before append threw", async () => {
+    const journal = await openJournal("attachment-rearm-commit-throw");
+    const service = new OperationService(journal, { now: () => Date.parse(AT) });
+    const operationRequest = attachmentRequest(OPERATION_ID);
+    await service.submit(operationRequest, ATTACHMENT_MANIFEST, makeAdapter({
+      resolveTarget: async () => ({ target: newPendingTarget() }),
+      submission: {
+        observeAttachments: async () => absentAttachmentObservation(),
+        executeFileHandoffOnce: async () => ({ status: "uncertain", quarantine: "caller" })
+      }
+    }));
+
+    const append = journal.append.bind(journal);
+    let injected = false;
+    vi.spyOn(journal, "append").mockImplementation(async (operationId, expectedRevision, event) => {
+      const result = await append(operationId, expectedRevision, event);
+      if (!injected && event.type === "attachment_rearm_intent") {
+        injected = true;
+        throw new Error("commit then throw");
+      }
+      return result;
+    });
+
+    let rearmAttempts = 0;
+    const retryAdapter = makeAdapter({
+      resolveTarget: async () => ({ target: replacementPendingTarget() }),
+      staging: exactStagingAdapter(),
+      submission: {
+        observeAttachments: async () => absentAttachmentObservation(),
+        executeFileHandoffOnce: async () => {
+          rearmAttempts += 1;
+          return { status: "satisfied", evidenceDigest: digest("h") };
+        }
+      }
+    });
+
+    const first = await service.submit(operationRequest, ATTACHMENT_MANIFEST, retryAdapter, { confirmAttachmentRearm: true });
+    expect(first.submission).toMatchObject({ kind: "uncertain", blocker: { code: "ambiguous_file_handoff" } });
+    expect(rearmAttempts).toBe(0);
+    expect((await service.inspect(first.handle)).state.attachmentRearm?.attemptIntentRevision).toEqual(expect.any(Number));
+
+    await service.submit(operationRequest, ATTACHMENT_MANIFEST, retryAdapter, { confirmAttachmentRearm: true });
+    expect(rearmAttempts).toBe(0);
+  });
+
   it("does not persist raw request or response material", async () => {
     const journal = await openJournal("privacy");
     const service = new OperationService(journal, { now: () => Date.parse(AT) });
@@ -1888,6 +2024,19 @@ function request(operationId: string) {
     surface: "chat" as const,
     prompt: "private prompt",
     target: { type: "new" as const }
+  };
+}
+
+const ATTACHMENT_MANIFEST = [{
+  displayName: "handoff.md",
+  bytes: 4,
+  contentSha256: "a".repeat(64)
+}] as const;
+
+function attachmentRequest(operationId: string) {
+  return {
+    ...request(operationId),
+    files: [{ path: "operation-input-0", displayName: "handoff.md" }]
   };
 }
 
@@ -2669,6 +2818,49 @@ function newPendingTarget(): OperationTargetBindingV1 {
     targetLifecycle: "new_pending",
     newTargetAnchorDigest: digest("a"),
     blankTaskEvidenceDigest: digest("b")
+  };
+}
+
+function replacementPendingTarget(): OperationTargetBindingV1 {
+  return {
+    ...newPendingTarget(),
+    tabId: "tab-replacement",
+    newTargetAnchorDigest: digest("c"),
+    blankTaskEvidenceDigest: digest("d")
+  };
+}
+
+function absentAttachmentObservation(): SubmissionAttachmentObservation {
+  return {
+    status: "absent",
+    evidenceDigest: digest("a"),
+    count: 0,
+    orderPolicy: "exact",
+    identityDigests: []
+  };
+}
+
+function exactAttachmentObservation(identityDigests: string[]): SubmissionAttachmentObservation {
+  return {
+    status: "exact",
+    evidenceDigest: digest("x"),
+    count: identityDigests.length,
+    orderPolicy: "exact",
+    identityDigests
+  };
+}
+
+function exactStagingAdapter(): NonNullable<OperationBrowserAdapter["staging"]> {
+  const exact = async (stage: Parameters<NonNullable<OperationBrowserAdapter["staging"]>["readCurrent"]>[0]) => ({
+    status: "satisfied" as const,
+    desiredStateDigest: stage.desiredStateDigest,
+    currentStateDigest: stage.desiredStateDigest,
+    evidenceDigest: digest("g")
+  });
+  return {
+    readCurrent: exact,
+    mutateOnce: vi.fn(async () => ({ status: "started" as const })),
+    observe: exact
   };
 }
 

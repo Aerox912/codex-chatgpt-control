@@ -17,6 +17,7 @@ import {
   type CollectorOptions
 } from "./collector.js";
 import {
+  preflightAttachmentRearm,
   runAtomicSubmission,
   type SubmissionAttachmentObservation,
   type SubmissionAttachmentRequest,
@@ -100,6 +101,7 @@ import {
   OPERATION_OWNERSHIP_BASELINE_SCHEMA_VERSION,
   OPERATION_ARTIFACT_TRANSFER_INTENT_SCHEMA_VERSION,
   OPERATION_ARTIFACT_TRANSFER_RECEIPT_SCHEMA_VERSION,
+  OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION,
   OPERATION_SUBMISSION_WITNESS_SCHEMA_VERSION,
   type MutationBoundary,
   type OperationActionKind,
@@ -340,6 +342,11 @@ export type OperationServiceOptions = Readonly<{
 export type OperationSubmitOptions = Readonly<{
   signal?: AbortSignal;
   deadlineAt?: number;
+  /**
+   * Explicit user-confirmed authority for one supervised retry of an
+   * indeterminate attachment handoff. Omit for every ordinary submit/retry.
+   */
+  confirmAttachmentRearm?: true;
   /** An independently computed digest may be supplied, but is always checked. */
   requestDigest?: string;
 }>;
@@ -456,6 +463,9 @@ export class OperationService {
     const signal = options.signal ?? new AbortController().signal;
     if (!isAbortSignal(signal)) throw new OperationServiceError("invalid_signal", "Submission signal must be an AbortSignal.");
     if (signal.aborted) throw new OperationServiceError("operation_cancelled", "The operation was cancelled before submission.");
+    if (options.confirmAttachmentRearm !== undefined && options.confirmAttachmentRearm !== true) {
+      throw new OperationServiceError("invalid_attachment_rearm_confirmation", "Attachment rearm confirmation must be the literal value true.");
+    }
 
     let loaded = await this.ensureCreated(request, requestDigest);
     if (loaded.state.phase === "completed" && loaded.state.receipt !== undefined) {
@@ -463,6 +473,9 @@ export class OperationService {
         handle: this.journal.handleFromState(loaded.state),
         submission: submissionFromCompleted(loaded.state)
       };
+    }
+    if (options.confirmAttachmentRearm === true) {
+      return await this.submitWithAttachmentRearm(request, files, adapter, options, requestDigest, signal, loaded);
     }
 
     let resolution: Awaited<ReturnType<OperationService["resolveAndBindTarget"]>>;
@@ -538,6 +551,260 @@ export class OperationService {
     await this.persistReturnedSubmissionBlocker(submission);
     const fresh = await this.journal.load(request.operationId, requestDigest);
     return { handle: this.journal.handleFromState(fresh.state), submission };
+  }
+
+  private async submitWithAttachmentRearm(
+    request: OperationSubmitRequestV1,
+    files: readonly import("./file-identity.js").OperationFileManifestEntryV1[],
+    adapter: OperationBrowserAdapter,
+    options: OperationSubmitOptions,
+    requestDigest: string,
+    signal: AbortSignal,
+    initial: LoadedOperationJournalV1
+  ): Promise<OperationSubmitResult> {
+    if (files.length === 0 || adapter.staging === undefined) {
+      throw new OperationServiceError("attachment_rearm_unavailable", "Attachment rearm requires files and a complete staging adapter.");
+    }
+    let authorization: Awaited<ReturnType<OperationService["authorizeAttachmentRearm"]>>;
+    try {
+      authorization = await this.authorizeAttachmentRearm(request, requestDigest, adapter, signal, initial);
+    } catch (error) {
+      const current = await this.journal.load(request.operationId, requestDigest);
+      const handle = this.journal.handleFromState(current.state);
+      const submission = submissionFromTargetResolutionFailure(current.state, handle, error, signal);
+      await this.persistReturnedSubmissionBlocker(submission);
+      const fresh = await this.journal.load(request.operationId, requestDigest);
+      return { handle: this.journal.handleFromState(fresh.state), submission };
+    }
+
+    let loaded = authorization.loaded;
+    if (loaded.state.attachmentRearm?.attemptIntentRevision === undefined) {
+      const staging = await this.stageRequest(
+        request,
+        requestDigest,
+        authorization.targetBindingDigest,
+        adapter.staging,
+        signal,
+        options.deadlineAt
+      );
+      if (staging !== undefined) {
+        await this.persistReturnedSubmissionBlocker(staging);
+        const fresh = await this.journal.load(request.operationId, requestDigest);
+        return { handle: this.journal.handleFromState(fresh.state), submission: staging };
+      }
+      loaded = await this.journal.load(request.operationId, requestDigest);
+    }
+
+    const attachmentManifest = files.map((file, ordinal) => ({
+      identityDigest: this.journal.evidenceDigest("file-manifest", { ordinal, ...file }),
+      ordinal
+    }));
+    const expected: SubmissionExpectedEnvelope = {
+      surface: request.surface,
+      targetBindingDigest: authorization.targetBindingDigest,
+      configurationReceiptDigest: authorization.configurationReceiptDigest,
+      composerReceiptDigest: authorization.composerReceiptDigest,
+      attachmentManifest: {
+        count: attachmentManifest.length,
+        orderPolicy: "exact",
+        identities: attachmentManifest
+      }
+    };
+    const handoff = uniqueAction(loaded.state, "file_handoff");
+    if (handoff === undefined) {
+      throw new OperationServiceError("attachment_rearm_unavailable", "Attachment rearm requires one unresolved handoff intent.");
+    }
+    const operationFor = (state: OperationStateV1): SubmissionOperationSnapshot => ({
+      state,
+      handle: this.journal.handleFromState(state),
+      actionIds: {
+        sendActionId: uniqueAction(state, "send")?.actionId ?? randomUUID(),
+        fileHandoffActionId: handoff.actionId
+      }
+    });
+    const ports = this.submissionPorts(adapter.submission);
+    let authorizedAttachmentRearmId: string | undefined;
+    if (loaded.state.attachmentRearm?.attemptIntentRevision === undefined) {
+      const preflight = await preflightAttachmentRearm(
+        operationFor(loaded.state),
+        expected,
+        ports,
+        { signal, ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }) }
+      );
+      if (preflight.kind === "result") {
+        await this.persistReturnedSubmissionBlocker(preflight.result);
+        const fresh = await this.journal.load(request.operationId, requestDigest);
+        return { handle: this.journal.handleFromState(fresh.state), submission: preflight.result };
+      }
+      if (preflight.kind === "absent") {
+        const intent = await this.appendAttachmentRearmIntent(
+          loaded,
+          preflight.evidenceDigest
+        );
+        loaded = intent.loaded;
+        if (intent.executeAllowed) authorizedAttachmentRearmId = authorization.authorizationId;
+      }
+    }
+
+    const submission = await runAtomicSubmission(
+      operationFor(loaded.state),
+      expected,
+      ports,
+      {
+        signal,
+        ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+        ...(authorizedAttachmentRearmId === undefined ? {} : { authorizedAttachmentRearmId })
+      }
+    );
+    await this.persistReturnedSubmissionBlocker(submission);
+    const fresh = await this.journal.load(request.operationId, requestDigest);
+    return { handle: this.journal.handleFromState(fresh.state), submission };
+  }
+
+  private async authorizeAttachmentRearm(
+    request: OperationSubmitRequestV1,
+    requestDigest: string,
+    adapter: OperationBrowserAdapter,
+    signal: AbortSignal,
+    initial: LoadedOperationJournalV1
+  ): Promise<{
+    loaded: LoadedOperationJournalV1;
+    authorizationId: string;
+    targetBindingDigest: string;
+    configurationReceiptDigest: string;
+    composerReceiptDigest: string;
+  }> {
+    const handoff = uniqueAction(initial.state, "file_handoff");
+    if (
+      initial.state.phase !== "uncertain"
+      || initial.state.mutationBoundary !== "handoff_may_have_occurred"
+      || initial.state.target?.targetLifecycle !== "new_pending"
+      || handoff === undefined
+      || handoff.outcome !== undefined
+      || uniqueAction(initial.state, "send") !== undefined
+    ) {
+      throw new OperationServiceError("attachment_rearm_unavailable", "Operation is not eligible for supervised attachment rearm.");
+    }
+
+    let resolution: OperationTargetResolution;
+    try {
+      resolution = await adapter.resolveTarget({
+        operationId: request.operationId,
+        requestDigest,
+        surface: request.surface,
+        target: request.target,
+        signal
+      });
+    } catch (error) {
+      throw error;
+    }
+    validateTargetResolution(resolution);
+    const configurationReceiptDigest = this.journal.evidenceDigest("configuration-request", requestDigest);
+    const composerReceiptDigest = this.journal.evidenceDigest("composer-request", requestDigest);
+    if (
+      resolution.configurationReceiptDigest !== undefined
+      && resolution.configurationReceiptDigest !== configurationReceiptDigest
+      || resolution.composerReceiptDigest !== undefined
+      && resolution.composerReceiptDigest !== composerReceiptDigest
+      || resolution.target.configurationReceiptDigest !== undefined
+      && resolution.target.configurationReceiptDigest !== configurationReceiptDigest
+    ) {
+      throw new OperationServiceError("configuration_drift", "Attachment rearm target does not match the immutable staging request.");
+    }
+    const target: OperationTargetBindingV1 = {
+      ...resolution.target,
+      configurationReceiptDigest
+    };
+
+    if (initial.state.attachmentRearm !== undefined) {
+      if (canonicalJson(initial.state.target) !== canonicalJson(target)) {
+        throw new OperationServiceError("target_binding_mismatch", "Attachment rearm target is already bound to a different exact tab.");
+      }
+      return {
+        loaded: initial,
+        authorizationId: initial.state.attachmentRearm.authorizationId,
+        targetBindingDigest: initial.state.attachmentRearm.targetBindingDigest,
+        configurationReceiptDigest,
+        composerReceiptDigest
+      };
+    }
+
+    const previousTargetBindingDigest = this.targetBindingDigest(initial.state);
+    const provisional = { ...initial.state, target };
+    const targetBindingDigest = this.journal.handleFromState(provisional).targetBindingDigest;
+    if (targetBindingDigest === undefined) {
+      throw new OperationServiceError("target_binding_missing", "Attachment rearm target binding is unavailable.");
+    }
+    const authorizationId = randomUUID();
+    const authorizedAt = this.timestamp(initial.state.updatedAt);
+    const event: Extract<OperationEventV1, { type: "attachment_rearm_authorized" }> = {
+      type: "attachment_rearm_authorized",
+      authorization: {
+        schemaVersion: OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION,
+        authorizationId,
+        actionId: handoff.actionId,
+        previousTargetBindingDigest,
+        targetBindingDigest,
+        authorizationEvidenceDigest: this.journal.evidenceDigest("attachment-rearm-authorization", {
+          operationId: request.operationId,
+          requestDigest,
+          actionId: handoff.actionId,
+          previousTargetBindingDigest,
+          targetBindingDigest
+        }),
+        authorizedAt
+      },
+      target
+    };
+    let loaded: LoadedOperationJournalV1;
+    try {
+      loaded = await this.journal.append(request.operationId, initial.state.revision, event);
+    } catch (error) {
+      const observed = await this.journal.load(request.operationId, requestDigest);
+      if (
+        observed.state.attachmentRearm?.authorizationId !== authorizationId
+        || canonicalJson(observed.state.target) !== canonicalJson(target)
+      ) {
+        throw this.serviceError(error, "journal_unavailable");
+      }
+      loaded = observed;
+    }
+    return { loaded, authorizationId, targetBindingDigest, configurationReceiptDigest, composerReceiptDigest };
+  }
+
+  private async appendAttachmentRearmIntent(
+    loaded: LoadedOperationJournalV1,
+    preflightEvidenceDigest: string
+  ): Promise<{ loaded: LoadedOperationJournalV1; executeAllowed: boolean }> {
+    const rearm = loaded.state.attachmentRearm;
+    if (rearm === undefined || !DIGEST_PATTERN.test(preflightEvidenceDigest)) {
+      throw new OperationServiceError("attachment_rearm_unavailable", "Attachment rearm authorization or preflight evidence is unavailable.");
+    }
+    if (rearm.attemptIntentRevision !== undefined) return { loaded, executeAllowed: false };
+    const event: Extract<OperationEventV1, { type: "attachment_rearm_intent" }> = {
+      type: "attachment_rearm_intent",
+      authorizationId: rearm.authorizationId,
+      actionId: rearm.actionId,
+      preflightEvidenceDigest,
+      intentAt: this.timestamp(loaded.state.updatedAt)
+    };
+    try {
+      return {
+        loaded: await this.journal.append(loaded.state.operationId, loaded.state.revision, event),
+        executeAllowed: true
+      };
+    } catch (error) {
+      const observed = await this.journal.load(loaded.state.operationId, loaded.state.requestDigest);
+      const durable = observed.state.attachmentRearm;
+      if (
+        durable?.authorizationId === rearm.authorizationId
+        && durable.actionId === rearm.actionId
+        && durable.attemptIntentRevision !== undefined
+      ) {
+        return { loaded: observed, executeAllowed: false };
+      }
+      throw this.serviceError(error, "journal_unavailable");
+    }
   }
 
   /**

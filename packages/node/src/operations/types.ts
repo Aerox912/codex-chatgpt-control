@@ -18,6 +18,8 @@ export const OPERATION_OWNERSHIP_BASELINE_SCHEMA_VERSION = "chatgpt.browser_cont
 /** Durable transfer records reuse the provider-agnostic artifact-transfer protocol exactly. */
 export const OPERATION_ARTIFACT_TRANSFER_INTENT_SCHEMA_VERSION = "chatgpt.browser_control.artifact_transfer_intent.v1" as const;
 export const OPERATION_ARTIFACT_TRANSFER_RECEIPT_SCHEMA_VERSION = "chatgpt.browser_control.artifact_transfer_receipt.v1" as const;
+/** Explicit, one-use authority to recover an indeterminate attachment handoff. */
+export const OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION = "chatgpt.browser_control.operation_attachment_rearm.v1" as const;
 
 import type {
   ArtifactTransferDurableState,
@@ -349,6 +351,29 @@ export type OperationTargetBindingV1 = {
   targetEstablishment?: OperationTargetEstablishmentV1;
 };
 
+/**
+ * Durable authority for one supervised attachment-handoff recovery.
+ *
+ * Authorization may safely precede reversible restaging. `attemptIntentAt`
+ * is added only after the replacement target is exact, the composer is
+ * staged, and a read-only observation proves that no requested attachment is
+ * present. Once that intent exists, no later invocation may repeat the file
+ * handoff, regardless of whether a provider acknowledgement was observed.
+ */
+export type OperationAttachmentRearmV1 = {
+  schemaVersion: typeof OPERATION_ATTACHMENT_REARM_SCHEMA_VERSION;
+  authorizationId: string;
+  actionId: string;
+  previousTargetBindingDigest: string;
+  targetBindingDigest: string;
+  authorizationEvidenceDigest: string;
+  authorizedRevision: number;
+  authorizedAt: string;
+  attemptIntentRevision?: number;
+  attemptIntentAt?: string;
+  preflightEvidenceDigest?: string;
+};
+
 export type OperationActionIntentV1 = {
   actionId: string;
   kind: OperationActionKind;
@@ -429,6 +454,8 @@ export type OperationStateV1 = {
   /** Legacy projection retained for reads of pre-policy state. */
   responseFormat?: OperationResponseFormatV1;
   target?: OperationTargetBindingV1;
+  /** At most one explicit supervised attachment recovery may be authorized. */
+  attachmentRearm?: OperationAttachmentRearmV1;
   actions: Record<string, OperationActionRecordV1>;
   /** Present only after the complete pre-Send baseline was durably appended. */
   ownershipBaseline?: OperationOwnershipBaselineV1;
@@ -472,6 +499,20 @@ export type OperationTargetBoundEventV1 = {
 export type OperationTargetEstablishedEventV1 = {
   type: "target_established";
   establishment: OperationTargetEstablishmentV1;
+};
+
+export type OperationAttachmentRearmAuthorizedEventV1 = {
+  type: "attachment_rearm_authorized";
+  authorization: Omit<OperationAttachmentRearmV1, "authorizedRevision" | "attemptIntentRevision" | "attemptIntentAt" | "preflightEvidenceDigest">;
+  target: OperationTargetBindingV1;
+};
+
+export type OperationAttachmentRearmIntentEventV1 = {
+  type: "attachment_rearm_intent";
+  authorizationId: string;
+  actionId: string;
+  preflightEvidenceDigest: string;
+  intentAt: string;
 };
 
 export type OperationOwnershipBaselineEventV1 = {
@@ -552,6 +593,8 @@ export type OperationEventV1 =
   | OperationCreatedEventV1
   | OperationTargetBoundEventV1
   | OperationTargetEstablishedEventV1
+  | OperationAttachmentRearmAuthorizedEventV1
+  | OperationAttachmentRearmIntentEventV1
   | OperationOwnershipBaselineEventV1
   | OperationSubmissionWitnessEventV1
   | OperationActionIntentEventV1

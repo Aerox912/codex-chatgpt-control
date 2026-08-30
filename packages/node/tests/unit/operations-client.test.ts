@@ -425,6 +425,92 @@ describe("OperationClient", () => {
     expect(adapters[1]).toBe(adapters[0]);
   });
 
+  it("bypasses a cached dead tab for first confirmed rearm and reattaches only to the authorized replacement on replay", async () => {
+    const baseService = fakeService();
+    const replacementDigest = `hmac-sha256:${"8".repeat(64)}`;
+    const preparedHandle = operationHandle({
+      revision: 3,
+      phase: "prepared",
+      mutationBoundary: "none"
+    });
+    const ambiguousHandle = operationHandle({
+      revision: 11,
+      phase: "uncertain",
+      mutationBoundary: "handoff_may_have_occurred"
+    });
+    const rearmedHandle = operationHandle({
+      revision: 12,
+      phase: "uncertain",
+      mutationBoundary: "handoff_may_have_occurred",
+      targetBindingDigest: replacementDigest
+    });
+    const originalTarget = durablePendingTarget("tab-original");
+    const replacementTarget = {
+      ...originalTarget,
+      tabId: "tab-replacement",
+      newTargetAnchorDigest: `hmac-sha256:${"b".repeat(64)}`,
+      blankTaskEvidenceDigest: `hmac-sha256:${"c".repeat(64)}`
+    } satisfies OperationTargetBindingV1;
+    const rearm = {
+      schemaVersion: "chatgpt.browser_control.operation_attachment_rearm.v1",
+      authorizationId: "44444444-4444-4444-8444-444444444444",
+      actionId: "55555555-5555-4555-8555-555555555555",
+      previousTargetBindingDigest: TARGET_DIGEST,
+      targetBindingDigest: replacementDigest,
+      authorizationEvidenceDigest: `hmac-sha256:${"d".repeat(64)}`,
+      authorizedRevision: 12,
+      authorizedAt: "2026-08-31T00:00:00.000Z"
+    } as const;
+    const preparedStates = [
+      { handle: preparedHandle, state: durableState(preparedHandle, originalTarget) },
+      { handle: ambiguousHandle, state: durableState(ambiguousHandle, originalTarget) },
+      {
+        handle: rearmedHandle,
+        state: { ...durableState(rearmedHandle, replacementTarget), attachmentRearm: rearm }
+      }
+    ];
+    const prepare = vi.fn(async () => preparedStates.shift()!);
+    const submittedAdapters: OperationBrowserAdapter[] = [];
+    const submittedOptions: unknown[] = [];
+    const submitResults = [
+      submitResultForHandle(ambiguousHandle),
+      submitResultForHandle(rearmedHandle),
+      submitResultForHandle(rearmedHandle)
+    ];
+    const submit = vi.fn(async (...args: Parameters<OperationServicePort["submit"]>) => {
+      submittedAdapters.push(args[2]);
+      submittedOptions.push(args[3]);
+      return submitResults.shift() as never;
+    });
+    const originalAdapter = makeAdapter();
+    const freshAdapter = makeAdapter();
+    const reboundAdapter = makeAdapter();
+    const adapterFactory = vi.fn(async () => freshAdapter);
+    const recoveryFactory = vi.fn(async context => context.target.tabId === "tab-original"
+      ? originalAdapter
+      : reboundAdapter);
+    const service = Object.assign(baseService, { prepare, submit }) as unknown as OperationServicePort;
+    const client = new OperationClient(service, makeAdapter(), {
+      adapterFactory,
+      submitRecoveryAdapterFactory: recoveryFactory
+    });
+    const request = submitRequest({ target: { type: "new" } });
+
+    await client.submit(request);
+    await client.submit(request, { confirmAttachmentRearm: true });
+    await client.submit(request, { confirmAttachmentRearm: true });
+
+    expect(new Set(submittedAdapters).size).toBe(3);
+    for (const adapter of submittedAdapters) await adapter.resolveTarget({} as never);
+    expect(originalAdapter.resolveTarget).toHaveBeenCalledTimes(1);
+    expect(freshAdapter.resolveTarget).toHaveBeenCalledTimes(1);
+    expect(reboundAdapter.resolveTarget).toHaveBeenCalledTimes(1);
+    expect(adapterFactory).toHaveBeenCalledTimes(1);
+    expect(recoveryFactory).toHaveBeenCalledTimes(2);
+    expect(submittedOptions[1]).toMatchObject({ confirmAttachmentRearm: true });
+    expect(submittedOptions[2]).toMatchObject({ confirmAttachmentRearm: true });
+  });
+
   it("reconstructs an exact pending target for same-request submit recovery", async () => {
     const baseService = fakeService();
     const handle = operationHandle({
@@ -481,6 +567,68 @@ describe("OperationClient", () => {
     expect(submittedAdapter).toBeDefined();
     await submittedAdapter!.resolveTarget({} as never);
     expect(recoveredAdapter.resolveTarget).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a pre-rearm handle only across its authenticated one-time target replacement", async () => {
+    const oldHandle = operationHandle({
+      revision: 11,
+      phase: "uncertain",
+      mutationBoundary: "handoff_may_have_occurred"
+    });
+    const replacementDigest = `hmac-sha256:${"8".repeat(64)}`;
+    const freshHandle = operationHandle({
+      revision: 20,
+      phase: "submitted",
+      mutationBoundary: "send_may_have_occurred",
+      targetBindingDigest: replacementDigest
+    });
+    const anchorDigest = `hmac-sha256:${"9".repeat(64)}`;
+    const replacementTarget = durableTarget({
+      tabId: "tab-replacement",
+      targetLifecycle: "new_established",
+      newTargetAnchorDigest: anchorDigest,
+      blankTaskEvidenceDigest: `hmac-sha256:${"a".repeat(64)}`,
+      targetEstablishment: {
+        targetBindingDigest: replacementDigest,
+        anchorDigest,
+        causalSendActionId: "66666666-6666-4666-8666-666666666666",
+        conversationId: "conversation-1",
+        canonicalThreadUrl: "https://chatgpt.com/c/conversation-1",
+        userTurnId: "user-1",
+        userTurnEvidenceDigest: `hmac-sha256:${"b".repeat(64)}`,
+        postSendDeltaDigest: `hmac-sha256:${"c".repeat(64)}`,
+        evidenceDigest: `hmac-sha256:${"d".repeat(64)}`,
+        observedAt: "2026-08-31T00:00:01.000Z"
+      }
+    });
+    const state = {
+      ...durableState(freshHandle, replacementTarget),
+      attachmentRearm: {
+        schemaVersion: "chatgpt.browser_control.operation_attachment_rearm.v1",
+        authorizationId: "44444444-4444-4444-8444-444444444444",
+        actionId: "55555555-5555-4555-8555-555555555555",
+        previousTargetBindingDigest: TARGET_DIGEST,
+        targetBindingDigest: replacementDigest,
+        authorizationEvidenceDigest: `hmac-sha256:${"d".repeat(64)}`,
+        authorizedRevision: 12,
+        authorizedAt: "2026-08-31T00:00:00.000Z"
+      }
+    };
+    const baseService = fakeService();
+    const inspect = vi.fn(async () => ({ handle: freshHandle, state }));
+    const service = Object.assign(baseService, { inspect }) as unknown as OperationServicePort;
+    const handleFactory = vi.fn(async context => {
+      expect(context.handle).toEqual(freshHandle);
+      expect(context.target.tabId).toBe("tab-replacement");
+      expect(context.state.attachmentRearm?.previousTargetBindingDigest).toBe(TARGET_DIGEST);
+      return makeAdapter();
+    });
+    const client = new OperationClient(service, makeAdapter(), { handleAdapterFactory: handleFactory });
+
+    await client.collect(oldHandle);
+
+    expect(inspect).toHaveBeenCalledWith(oldHandle);
+    expect(handleFactory).toHaveBeenCalledTimes(1);
   });
 
   it("promotes a handle on access before evicting the least recently used adapter", async () => {
@@ -1103,6 +1251,29 @@ function durableTarget(overrides: Partial<OperationTargetBindingV1> = {}): Opera
       replacementTabRecovery: false
     },
     ...overrides
+  };
+}
+
+function durablePendingTarget(tabId: string): OperationTargetBindingV1 {
+  const {
+    canonicalThreadUrl: _canonicalThreadUrl,
+    conversationId: _conversationId,
+    ...base
+  } = durableTarget();
+  return {
+    ...base,
+    tabId,
+    targetLifecycle: "new_pending",
+    newTargetAnchorDigest: `hmac-sha256:${"9".repeat(64)}`,
+    blankTaskEvidenceDigest: `hmac-sha256:${"a".repeat(64)}`,
+    evidenceProfile: {
+      providerIdentity: "required",
+      stableTabId: "required",
+      stableConversationId: "unavailable",
+      stableUserTurnId: "unavailable",
+      authoritativeTabClaim: "unavailable",
+      replacementTabRecovery: false
+    }
   };
 }
 
