@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FileChooserLike, LocatorLike, PageLike } from "../../src/types.js";
 import {
   createChatGPTAttachmentProvider,
+  inspectChatGPTComposer,
   type ChatGPTAttachmentProviderOptions
 } from "../../src/operations/production-chatgpt-attachments.js";
 import type { OperationFileIdentity } from "../../src/operations/file-identity.js";
@@ -301,6 +302,167 @@ function providerFor(
   });
   return { provider, evidenceMaterials };
 }
+
+type ComposerChild = ComposerElement | ComposerText;
+
+class ComposerElement {
+  readonly nodeType = 1;
+  readonly nodeValue = null;
+  readonly tagName: string;
+  parentNode: ComposerElement | ComposerDocument | null = null;
+  firstChild: ComposerChild | null = null;
+  lastChild: ComposerChild | null = null;
+  nextSibling: ComposerChild | null = null;
+  previousSibling: ComposerChild | null = null;
+  disabled = false;
+  value = "";
+  files: Readonly<{ length: number; item: (index: number) => null }> | undefined;
+
+  constructor(tagName: string, private readonly attributes: Record<string, string> = {}) {
+    this.tagName = tagName.toUpperCase();
+  }
+
+  append(child: ComposerChild): void {
+    child.parentNode = this;
+    if (this.lastChild === null) {
+      this.firstChild = child;
+      this.lastChild = child;
+      return;
+    }
+    child.previousSibling = this.lastChild;
+    this.lastChild.nextSibling = child;
+    this.lastChild = child;
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes[name] ?? null;
+  }
+
+  hasAttribute(name: string): boolean {
+    return Object.hasOwn(this.attributes, name);
+  }
+
+  getBoundingClientRect(): Readonly<{ width: number; height: number }> {
+    return { width: 100, height: 20 };
+  }
+}
+
+class ComposerText {
+  readonly nodeType = 3;
+  readonly firstChild = null;
+  readonly lastChild = null;
+  parentNode: ComposerElement | ComposerDocument | null = null;
+  nextSibling: ComposerChild | null = null;
+  previousSibling: ComposerChild | null = null;
+
+  constructor(readonly nodeValue: string) {}
+}
+
+class ComposerDocument {
+  readonly nodeType = 9;
+  readonly nodeValue = null;
+  readonly parentNode = null;
+  firstChild: ComposerChild | null = null;
+  lastChild: ComposerChild | null = null;
+
+  append(child: ComposerChild): void {
+    child.parentNode = this;
+    if (this.lastChild === null) {
+      this.firstChild = child;
+      this.lastChild = child;
+      return;
+    }
+    child.previousSibling = this.lastChild;
+    this.lastChild.nextSibling = child;
+    this.lastChild = child;
+  }
+}
+
+function runComposerProbe(
+  visibleName: string,
+  descendantAttributes: Record<string, string>,
+  expected: readonly Readonly<{ ordinal: number; displayName: string; bytes: number }>[]
+) {
+  const document = new ComposerDocument();
+  const form = new ComposerElement("form");
+  const input = new ComposerElement("input", { id: "upload-files", type: "file" });
+  input.files = { length: 0, item: () => null };
+  const tile = new ComposerElement("div", { role: "listitem" });
+  const label = new ComposerElement("span");
+  label.append(new ComposerText(visibleName));
+  tile.append(label);
+  tile.append(new ComposerElement("button", descendantAttributes));
+  form.append(input);
+  form.append(tile);
+  document.append(form);
+
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: document });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" })
+    }
+  });
+  try {
+    return inspectChatGPTComposer({ labels: ["Attach files"], expected });
+  } finally {
+    if (previousDocument === undefined) Reflect.deleteProperty(globalThis, "document");
+    else Object.defineProperty(globalThis, "document", previousDocument);
+    if (previousWindow === undefined) Reflect.deleteProperty(globalThis, "window");
+    else Object.defineProperty(globalThis, "window", previousWindow);
+  }
+}
+
+describe("ChatGPT serialized composer attachment metadata", () => {
+  const longName = "surface-review-gate-record.json";
+  const expected = [{ ordinal: 0, displayName: longName, bytes: 10 }] as const;
+
+  it("matches a complete filename in a descendant accessibility label when visible text is truncated", () => {
+    const probe = runComposerProbe("surface-review-gate-rec…", { "aria-label": `Remove file ${longName}` }, expected);
+
+    expect(probe.factSource).toBe("metadata");
+    expect(probe.attachmentRegionCount).toBe(1);
+    expect(probe.facts).toEqual([{
+      ordinal: 0,
+      namePresent: true,
+      sizePresent: false,
+      nameMatch: true,
+      matchOrdinal: 0,
+      orderKey: 0
+    }]);
+    expect(JSON.stringify(probe)).not.toContain(longName);
+  });
+
+  it("does not accept a truncated descendant label as the expected filename", () => {
+    const probe = runComposerProbe("surface-review-gate-rec…", { "aria-label": "Remove file surface-review-gate-rec…" }, expected);
+
+    expect(probe.facts[0]).toMatchObject({
+      namePresent: true,
+      nameMatch: false,
+      matchOrdinal: -1
+    });
+  });
+
+  it("marks descendant metadata that names multiple expected files as ambiguous", () => {
+    const secondName = "surface-review-gate-summary.json";
+    const probe = runComposerProbe("surface-review-gate-rec…", {
+      "aria-label": `Remove file ${longName}`,
+      title: `Related file ${secondName}`
+    }, [
+      { ordinal: 0, displayName: longName, bytes: 10 },
+      { ordinal: 1, displayName: secondName, bytes: 20 }
+    ]);
+
+    expect(probe.facts[0]).toMatchObject({
+      namePresent: true,
+      nameMatch: false,
+      matchOrdinal: -1,
+      ambiguous: true
+    });
+  });
+});
 
 describe("ChatGPT production attachment provider", () => {
   it("uses one localized active-composer handoff and only then proves exact UI facts", async () => {

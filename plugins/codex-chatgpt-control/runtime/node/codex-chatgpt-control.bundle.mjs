@@ -36937,6 +36937,24 @@ function inspectChatGPTComposer(argument) {
     boundedAttribute(element, "title"),
     boundedText(element)
   ].join(" ").replace(/\s+/gu, " ").trim().normalize("NFC").slice(0, 512);
+  const descendantExpectedNames = (element) => {
+    if (expected.length === 0) return [];
+    const descendants2 = boundedQuery(
+      element,
+      "[data-file-name], [data-filename], [aria-label], [title]"
+    );
+    const matches = /* @__PURE__ */ new Set();
+    for (const descendant of descendants2) {
+      for (const attribute of ["data-file-name", "data-filename", "aria-label", "title"]) {
+        const value = boundedAttribute(descendant, attribute).replace(/\s+/gu, " ").trim().normalize("NFC");
+        if (value.length === 0) continue;
+        for (const item of expected) {
+          if (value.includes(item.displayName)) matches.add(item.displayName);
+        }
+      }
+    }
+    return [...matches];
+  };
   const parseBytes = (element, text) => {
     const dataSize = element.getAttribute("data-file-size") ?? element.getAttribute("data-size");
     if (dataSize !== null && /^\d+$/u.test(dataSize)) {
@@ -36952,11 +36970,11 @@ function inspectChatGPTComposer(argument) {
     const value = amount * multiplier;
     return Number.isSafeInteger(value) ? value : void 0;
   };
-  const makeFact = (ordinal, name, bytes, orderKey) => {
-    const namePresent = name !== void 0 && name.length > 0;
+  const makeFact = (ordinal, name, bytes, orderKey, descendantNames = []) => {
+    const namePresent = name !== void 0 && name.length > 0 || descendantNames.length > 0;
     const sizePresent = bytes !== void 0;
     if (expected.length === 0) return { ordinal, namePresent, sizePresent, orderKey };
-    const nameMatches = namePresent ? expected.filter((item) => name.includes(item.displayName)) : [];
+    const nameMatches = namePresent ? expected.filter((item) => name?.includes(item.displayName) === true || descendantNames.includes(item.displayName)) : [];
     const nameMatch = nameMatches.length === 1;
     const matched = nameMatch ? nameMatches[0] : void 0;
     const bytesMatch = matched === void 0 || !sizePresent ? void 0 : bytes === matched.bytes;
@@ -37035,7 +37053,7 @@ function inspectChatGPTComposer(argument) {
       const node = nodes[index];
       const text = textOf(node);
       const name = text.length > 0 ? text : void 0;
-      facts2.push(makeFact(index, name, parseBytes(node, text), index));
+      facts2.push(makeFact(index, name, parseBytes(node, text), index, descendantExpectedNames(node)));
     }
     return { facts: facts2, regionCount: nodes.length, orderDeterministic: nodes.length > 0 };
   };

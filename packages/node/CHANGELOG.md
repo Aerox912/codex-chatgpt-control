@@ -2,6 +2,9 @@
 
 ## 0.5.1-alpha.3
 
+- Proves visually truncated attachment tiles from complete filenames retained
+  on bounded descendant accessibility metadata, while truncated prefixes and
+  multi-file matches remain fail-closed.
 - Adds an explicit, one-use supervised attachment rearm for an indeterminate
   pre-Send file handoff. It preserves the operation and request identity,
   requires an exact fresh target plus an attachment-absence preflight, and

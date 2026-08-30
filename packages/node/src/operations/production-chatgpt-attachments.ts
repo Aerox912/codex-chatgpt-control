@@ -880,6 +880,26 @@ export function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     boundedAttribute(element, "title"),
     boundedText(element)
   ].join(" ").replace(/\s+/gu, " ").trim().normalize("NFC").slice(0, 512);
+  const descendantExpectedNames = (element: Element): readonly string[] => {
+    if (expected.length === 0) return [];
+    // ChatGPT can visually truncate a tile name while retaining the complete
+    // filename on a nested remove control. Keep that proof exact and local to
+    // the page realm; no descendant label is returned to the host.
+    const descendants = boundedQuery<Element>(element,
+      "[data-file-name], [data-filename], [aria-label], [title]");
+    const matches = new Set<string>();
+    for (const descendant of descendants) {
+      for (const attribute of ["data-file-name", "data-filename", "aria-label", "title"] as const) {
+        const value = boundedAttribute(descendant, attribute)
+          .replace(/\s+/gu, " ").trim().normalize("NFC");
+        if (value.length === 0) continue;
+        for (const item of expected) {
+          if (value.includes(item.displayName)) matches.add(item.displayName);
+        }
+      }
+    }
+    return [...matches];
+  };
   const parseBytes = (element: Element, text: string): number | undefined => {
     const dataSize = element.getAttribute("data-file-size") ?? element.getAttribute("data-size");
     if (dataSize !== null && /^\d+$/u.test(dataSize)) {
@@ -902,12 +922,18 @@ export function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     const value = amount * multiplier;
     return Number.isSafeInteger(value) ? value : undefined;
   };
-  const makeFact = (ordinal: number, name: string | undefined, bytes: number | undefined, orderKey: number): RawAttachmentFact => {
-    const namePresent = name !== undefined && name.length > 0;
+  const makeFact = (
+    ordinal: number,
+    name: string | undefined,
+    bytes: number | undefined,
+    orderKey: number,
+    descendantNames: readonly string[] = []
+  ): RawAttachmentFact => {
+    const namePresent = (name !== undefined && name.length > 0) || descendantNames.length > 0;
     const sizePresent = bytes !== undefined;
     if (expected.length === 0) return { ordinal, namePresent, sizePresent, orderKey };
     const nameMatches = namePresent
-      ? expected.filter(item => name!.includes(item.displayName))
+      ? expected.filter(item => name?.includes(item.displayName) === true || descendantNames.includes(item.displayName))
       : [];
     const nameMatch = nameMatches.length === 1;
     const matched = nameMatch ? nameMatches[0] : undefined;
@@ -993,7 +1019,7 @@ export function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
       const node = nodes[index]!;
       const text = textOf(node);
       const name = text.length > 0 ? text : undefined;
-      facts.push(makeFact(index, name, parseBytes(node, text), index));
+      facts.push(makeFact(index, name, parseBytes(node, text), index, descendantExpectedNames(node)));
     }
     return { facts, regionCount: nodes.length, orderDeterministic: nodes.length > 0 };
   };
