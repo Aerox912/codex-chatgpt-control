@@ -90,6 +90,39 @@ describe("createChatGPT", () => {
     }
   });
 
+  it("prepares a durable operation handle when the Browser host does not expose process", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chatgpt-operation-processless-"));
+    const originalProcess = Object.getOwnPropertyDescriptor(globalThis, "process");
+    Object.defineProperty(globalThis, "process", {
+      configurable: true,
+      value: undefined,
+      writable: true
+    });
+    try {
+      const chatgpt = createChatGPT({ operations: { stateRoot: root } });
+      const prepared = await chatgpt.operations.prepare({
+        schemaVersion: OPERATION_REQUEST_SCHEMA_VERSION,
+        operationId: "20202020-2020-4020-8020-202020202020",
+        surface: "chat",
+        prompt: "private prompt",
+        target: { type: "project", name: "Pokémon Burning Scales" }
+      });
+
+      expect(prepared.handle).toMatchObject({
+        operationId: "20202020-2020-4020-8020-202020202020",
+        phase: "prepared",
+        mutationBoundary: "none"
+      });
+    } finally {
+      if (originalProcess === undefined) {
+        Reflect.deleteProperty(globalThis, "process");
+      } else {
+        Object.defineProperty(globalThis, "process", originalProcess);
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses the lazy ChatGPT runtime by default instead of an unavailable placeholder", async () => {
     const root = await mkdtemp(join(tmpdir(), "chatgpt-default-operation-runtime-"));
     let createCalls = 0;

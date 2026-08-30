@@ -2,6 +2,9 @@
 
 ## 0.5.1-alpha.3
 
+- Supports durable operation journals in processless Browser hosts without
+  allowing another Node process to reclaim an opaque live lock, while retaining
+  normal dead-process recovery where liveness probes are available.
 - Keeps named workspace Projects authoritative on the transactional path,
   resolves exact Unicode labels within decorated Project rows, reconciles
   uncertain creation, and never degrades a failed Project route to global Chat.

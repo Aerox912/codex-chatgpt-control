@@ -2,6 +2,9 @@
 
 ## 0.5.1-alpha.3
 
+- Keeps durable operation preparation available in processless Browser hosts,
+  records their journal locks as opaque non-reclaimable owners, and preserves
+  fail-closed POSIX ownership verification.
 - Routes explicit workspace Project aliases through the transactional operation
   path, matches exact Unicode Project-name descendants inside decorated grid
   rows, and keeps missing or ambiguous Projects fail-closed without a global

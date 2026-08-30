@@ -6616,14 +6616,14 @@ function tabIdFromPage(page) {
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 var execFileAsync = promisify(execFile);
-function clipboardReadCommandsForPlatform(platform2, env = {}) {
-  if (platform2 === "darwin") {
+function clipboardReadCommandsForPlatform(platform3, env = {}) {
+  if (platform3 === "darwin") {
     return [{ command: "pbpaste", args: [] }];
   }
-  if (platform2 === "win32") {
+  if (platform3 === "win32") {
     return [{ command: "powershell.exe", args: ["-NoProfile", "-Command", "Get-Clipboard -Raw"] }];
   }
-  if (platform2 === "linux") {
+  if (platform3 === "linux") {
     const waylandCommand = { command: "wl-paste", args: ["--no-newline"] };
     const x11Commands = [
       { command: "xclip", args: ["-selection", "clipboard", "-o"] },
@@ -14879,19 +14879,19 @@ import { platform as readHostPlatform } from "node:os";
 function currentHostPathPlatform() {
   return readHostPlatform();
 }
-function isHostAbsolutePath(value, platform2 = currentHostPathPlatform()) {
+function isHostAbsolutePath(value, platform3 = currentHostPathPlatform()) {
   if (value.length === 0) return false;
-  if (platform2 === "win32") return isFullyQualifiedWindowsPath(value);
+  if (platform3 === "win32") return isFullyQualifiedWindowsPath(value);
   return path.posix.isAbsolute(value);
 }
-function resolveForHostPath(value, platform2 = currentHostPathPlatform()) {
-  if (!isHostAbsolutePath(value, platform2)) {
+function resolveForHostPath(value, platform3 = currentHostPathPlatform()) {
+  if (!isHostAbsolutePath(value, platform3)) {
     throw new Error(`File attachment path must be absolute for the backend host: ${value}`);
   }
-  return platform2 === "win32" ? path.win32.resolve(value) : path.posix.resolve(value);
+  return platform3 === "win32" ? path.win32.resolve(value) : path.posix.resolve(value);
 }
-function basenameForHostPath(value, platform2 = currentHostPathPlatform()) {
-  return platform2 === "win32" ? path.win32.basename(value) : path.posix.basename(value);
+function basenameForHostPath(value, platform3 = currentHostPathPlatform()) {
+  return platform3 === "win32" ? path.win32.basename(value) : path.posix.basename(value);
 }
 function isFullyQualifiedWindowsPath(value) {
   return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\[^\\]+\\[^\\]+[\\/]/.test(value);
@@ -24869,17 +24869,18 @@ var OperationJournal = class _OperationJournal {
   }
 };
 function defaultOperationStateRoot() {
+  const runtimeEnvironment = currentRuntimeProcess()?.env;
   if (platform() === "darwin") {
     return join4(homedir(), "Library", "Application Support", "codex-chatgpt-control", "operations-v1");
   }
   if (platform() === "win32") {
-    const localAppData = process.env.LOCALAPPDATA;
+    const localAppData = runtimeEnvironment?.LOCALAPPDATA;
     if (localAppData !== void 0 && isAbsolute(localAppData)) {
       return join4(localAppData, "codex-chatgpt-control", "operations-v1");
     }
     return join4(homedir(), "AppData", "Local", "codex-chatgpt-control", "operations-v1");
   }
-  const xdgState = process.env.XDG_STATE_HOME;
+  const xdgState = runtimeEnvironment?.XDG_STATE_HOME;
   if (xdgState !== void 0 && isAbsolute(xdgState)) {
     return join4(xdgState, "codex-chatgpt-control", "operations-v1");
   }
@@ -25568,8 +25569,14 @@ async function assertSecureFileHandle(handle, path3) {
 }
 function assertOwnerAndMode(metadata, path3, expectedMode) {
   if (platform() === "win32") return;
-  const getuid = process.getuid;
-  if (typeof getuid === "function" && Number(metadata.uid) !== getuid()) {
+  const getuid = currentRuntimeProcess()?.getuid;
+  if (typeof getuid !== "function") {
+    throw new OperationJournalError(
+      "unsafe_state_owner",
+      "Operation state path ownership cannot be verified in this runtime."
+    );
+  }
+  if (Number(metadata.uid) !== getuid()) {
     throw new OperationJournalError("unsafe_state_owner", "Operation state path is not owned by the current user.");
   }
   if ((Number(metadata.mode) & 63) !== 0) {
@@ -25581,13 +25588,7 @@ function assertOwnerAndMode(metadata, path3, expectedMode) {
 }
 async function acquireLock(lockPath, timeoutMs, clock, entropy) {
   const token = entropyUuid(entropy);
-  const record = {
-    schemaVersion: "chatgpt.browser_control.operation_lock.v1",
-    token,
-    pid: process.pid,
-    hostname: hostname(),
-    createdAt: clockTimestamp(clock)
-  };
+  const record = currentLockRecord(token, clock);
   const deadline = safeDeadline(clockNow(clock), timeoutMs);
   let remainingWaitBudgetMs = timeoutMs;
   while (true) {
@@ -25621,7 +25622,7 @@ async function acquireLock(lockPath, timeoutMs, clock, entropy) {
         }
         throw readError;
       }
-      if (owner.hostname === hostname() && !processExists(owner.pid)) {
+      if (lockOwnerIsProbeable(owner) && owner.hostname === hostname() && !processExists(owner.pid)) {
         const reclaimed = await quarantineAbandonedLock(lockPath, owner.token, clock, entropy);
         if (!reclaimed) {
           const remaining2 = Math.min(deadline - clockNow(clock), remainingWaitBudgetMs);
@@ -25679,7 +25680,7 @@ async function readLock(lockPath) {
   } catch {
     throw new OperationJournalError("journal_lock_corrupt", "Operation journal lock record is corrupt.");
   }
-  if (!isRecord6(value) || !hasExactKeys(value, ["schemaVersion", "token", "pid", "hostname", "createdAt"]) || value.schemaVersion !== "chatgpt.browser_control.operation_lock.v1" || typeof value.token !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value.token) || typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.hostname !== "string" || value.hostname.length === 0 || value.hostname.length > 255 || typeof value.createdAt !== "string" || !isIsoTimestamp(value.createdAt)) {
+  if (!isRecord6(value) || !(hasExactKeys(value, ["schemaVersion", "token", "pid", "hostname", "createdAt"]) || hasExactKeys(value, ["schemaVersion", "token", "pid", "hostname", "createdAt", "processLiveness"])) || value.schemaVersion !== "chatgpt.browser_control.operation_lock.v1" || typeof value.token !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value.token) || typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.hostname !== "string" || value.hostname.length === 0 || value.hostname.length > 255 || typeof value.createdAt !== "string" || !isIsoTimestamp(value.createdAt) || value.processLiveness !== void 0 && value.processLiveness !== "probeable" && value.processLiveness !== "opaque") {
     throw new OperationJournalError("journal_lock_corrupt", "Operation journal lock record has an invalid shape.");
   }
   return value;
@@ -25696,7 +25697,7 @@ async function quarantineAbandonedLock(lockPath, expectedToken, clock, entropy) 
       if (error instanceof OperationJournalError && error.code === "journal_lock_changed") return false;
       throw error;
     }
-    if (current.token !== expectedToken || current.hostname !== hostname() || processExists(current.pid)) {
+    if (current.token !== expectedToken || current.hostname !== hostname() || !lockOwnerIsProbeable(current) || processExists(current.pid)) {
       return false;
     }
     try {
@@ -25718,13 +25719,7 @@ async function quarantineAbandonedLock(lockPath, expectedToken, clock, entropy) 
 async function tryAcquireRecoveryGuard(lockPath, clock, entropy) {
   const guardPath = `${lockPath}${LOCK_RECOVERY_SUFFIX}`;
   const token = entropyUuid(entropy);
-  const record = {
-    schemaVersion: "chatgpt.browser_control.operation_lock.v1",
-    token,
-    pid: process.pid,
-    hostname: hostname(),
-    createdAt: clockTimestamp(clock)
-  };
+  const record = currentLockRecord(token, clock);
   let handle;
   let createdIdentity;
   try {
@@ -25753,7 +25748,7 @@ async function tryAcquireRecoveryGuard(lockPath, clock, entropy) {
       if (readError instanceof OperationJournalError && readError.code === "journal_lock_changed") return void 0;
       throw readError;
     }
-    if (owner.hostname === hostname() && !processExists(owner.pid)) {
+    if (lockOwnerIsProbeable(owner) && owner.hostname === hostname() && !processExists(owner.pid)) {
       throw new OperationJournalError(
         "journal_lock_recovery_abandoned",
         "An abandoned journal lock-recovery guard requires manual diagnosis; it will not be reclaimed automatically."
@@ -25794,12 +25789,37 @@ async function releaseLock(lock) {
   await unlink2(lock.path);
 }
 function processExists(pid) {
+  const runtimeProcess = currentRuntimeProcess();
+  if (typeof runtimeProcess?.kill !== "function") return true;
   try {
-    process.kill(pid, 0);
+    runtimeProcess.kill(pid, 0);
     return true;
   } catch (error) {
     return !isNodeError4(error, "ESRCH");
   }
+}
+function currentRuntimeProcess() {
+  return typeof process === "undefined" ? void 0 : process;
+}
+function currentLockRecord(token, clock) {
+  const runtimeProcess = currentRuntimeProcess();
+  const hasProcessIdentity = Number.isSafeInteger(runtimeProcess?.pid) && Number(runtimeProcess?.pid) > 0;
+  const processLiveness = hasProcessIdentity && typeof runtimeProcess?.kill === "function" ? "probeable" : "opaque";
+  return {
+    schemaVersion: "chatgpt.browser_control.operation_lock.v1",
+    token,
+    pid: hasProcessIdentity ? Number(runtimeProcess?.pid) : opaqueLockPid(token),
+    hostname: hostname(),
+    createdAt: clockTimestamp(clock),
+    processLiveness
+  };
+}
+function opaqueLockPid(token) {
+  const candidate = Number.parseInt(token.slice(0, 8), 16) & 2147483647;
+  return candidate === 0 ? 1 : candidate;
+}
+function lockOwnerIsProbeable(owner) {
+  return owner.processLiveness !== "opaque";
 }
 async function serializeInProcess(key, action) {
   const prior = inProcessQueues.get(key) ?? Promise.resolve();
@@ -40386,6 +40406,7 @@ import { resolve as resolve7 } from "node:path";
 // src/operations/artifact-output.ts
 import { constants as fsConstants3, unlinkSync } from "node:fs";
 import { createHash as createHash6, randomBytes as randomBytes2 } from "node:crypto";
+import { platform as platform2 } from "node:os";
 import { isAbsolute as isAbsolute2, relative, resolve as resolve6, sep as sep2 } from "node:path";
 import { lstat as lstat3, open as open3, opendir as opendir2, realpath as realpath2 } from "node:fs/promises";
 
@@ -41840,7 +41861,7 @@ function isErrno(error, code) {
   }
 }
 function isUnsupportedDirectorySync(error) {
-  if (isErrno(error, "EPERM")) return process.platform === "win32";
+  if (isErrno(error, "EPERM")) return platform2() === "win32";
   return ["EINVAL", "ENOTSUP", "EISDIR", "ENOSYS", "EBADF"].some((code) => isErrno(error, code));
 }
 

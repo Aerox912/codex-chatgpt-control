@@ -230,7 +230,20 @@ type LockRecord = {
   pid: number;
   hostname: string;
   createdAt: string;
+  /**
+   * Older records omitted this field and always represented an OS process.
+   * Processless Browser hosts use an opaque owner so another Node process
+   * cannot mistake its synthetic pid for a provably abandoned lock.
+   */
+  processLiveness?: "probeable" | "opaque";
 };
+
+type RuntimeProcess = Readonly<{
+  env?: Record<string, string | undefined>;
+  getuid?: () => number;
+  pid?: number;
+  kill?: (pid: number, signal: 0) => unknown;
+}>;
 
 const inProcessQueues = new Map<string, Promise<void>>();
 
@@ -1050,17 +1063,18 @@ export class OperationJournal {
 }
 
 export function defaultOperationStateRoot(): string {
+  const runtimeEnvironment = currentRuntimeProcess()?.env;
   if (platform() === "darwin") {
     return join(homedir(), "Library", "Application Support", "codex-chatgpt-control", "operations-v1");
   }
   if (platform() === "win32") {
-    const localAppData = process.env.LOCALAPPDATA;
+    const localAppData = runtimeEnvironment?.LOCALAPPDATA;
     if (localAppData !== undefined && isAbsolute(localAppData)) {
       return join(localAppData, "codex-chatgpt-control", "operations-v1");
     }
     return join(homedir(), "AppData", "Local", "codex-chatgpt-control", "operations-v1");
   }
-  const xdgState = process.env.XDG_STATE_HOME;
+  const xdgState = runtimeEnvironment?.XDG_STATE_HOME;
   if (xdgState !== undefined && isAbsolute(xdgState)) {
     return join(xdgState, "codex-chatgpt-control", "operations-v1");
   }
@@ -1910,8 +1924,14 @@ function assertOwnerAndMode(
   expectedMode: number
 ): void {
   if (platform() === "win32") return;
-  const getuid = process.getuid;
-  if (typeof getuid === "function" && Number(metadata.uid) !== getuid()) {
+  const getuid = currentRuntimeProcess()?.getuid;
+  if (typeof getuid !== "function") {
+    throw new OperationJournalError(
+      "unsafe_state_owner",
+      "Operation state path ownership cannot be verified in this runtime."
+    );
+  }
+  if (Number(metadata.uid) !== getuid()) {
     throw new OperationJournalError("unsafe_state_owner", "Operation state path is not owned by the current user.");
   }
   if ((Number(metadata.mode) & 0o077) !== 0) {
@@ -1929,13 +1949,7 @@ async function acquireLock(
   entropy: OperationJournalEntropy
 ): Promise<HeldLock> {
   const token = entropyUuid(entropy);
-  const record: LockRecord = {
-    schemaVersion: "chatgpt.browser_control.operation_lock.v1",
-    token,
-    pid: process.pid,
-    hostname: hostname(),
-    createdAt: clockTimestamp(clock)
-  };
+  const record = currentLockRecord(token, clock);
   const deadline = safeDeadline(clockNow(clock), timeoutMs);
   // Treat the configured timeout as a finite retry budget as well as a wall
   // deadline. An injected or adjusted wall clock may remain constant or move
@@ -1972,7 +1986,7 @@ async function acquireLock(
         }
         throw readError;
       }
-      if (owner.hostname === hostname() && !processExists(owner.pid)) {
+      if (lockOwnerIsProbeable(owner) && owner.hostname === hostname() && !processExists(owner.pid)) {
         const reclaimed = await quarantineAbandonedLock(lockPath, owner.token, clock, entropy);
         if (!reclaimed) {
           const remaining = Math.min(deadline - clockNow(clock), remainingWaitBudgetMs);
@@ -2033,7 +2047,10 @@ async function readLock(lockPath: string): Promise<LockRecord> {
   }
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["schemaVersion", "token", "pid", "hostname", "createdAt"]) ||
+    !(
+      hasExactKeys(value, ["schemaVersion", "token", "pid", "hostname", "createdAt"])
+      || hasExactKeys(value, ["schemaVersion", "token", "pid", "hostname", "createdAt", "processLiveness"])
+    ) ||
     value.schemaVersion !== "chatgpt.browser_control.operation_lock.v1" ||
     typeof value.token !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value.token) ||
@@ -2044,7 +2061,12 @@ async function readLock(lockPath: string): Promise<LockRecord> {
     value.hostname.length === 0 ||
     value.hostname.length > 255 ||
     typeof value.createdAt !== "string" ||
-    !isIsoTimestamp(value.createdAt)
+    !isIsoTimestamp(value.createdAt) ||
+    (
+      value.processLiveness !== undefined
+      && value.processLiveness !== "probeable"
+      && value.processLiveness !== "opaque"
+    )
   ) {
     throw new OperationJournalError("journal_lock_corrupt", "Operation journal lock record has an invalid shape.");
   }
@@ -2085,6 +2107,7 @@ async function quarantineAbandonedLock(
     if (
       current.token !== expectedToken ||
       current.hostname !== hostname() ||
+      !lockOwnerIsProbeable(current) ||
       processExists(current.pid)
     ) {
       return false;
@@ -2117,13 +2140,7 @@ async function tryAcquireRecoveryGuard(
 ): Promise<HeldLock | undefined> {
   const guardPath = `${lockPath}${LOCK_RECOVERY_SUFFIX}`;
   const token = entropyUuid(entropy);
-  const record: LockRecord = {
-    schemaVersion: "chatgpt.browser_control.operation_lock.v1",
-    token,
-    pid: process.pid,
-    hostname: hostname(),
-    createdAt: clockTimestamp(clock)
-  };
+  const record = currentLockRecord(token, clock);
   let handle;
   let createdIdentity: Pick<Stats, "dev" | "ino"> | undefined;
   try {
@@ -2151,7 +2168,7 @@ async function tryAcquireRecoveryGuard(
       if (readError instanceof OperationJournalError && readError.code === "journal_lock_changed") return undefined;
       throw readError;
     }
-    if (owner.hostname === hostname() && !processExists(owner.pid)) {
+    if (lockOwnerIsProbeable(owner) && owner.hostname === hostname() && !processExists(owner.pid)) {
       throw new OperationJournalError(
         "journal_lock_recovery_abandoned",
         "An abandoned journal lock-recovery guard requires manual diagnosis; it will not be reclaimed automatically."
@@ -2203,12 +2220,43 @@ async function releaseLock(lock: HeldLock): Promise<void> {
 }
 
 function processExists(pid: number): boolean {
+  const runtimeProcess = currentRuntimeProcess();
+  if (typeof runtimeProcess?.kill !== "function") return true;
   try {
-    process.kill(pid, 0);
+    runtimeProcess.kill(pid, 0);
     return true;
   } catch (error) {
     return !isNodeError(error, "ESRCH");
   }
+}
+
+function currentRuntimeProcess(): RuntimeProcess | undefined {
+  return typeof process === "undefined" ? undefined : process;
+}
+
+function currentLockRecord(token: string, clock: OperationJournalClock): LockRecord {
+  const runtimeProcess = currentRuntimeProcess();
+  const hasProcessIdentity = Number.isSafeInteger(runtimeProcess?.pid) && Number(runtimeProcess?.pid) > 0;
+  const processLiveness = hasProcessIdentity && typeof runtimeProcess?.kill === "function"
+    ? "probeable"
+    : "opaque";
+  return {
+    schemaVersion: "chatgpt.browser_control.operation_lock.v1",
+    token,
+    pid: hasProcessIdentity ? Number(runtimeProcess?.pid) : opaqueLockPid(token),
+    hostname: hostname(),
+    createdAt: clockTimestamp(clock),
+    processLiveness
+  };
+}
+
+function opaqueLockPid(token: string): number {
+  const candidate = Number.parseInt(token.slice(0, 8), 16) & 0x7fff_ffff;
+  return candidate === 0 ? 1 : candidate;
+}
+
+function lockOwnerIsProbeable(owner: LockRecord): boolean {
+  return owner.processLiveness !== "opaque";
 }
 
 async function serializeInProcess<T>(key: string, action: () => Promise<T>): Promise<T> {

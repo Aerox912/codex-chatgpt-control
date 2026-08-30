@@ -1,5 +1,6 @@
 import { constants as fsConstants, unlinkSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
+import { platform } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { lstat, open, opendir, realpath, type FileHandle } from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
@@ -1851,6 +1852,6 @@ function isErrno(error: unknown, code: string): boolean {
 }
 
 function isUnsupportedDirectorySync(error: unknown): boolean {
-  if (isErrno(error, "EPERM")) return process.platform === "win32";
+  if (isErrno(error, "EPERM")) return platform() === "win32";
   return ["EINVAL", "ENOTSUP", "EISDIR", "ENOSYS", "EBADF"].some(code => isErrno(error, code));
 }
