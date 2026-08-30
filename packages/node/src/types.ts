@@ -50,6 +50,8 @@ export type CommandContext = {
   experience?: ChatGPTExperience;
   selectorProfile?: SurfaceSelectorProfile;
   browserName?: string;
+  /** User-facing host surface provenance, separate from the provider's backend name. */
+  browserKind?: BrowserKind;
   tabId?: string;
   timestamp: string;
 };
@@ -168,6 +170,7 @@ export type BootstrapArgs = {
 
 export type BootstrapData = {
   browserName: string;
+  browserKind: BrowserKind;
   tabId: string;
   url: string;
   loggedIn: boolean;
@@ -730,6 +733,7 @@ export type ChatGPTExperience = "chat" | "work" | "unknown";
 export type SurfaceSelectorProfile =
   | "chat_legacy_v1"
   | "chat_simplified_v1"
+  | "project_chat_v1"
   | "work_basic_v1"
   | "work_advanced_v1"
   | "unknown";
@@ -1031,6 +1035,8 @@ export type SequenceStepResult = {
 export type RuntimeEnv = {
   agent?: unknown;
   browser?: BrowserLike;
+  /** Explicit provenance for an injected browser whose provider name is not the visible host surface. */
+  browserKind?: BrowserKind;
   page?: PageLike;
   clipboard?: ClipboardLike;
   now?: () => Date;
@@ -1038,6 +1044,8 @@ export type RuntimeEnv = {
   /** Optional transport-owned compatibility diagnostics for doctor. */
   compatibility?: BackendCompatibilityReport;
 };
+
+export type BrowserKind = "iab" | "chrome" | "extension" | "unknown";
 
 export type ClipboardLike = {
   read: () => Promise<string>;

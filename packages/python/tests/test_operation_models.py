@@ -194,6 +194,27 @@ class OperationModelTests(unittest.TestCase):
             "artifacts": "transfer",
         })
 
+    def test_project_target_round_trips_exact_alias_and_creation_authority(self) -> None:
+        request = load_json("operation-request.json")
+        request["target"] = {
+            "type": "project",
+            "name": "Pokémon Burning Scales",
+            "icon": "Folder",
+            "color": "blue",
+            "confirmCreation": True,
+        }
+        parsed = OperationSubmitRequest.from_wire(request)
+        self.assertEqual(parsed.to_wire()["target"], request["target"])
+
+        request["target"]["confirmCreation"] = False
+        with self.assertRaises(ValueError):
+            OperationSubmitRequest.from_wire(request)
+
+        request["target"]["confirmCreation"] = True
+        request["target"]["icon"] = "Unknown icon"
+        with self.assertRaises(ValueError):
+            OperationSubmitRequest.from_wire(request)
+
     def test_durable_capture_policy_is_closed_path_free_and_rejects_nulls(self) -> None:
         state = load_json("operation-state.json")
         self.assertNotIn("outputDirectory", state["capturePolicy"])

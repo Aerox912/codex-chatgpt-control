@@ -262,7 +262,12 @@ describe("RuntimeEnvSession", () => {
     expect(Object.isFrozen(diagnostics)).toBe(true);
     expect(Object.isFrozen(diagnostics.base)).toBe(true);
     expect(Object.isFrozen(diagnostics.snapshot)).toBe(true);
-    expect(diagnostics.snapshot).toEqual({ browser: "set", page: "set", expectedTabId: "set" });
+    expect(diagnostics.snapshot).toEqual({
+      browser: "set",
+      browserKind: "unset",
+      page: "set",
+      expectedTabId: "set"
+    });
     expect(JSON.stringify(diagnostics)).not.toContain("secret-tab");
     expect(JSON.stringify(diagnostics)).not.toContain('"browser":{');
   });

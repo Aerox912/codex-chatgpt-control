@@ -1,5 +1,5 @@
 import { BrowserBridgeUnavailableError, ChatGPTControlError, LoginRequiredError } from "../errors.js";
-import type { BootstrapArgs, BrowserLike, BrowserUserTabInfo, ExistingTabDiagnostics, ExistingTabPolicy, ExistingTabTarget, PageLike, RuntimeEnv } from "../types.js";
+import type { BootstrapArgs, BrowserKind, BrowserLike, BrowserUserTabInfo, ExistingTabDiagnostics, ExistingTabPolicy, ExistingTabTarget, PageLike, RuntimeEnv } from "../types.js";
 import { CHATGPT_HOME, isChatGPTUrl } from "./chatgpt-url.js";
 import { parseConversationId, readPageState } from "./page-state.js";
 import {
@@ -26,15 +26,22 @@ export type AttachedBrowser = {
   browser: BrowserLike;
   page: PageLike;
   browserName: string;
+  browserKind: BrowserKind;
   tabId?: string;
 };
+
+type ResolvedBrowser = Readonly<{
+  browser: BrowserLike;
+  kind: BrowserKind;
+}>;
 
 export async function attachChatGPTBrowser(
   env: RuntimeEnv,
   args: BootstrapArgs = {},
   coordination?: CoordinatedBrowserOptions
 ): Promise<AttachedBrowser> {
-  const browser = await getBrowser(env, coordination);
+  const resolved = await getBrowser(env, coordination);
+  const browser = resolved.browser;
   const page = await getOrCreateChatGPTPage(browser, env, args, coordination);
   await assertPageOnChatGPTOrigin(page);
   const state = await readPageState(page);
@@ -47,7 +54,8 @@ export async function attachChatGPTBrowser(
   const attached: AttachedBrowser = {
     browser,
     page,
-    browserName: browser.name ?? "chrome"
+    browserName: browser.name ?? "chrome",
+    browserKind: resolved.kind
   };
 
   const tabId = tabIdFromPage(page);
@@ -63,20 +71,25 @@ export async function resolveChatGPTBrowser(
   env: RuntimeEnv,
   coordination?: CoordinatedBrowserOptions
 ): Promise<BrowserLike> {
-  return await getBrowser(env, coordination);
+  const resolved = await getBrowser(env, coordination);
+  env.browserKind = resolved.kind;
+  return resolved.browser;
 }
 
 async function getBrowser(
   env: RuntimeEnv,
   coordination?: CoordinatedBrowserOptions
-): Promise<BrowserLike> {
+): Promise<ResolvedBrowser> {
   if (env.browser !== undefined) {
     if (unwrapCoordinatedBrowser(env.browser) !== env.browser) {
-      return env.browser;
+      return { browser: env.browser, kind: env.browserKind ?? browserKindFromName(env.browser.name) };
     }
     const normalized = normalizeBrowser(env.browser);
     if (normalized !== undefined) {
-      return createCoordinatedBrowser(normalized, coordination);
+      return {
+        browser: createCoordinatedBrowser(normalized, coordination),
+        kind: env.browserKind ?? browserKindFromName(normalized.name)
+      };
     }
   }
 
@@ -91,14 +104,17 @@ async function getBrowser(
       ?? await tryBrowserGet(browsers, "chrome");
 
     if (maybeBrowser !== undefined) {
-      return createCoordinatedBrowser(maybeBrowser, coordination);
+      return {
+        browser: createCoordinatedBrowser(maybeBrowser.browser, coordination),
+        kind: maybeBrowser.kind
+      };
     }
   }
 
   throw new BrowserBridgeUnavailableError();
 }
 
-async function tryBrowserGet(browsers: unknown, name: string): Promise<BrowserLike | undefined> {
+async function tryBrowserGet(browsers: unknown, name: string): Promise<ResolvedBrowser | undefined> {
   const get = (browsers as { get?: (browserName: string) => Promise<unknown> | unknown }).get;
   if (typeof get !== "function") {
     return undefined;
@@ -110,7 +126,7 @@ async function tryBrowserGet(browsers: unknown, name: string): Promise<BrowserLi
     if (normalized !== undefined && normalized.name === undefined) {
       normalized.name = browserNameFromSelector(name);
     }
-    return normalized;
+    return normalized === undefined ? undefined : { browser: normalized, kind: browserKindFromSelector(name) };
   } catch {
     return undefined;
   }
@@ -137,7 +153,7 @@ async function tryBrowserGetFirst(browsers: unknown): Promise<BrowserLike | unde
   }
 }
 
-async function tryBrowserGetPreferredListed(browsers: unknown): Promise<BrowserLike | undefined> {
+async function tryBrowserGetPreferredListed(browsers: unknown): Promise<ResolvedBrowser | undefined> {
   const list = (browsers as { list?: () => Promise<Array<Record<string, unknown>>> | Array<Record<string, unknown>> }).list;
   const get = (browsers as { get?: (browserName: string) => Promise<unknown> | unknown }).get;
 
@@ -162,7 +178,12 @@ async function tryBrowserGetPreferredListed(browsers: unknown): Promise<BrowserL
         preferred?.type === "iab" ? "iab" : preferred?.type === "extension" ? "extension" : id
       );
     }
-    return normalized;
+    return normalized === undefined ? undefined : {
+      browser: normalized,
+      kind: browserKindFromSelector(
+        preferred?.type === "iab" ? "iab" : preferred?.type === "extension" ? "extension" : id
+      )
+    };
   } catch {
     return undefined;
   }
@@ -172,6 +193,19 @@ function browserNameFromSelector(selector: string): string {
   if (selector === "iab") return "iab";
   if (selector === "extension" || selector === "chrome") return "chrome";
   return selector;
+}
+
+function browserKindFromSelector(selector: string): BrowserKind {
+  if (selector === "iab") return "iab";
+  if (selector === "extension") return "extension";
+  return /chrome/i.test(selector) ? "chrome" : "unknown";
+}
+
+function browserKindFromName(name: string | undefined): BrowserKind {
+  if (name === undefined) return "unknown";
+  if (/\biab\b|in[- ]?app/i.test(name)) return "iab";
+  if (/extension/i.test(name)) return "extension";
+  return /chrome/i.test(name) ? "chrome" : "unknown";
 }
 
 async function getOrCreateChatGPTPage(

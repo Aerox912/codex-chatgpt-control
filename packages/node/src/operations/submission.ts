@@ -438,6 +438,7 @@ export type SubmissionBlockerCode =
   | "rate_limited"
   | "permission_required"
   | "needs_confirmation"
+  | "project_creation_indeterminate"
   | "selector_drift"
   | "journal_unavailable"
   | "port_protocol_violation"
@@ -2224,6 +2225,6 @@ function isUuid(value: unknown): value is string {
 
 function isBlockerCode(value: unknown): value is SubmissionBlockerCode {
   return typeof value === "string" && [
-    "operation_cancelled", "operation_timeout", "stale_handle", "operation_state_corrupt", "target_binding_mismatch", "target_evidence_unavailable", "configuration_drift", "composer_drift", "attachment_manifest_mismatch", "input_file_changed", "ambiguous_file_handoff", "ambiguous_submit", "concurrent_user_turn", "send_control_unavailable", "tab_ownership_conflict", "runtime_incompatible", "backend_unavailable", "browser_bridge_unavailable", "login_required", "captcha", "rate_limited", "permission_required", "needs_confirmation", "selector_drift", "journal_unavailable", "port_protocol_violation", "already_completed"
+    "operation_cancelled", "operation_timeout", "stale_handle", "operation_state_corrupt", "target_binding_mismatch", "target_evidence_unavailable", "configuration_drift", "composer_drift", "attachment_manifest_mismatch", "input_file_changed", "ambiguous_file_handoff", "ambiguous_submit", "concurrent_user_turn", "send_control_unavailable", "tab_ownership_conflict", "runtime_incompatible", "backend_unavailable", "browser_bridge_unavailable", "login_required", "captcha", "rate_limited", "permission_required", "needs_confirmation", "project_creation_indeterminate", "selector_drift", "journal_unavailable", "port_protocol_violation", "already_completed"
   ].includes(value);
 }

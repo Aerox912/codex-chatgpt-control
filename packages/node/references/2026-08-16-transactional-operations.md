@@ -20,8 +20,10 @@ in the source tree. This is a preview contract, not a claim that every
 provider/browser primitive is live.
 
 In the current source, `createChatGPT()` opens the operation journal lazily.
-`chatgpt.operations.inspect(handle)` is deliberately browser-free and can
-inspect an authenticated local record. When no custom operation seam is
+`chatgpt.operations.prepare(request)` and `inspect(handle)` are deliberately
+browser-free. `prepare` authenticates and returns the durable operation handle
+before target routing, Project creation, upload, or Send; `inspect` reads that
+record later. When no custom operation seam is
 supplied, browser-touching `submit`, non-terminal `collect`, and `control` use
 lazy request-local ChatGPT factories. Browser attachment happens only after
 the journal has accepted the operation; recovery attaches by the authenticated
@@ -123,7 +125,8 @@ The backend wire commands are exactly:
 - `operations.inspect`
 - `operations.control`
 
-`operations.run` is an SDK-only composition of one `submit` followed by at
+`operations.prepare` is an SDK-only browser-free checkpoint. `operations.run`
+is an SDK-only composition of one `submit` followed by at
 most one `collect`; it is not a fifth backend command and must not be treated
 as an independently idempotent provider primitive.
 
@@ -161,7 +164,17 @@ const request = {
 const submitted = await chatgpt.operations.submit(request);
 ```
 
+For host-controlled timeout boundaries, persist the handle before entering the
+browser phase and then use the identical request and operation ID:
+
+```ts
+const checkpoint = await chatgpt.operations.prepare(request);
+// Persist checkpoint.handle in the caller's recovery record.
+const result = await chatgpt.operations.run(request);
+```
+
 `surface` is `chat` or `work`. The target is one of `{ type: "new" }`,
+`{ type: "project", name, icon?, color?, confirmCreation?: true }`,
 `{ type: "selected_tab" }`, `{ type: "tab_id", tabId }`,
 `{ type: "conversation_id", conversationId }`, or
 `{ type: "url", url }`. `files` contains request-only absolute host-local
@@ -255,16 +268,23 @@ to repeat Stop/steer automatically.
 
 The safe recovery loop is:
 
-1. Persist the latest redacted handle and the caller-owned `operationId` in the
+1. Call `prepare` and persist its redacted handle plus the caller-owned
+   `operationId` before starting a long browser phase. If a later call returns
+   a fresher handle, replace the saved locator.
+2. Preserve the exact immutable request. A Project target is exact and
+   existing-only unless `confirmCreation: true` is present in that same
+   request; routing failure never becomes a global `{ type: "new" }` target.
+3. Persist the latest redacted handle and the caller-owned `operationId` in the
    caller's own recovery record.
-2. Call `inspect` after a timeout, process restart, or lost response.
-3. If the operation is not terminal, call `collect` with that handle to observe
+4. Call `inspect` after a timeout, process restart, or lost response.
+5. If the operation is not terminal, call `collect` with that handle to observe
    the owned turn. Use `responseContent: "metadata"` while polling when raw
    text is not needed.
-4. For an uncertain handoff or Send, inspect the visible target/postcondition
+6. For an uncertain Project creation, handoff, or Send, inspect the visible
+   target/postcondition
    and reconcile the durable action intent. Do not call `submit` again with a
    new ID or a changed request.
-5. Use `control` only with the exact current generating handle and assistant
+7. Use `control` only with the exact current generating handle and assistant
    turn ID, after an explicit caller decision.
 
 Handles are locators, not bearer authority. After a restart, a configured
@@ -285,7 +305,7 @@ or structured error data.
 
 | Surface | With caller-owned `operationId` | Without it / current limitation |
 | --- | --- | --- |
-| `chatgpt.ask`, `askInThread`, `askWithFiles` | One transactional submit/collect composition. Target must be explicit enough for the mapper; response capture is metadata or Markdown/text. | Existing workflow sequence, unchanged compatibility behavior. |
+| `chatgpt.ask`, `askInThread`, `askWithFiles` | One transactional submit/collect composition. Workspace and explicit new-thread Project targets map to an exact `project` operation target and never fall back to global Chat. Result data includes a machine-readable stage such as `blocked-before-submit`, `creation-indeterminate`, `upload-indeterminate`, `submission-indeterminate`, `generating`, or `completed`. | Existing workflow sequence, unchanged compatibility behavior. |
 | `askAndDownload` | Download is rejected before browser use; collect the operation and use an explicit artifact-transfer operation when that adapter is available. | Existing download workflow remains available. |
 | `runner.run` | Same transactional mapper as Chat. Agent instructions use the rendered visible prompt semantics; `visible_setup_message` and `copy` are rejected because they require additional/legacy turns. Stream events remain milestones only. | Existing runner plan/sequence behavior. |
 | `responses.create` (TypeScript) | `operationId` opts into the same runner mapper. `instructions` are visible-prefix text only; API-only fields remain unsupported; operation ID and handle are returned in `browser_control`. | Existing narrow Responses-shaped runner adapter. |

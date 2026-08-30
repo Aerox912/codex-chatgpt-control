@@ -20,6 +20,10 @@ describe("ChatGPT Project routing", () => {
       color: "purple"
     });
     expect(workspaceProjectTarget({ name: "AI civilization platform" }).name).toBe("AI civilization platform");
+    expect(workspaceProjectTarget({
+      name: "Pokémon Burning Scales",
+      path: String.raw`E:\Worktrees\sample\pokemon-burning-scales-voxel-poc`
+    }).name).toBe("Pokémon Burning Scales");
     expect(suggestProjectAppearance("documentation-notes")).toEqual({ icon: "Writing", color: "orange" });
   });
 
@@ -207,6 +211,44 @@ describe("ChatGPT Project routing", () => {
     expect(fake.actions).not.toContain("create-project");
   });
 
+  it("extracts the exact Unicode Project name from a decorated Projects-grid row", async () => {
+    const fake = projectPage({
+      existingProject: true,
+      projectsIndexGrid: true,
+      projectName: "Pokémon Burning Scales",
+      decoratedGridText: "Blue Folder Pokémon Burning Scales Aug 13"
+    });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Poke\u0301mon Burning Scales" },
+      250
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { name: "Poke\u0301mon Burning Scales", created: false }
+    });
+    expect(fake.actions).toContain("open-project-row");
+    expect(fake.actions).not.toContain("create-project");
+  });
+
+  it("does not select a similarly named visible Project by substring", async () => {
+    const fake = projectPage({
+      existingProject: true,
+      projectsIndexGrid: true,
+      projectName: "Pokémon Burning Scales",
+      similarProjectName: "Pokémon Burning Scales Voxel PoC"
+    });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Pokémon Burning Scales" },
+      250
+    );
+
+    expect(result).toMatchObject({ ok: true, data: { created: false } });
+    expect(fake.actions.filter(action => action === "open-project-row")).toHaveLength(1);
+  });
+
   it("skips a Project icon whose button or link ancestor is absent", async () => {
     const fake = projectPage({
       directProjectSection: true,
@@ -298,6 +340,25 @@ describe("ChatGPT Project routing", () => {
       "create-project"
     ]));
   });
+
+  it("reports indeterminate creation after one confirmed click when reconciliation cannot prove the Project", async () => {
+    const fake = projectPage({ directProjectSection: true, projectComposerMissingAfterCreate: true });
+    const result = await openOrCreateProjectForNewThread(
+      { page: fake.page },
+      { name: "Codex ChatGPT Control", confirmCreation: true },
+      250
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: "partial",
+      blocker: {
+        code: "chatgpt_project_creation_indeterminate",
+        resumable: true
+      }
+    });
+    expect(fake.actions.filter(action => action === "create-project")).toHaveLength(1);
+  });
 });
 
 function projectPage(options: {
@@ -311,6 +372,10 @@ function projectPage(options: {
   projectRevealAfter?: number;
   projectsIndexRedirectsHome?: boolean;
   projectsIndexGrid?: boolean;
+  projectName?: string;
+  projectComposerMissingAfterCreate?: boolean;
+  decoratedGridText?: string;
+  similarProjectName?: string;
   sidebarHidden?: boolean;
 } = {}): { page: PageLike; actions: string[]; navigations: string[] } {
   const actions: string[] = [];
@@ -318,7 +383,7 @@ function projectPage(options: {
   let currentUrl = "https://chatgpt.com/";
   let createDialogOpen = false;
   let customizeDialogOpen = false;
-  let projectName = "Codex ChatGPT Control";
+  let projectName = options.projectName ?? "Codex ChatGPT Control";
   let sidebarOpen = options.sidebarHidden !== true;
   let showMoreClicks = 0;
   let waits = 0;
@@ -350,28 +415,44 @@ function projectPage(options: {
       locator: () => options.orphanProjectIcon === true ? orphanProjectAncestor : projectRow
     })
   });
-  const projectNameCell = locator({ count: 1, text: "Codex ChatGPT Control" });
-  const otherGridCell = locator({ count: 1, text: "Yesterday" });
-  const projectGridCells = locator({
-    count: 3,
-    text: "Codex ChatGPT Control",
-    nth: index => index === 0 ? projectNameCell : otherGridCell
-  });
-  const projectGridRow = locator({
-    count: 1,
-    text: "Codex ChatGPT Control Yesterday",
-    click: () => {
-      currentUrl = "https://chatgpt.com/g/g-p-test/project";
-      actions.push("open-project-row");
-    },
-    getByRole: role => role === "gridcell" ? projectGridCells : empty
-  });
+  const makeProjectGridRow = (visibleName: string, decoratedText: string): LocatorLike => {
+    const projectNameCell = locator({ count: 1, text: visibleName });
+    const otherGridCell = locator({ count: 1, text: "Aug 13" });
+    const projectGridCells = locator({
+      count: 3,
+      text: decoratedText,
+      nth: index => index === 0 ? projectNameCell : otherGridCell
+    });
+    const descendants = locator({ count: 3, allTextContents: ["Blue Folder", visibleName, "Aug 13"] });
+    return locator({
+      count: 1,
+      text: decoratedText,
+      click: () => {
+        currentUrl = "https://chatgpt.com/g/g-p-test/project";
+        actions.push("open-project-row");
+      },
+      getByRole: role => role === "gridcell" ? projectGridCells : empty,
+      getByText: text => typeof text === "string" && projectNamesMatch(text, visibleName) ? projectNameCell : empty,
+      locator: selector => selector === "*" ? descendants : empty
+    });
+  };
+  const projectGridRow = makeProjectGridRow(
+    projectName,
+    options.decoratedGridText ?? `${projectName} Yesterday`
+  );
+  const similarProjectGridRow = options.similarProjectName === undefined
+    ? undefined
+    : makeProjectGridRow(options.similarProjectName, `${options.similarProjectName} Yesterday`);
   const projectGridHeader = locator({ count: 1, text: "Name Modified" });
   const projectGridRows = locator({
     count: () => options.projectsIndexGrid === true && projectVisible()
-      ? 1 + (options.matchingProjectCount ?? 1)
+      ? 1 + (options.matchingProjectCount ?? 1) + (similarProjectGridRow === undefined ? 0 : 1)
       : 0,
-    nth: index => index === 0 ? projectGridHeader : projectGridRow
+    nth: index => index === 0
+      ? projectGridHeader
+      : similarProjectGridRow !== undefined && index === (options.matchingProjectCount ?? 1) + 1
+        ? similarProjectGridRow
+        : projectGridRow
   });
 
   const customizeDialog = locator({
@@ -483,7 +564,10 @@ function projectPage(options: {
       }
       if (role === "dialog" && name === "Create project") return createDialog;
       if (role === "textbox" && name instanceof RegExp && name.test(`New chat in ${projectName}`)) {
-        return locator({ count: currentUrl.includes("/g/g-p-test/project") ? 1 : 0 });
+        return locator({
+          count: currentUrl.includes("/g/g-p-test/project") && options.projectComposerMissingAfterCreate !== true ? 1 : 0,
+          text: `New chat in ${projectName}`
+        });
       }
       return empty;
     }
@@ -502,6 +586,8 @@ type LocatorOptions = {
   nth?: (index: number) => LocatorLike;
   throwOnInnerText?: boolean;
   getByRole?: (role: string, options?: Record<string, unknown>) => LocatorLike;
+  getByText?: (text: string | RegExp, options?: Record<string, unknown>) => LocatorLike;
+  allTextContents?: string[];
 };
 
 function locator(options: LocatorOptions): LocatorLike {
@@ -518,6 +604,8 @@ function locator(options: LocatorOptions): LocatorLike {
     nth: index => options.nth?.(index) ?? locator({ count: 0 }),
     first() { return this; },
     last() { return this; },
-    getByRole: (role, query) => options.getByRole?.(role, query) ?? locator({ count: 0 })
+    getByRole: (role, query) => options.getByRole?.(role, query) ?? locator({ count: 0 }),
+    getByText: (text, query) => options.getByText?.(text, query) ?? locator({ count: 0 }),
+    allTextContents: async () => options.allTextContents ?? []
   };
 }

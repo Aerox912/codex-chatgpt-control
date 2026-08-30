@@ -87,6 +87,27 @@ describe("transactional operation wire request validators", () => {
     })).not.toThrow();
   });
 
+  it("accepts an exact Project target and rejects non-canonical creation authority", () => {
+    expect(() => validateOperationSubmitRequest({
+      ...submitRequest(),
+      target: {
+        type: "project",
+        name: "Pokémon Burning Scales",
+        icon: "Folder",
+        color: "blue",
+        confirmCreation: true
+      }
+    })).not.toThrow();
+    expect(() => validateOperationSubmitRequest({
+      ...submitRequest(),
+      target: {
+        type: "project",
+        name: "Pokémon Burning Scales",
+        confirmCreation: false
+      }
+    } as unknown as OperationSubmitRequestV1)).toThrowError(OperationWireRequestError);
+  });
+
   it("rejects wrapper envelopes and unknown fields as closed shapes", () => {
     const submit = submitRequest();
     const collect: OperationCollectRequestV1 = {

@@ -184,6 +184,7 @@ ChatGPTExperience = Literal["chat", "work", "unknown"]
 SurfaceSelectorProfile = Literal[
     "chat_legacy_v1",
     "chat_simplified_v1",
+    "project_chat_v1",
     "work_basic_v1",
     "work_advanced_v1",
     "unknown",

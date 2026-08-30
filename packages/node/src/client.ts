@@ -108,6 +108,7 @@ import {
   type OperationControlAdapterFactoryContext,
   type OperationClientCollectOptions,
   type OperationClientControlOptions,
+  type OperationClientPrepareOptions,
   type OperationClientRunOptions,
   type OperationClientSubmitOptions,
   type OperationHandleAdapterFactory,
@@ -117,6 +118,7 @@ import { OperationJournal } from "./operations/journal.js";
 import {
   OperationService,
   type OperationBrowserAdapter,
+  type OperationPrepareResult,
   type OperationServiceOptions
 } from "./operations/service.js";
 import type {
@@ -192,6 +194,7 @@ export type ChatGPTOperationsOptions = Readonly<{
 
 /** Stable, lazily initialized facade exposed as `chatgpt.operations`. */
 export type ChatGPTOperations = Readonly<{
+  prepare(request: OperationSubmitRequestV1, options?: OperationClientPrepareOptions): Promise<OperationPrepareResult>;
   submit(request: OperationSubmitRequestV1, options?: OperationClientSubmitOptions): Promise<OperationSubmitResult>;
   collect(handle: OperationHandleV1, options?: OperationClientCollectOptions): Promise<CollectorResult>;
   inspect(handle: OperationHandleV1): Promise<OperationInspectResult>;
@@ -411,6 +414,9 @@ export function createChatGPT(options: ChatGPTClientOptions = {}): ChatGPTClient
     return runtime.run(env => operationRuntime.run(env, callback));
   };
   const operations: ChatGPTOperations = Object.freeze({
+    prepare: (request, operationOptions) => runOperationInvocation(
+      () => operationClient().then(client => client.prepare(request, operationOptions))
+    ),
     submit: (request, operationOptions) => runOperationInvocation(
       () => operationClient().then(client => client.submit(request, operationOptions))
     ),
@@ -1255,6 +1261,7 @@ type TransactionalAskPreparationResult =
 type TransactionalAskData = Readonly<{
   operationId: string;
   responseFormat: TransactionalResponseFormat;
+  stage?: TransactionalOperationStage;
   handle?: OperationHandleV1;
   requestDigest?: string;
   pending?: boolean;
@@ -1267,6 +1274,17 @@ type TransactionalAskData = Readonly<{
   generationActive?: boolean;
   artifacts?: unknown;
 }>;
+
+type TransactionalOperationStage =
+  | "blocked-before-submit"
+  | "creation-indeterminate"
+  | "upload-indeterminate"
+  | "ready-to-submit"
+  | "submission-indeterminate"
+  | "submitted"
+  | "generating"
+  | "capturing"
+  | "completed";
 
 const TRANSACTIONAL_OPERATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
@@ -1942,6 +1960,8 @@ function transactionalTarget(
   const thread = args.thread ?? defaults?.thread;
   const existingTab = args.existingTab ?? defaults?.existingTab;
   const preferExistingTab = args.preferExistingTab ?? defaults?.preferExistingTab;
+  const defaultProject = defaults?.project;
+  const defaultConfirmGlobal = defaults?.confirmGlobal;
 
   if (thread !== undefined) {
     if (existingTab !== undefined || preferExistingTab === true) {
@@ -1951,7 +1971,18 @@ function transactionalTarget(
         fieldPath: "thread"
       };
     }
-    return targetFromWorkflowThread(thread);
+    return targetFromWorkflowThread(thread, defaultProject, defaultConfirmGlobal);
+  }
+
+  if (defaultProject !== undefined) {
+    if (existingTab !== undefined || preferExistingTab === true) {
+      return {
+        ok: false,
+        message: "workspace Project routing cannot be combined with existingTab or preferExistingTab on the transactional ask path.",
+        fieldPath: "project"
+      };
+    }
+    return targetFromProject(defaultProject, defaultConfirmGlobal, "project");
   }
 
   if (preferExistingTab === true) {
@@ -1968,11 +1999,19 @@ function transactionalTarget(
   return { ok: true, target: { type: "new" } };
 }
 
-function targetFromWorkflowThread(thread: WorkflowThread): TransactionalTargetResult {
+function targetFromWorkflowThread(
+  thread: WorkflowThread,
+  defaultProject?: ChatGPTProjectTarget | false,
+  defaultConfirmGlobal?: boolean
+): TransactionalTargetResult {
   if (isTypedThread(thread)) {
     switch (thread.type) {
       case "new":
-        return { ok: true, target: { type: "new" } };
+        return targetFromProject(
+          thread.project === undefined ? defaultProject : thread.project,
+          thread.confirmGlobal ?? defaultConfirmGlobal,
+          "thread.project"
+        );
       case "current":
         return { ok: true, target: { type: "selected_tab" } };
       case "url":
@@ -2010,7 +2049,38 @@ function targetFromWorkflowThread(thread: WorkflowThread): TransactionalTargetRe
       fieldPath: "thread"
     };
   }
-  return { ok: true, target: { type: "new" } };
+  return targetFromProject(defaultProject, defaultConfirmGlobal, "project");
+}
+
+function targetFromProject(
+  project: ChatGPTProjectTarget | false | undefined,
+  confirmGlobal: boolean | undefined,
+  fieldPath: string
+): TransactionalTargetResult {
+  if (project === false) {
+    return confirmGlobal === true
+      ? { ok: true, target: { type: "new" } }
+      : {
+          ok: false,
+          message: "Global Chat routing requires confirmGlobal: true on the transactional ask path.",
+          fieldPath: "confirmGlobal"
+        };
+  }
+  if (project === undefined) return { ok: true, target: { type: "new" } };
+  const name = project.name.trim();
+  if (name.length === 0) {
+    return { ok: false, message: "Project name must be non-empty.", fieldPath: `${fieldPath}.name` };
+  }
+  return {
+    ok: true,
+    target: {
+      type: "project",
+      name,
+      ...(project.icon === undefined ? {} : { icon: project.icon }),
+      ...(project.color === undefined ? {} : { color: project.color }),
+      ...(project.confirmCreation === true ? { confirmCreation: true as const } : {})
+    }
+  };
 }
 
 function targetFromExistingTab(existingTab: NonNullable<AskWorkflowArgs["existingTab"]>): TransactionalTargetResult {
@@ -2221,6 +2291,7 @@ function transactionalAskCommandResult(
   const base: TransactionalAskData = {
     operationId: handle.operationId,
     responseFormat: prepared.responseFormat,
+    stage: transactionalOperationStage(handle),
     handle,
     requestDigest: handle.requestDigest
   };
@@ -2229,7 +2300,8 @@ function transactionalAskCommandResult(
     return transactionalBlockerResult(
       {
         ...base,
-        submissionState: transactionalSubmissionState(handle, submission.blocker.mutationBoundary),
+        stage: transactionalOperationStage(handle, submission.blocker.code, submission.blocker.mutationBoundary),
+        submissionState: transactionalSubmissionState(handle, submission.blocker.mutationBoundary, false),
         complete: false,
         completionState: transactionalCompletionState(handle.phase),
         generationActive: handle.phase === "generating"
@@ -2303,8 +2375,14 @@ function transactionalAskCommandResult(
 
 function transactionalSubmissionState(
   handle: OperationHandleV1,
-  boundary: OperationHandleV1["mutationBoundary"]
+  boundary: OperationHandleV1["mutationBoundary"],
+  submissionConfirmed = true
 ): NonNullable<TransactionalAskData["submissionState"]> {
+  if (!submissionConfirmed) {
+    return boundary === "send_may_have_occurred" || boundary === "control_may_have_occurred"
+      ? "submitted_unconfirmed"
+      : "not_submitted";
+  }
   if (["submitted", "generating", "capturing", "completed"].includes(handle.phase)) {
     return handle.phase === "generating" ? "submitted_generating" : "submitted";
   }
@@ -2320,6 +2398,30 @@ function transactionalCompletionState(
   if (phase === "generating") return "generating";
   if (phase === "uncertain" || phase === "capturing") return "partial";
   return "unknown";
+}
+
+function transactionalOperationStage(
+  handle: OperationHandleV1,
+  blockerCode?: string,
+  unconfirmedBoundary?: OperationHandleV1["mutationBoundary"]
+): TransactionalOperationStage {
+  if (blockerCode === "project_creation_indeterminate") return "creation-indeterminate";
+  if (unconfirmedBoundary === "send_may_have_occurred" || unconfirmedBoundary === "control_may_have_occurred") {
+    return "submission-indeterminate";
+  }
+  if (unconfirmedBoundary === "handoff_may_have_occurred") return "upload-indeterminate";
+  if (handle.phase === "completed") return "completed";
+  if (handle.phase === "capturing") return "capturing";
+  if (handle.phase === "generating") return "generating";
+  if (handle.phase === "submitted") return "submitted";
+  if (handle.phase === "send_pending" || handle.mutationBoundary === "send_may_have_occurred") {
+    return "submission-indeterminate";
+  }
+  if (handle.phase === "handoff_pending" || handle.mutationBoundary === "handoff_may_have_occurred") {
+    return "upload-indeterminate";
+  }
+  if (handle.phase === "ready") return "ready-to-submit";
+  return "blocked-before-submit";
 }
 
 function transactionalBlockerResult(

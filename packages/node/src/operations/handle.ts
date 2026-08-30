@@ -23,6 +23,13 @@ const MAX_JSON_KEYS = 10_000;
 const MAX_JSON_STRING_BYTES = 8 * 1024 * 1024;
 const MAX_JSON_KEY_BYTES = 4096;
 const RESERVED_CANONICAL_KEYS = new Set(["$undefined", "$date", "$bytes"]);
+const PROJECT_ICONS = new Set([
+  "Folder", "Currency Dollar", "Book", "Graduation Cap", "Pencil", "Writing", "Code Brackets", "Terminal",
+  "Music", "Popcorn", "Customize", "Palette", "Stethoscope", "Health", "Lotus", "Suitcase", "Bar Chart",
+  "Kettlebell", "Dumbbell", "Logs", "Balancing Scale", "Globe Spin", "Plane", "Globe", "Wrench", "Paw",
+  "Flask", "Brain", "Heart", "Plant"
+]);
+const PROJECT_COLORS = new Set(["default", "red", "orange", "yellow", "green", "blue", "purple", "pink"]);
 
 type SnapshotStore = WeakMap<object, Map<string, unknown>>;
 
@@ -457,6 +464,25 @@ function validateTargetRequest(target: OperationSubmitRequestV1["target"]): void
   }
   if (type === "new" || type === "selected_tab") {
     assertExactKeys(target, "operation target", ["type"]);
+    return;
+  }
+  if (type === "project") {
+    assertExactKeys(target, "operation target", ["type", "name", "icon", "color", "confirmCreation"]);
+    validateBoundedString(readData(target, "name"), "target.name");
+    const icon = readData(target, "icon");
+    const color = readData(target, "color");
+    const confirmCreation = readData(target, "confirmCreation");
+    if (icon !== undefined) {
+      validateBoundedString(icon, "target.icon");
+      if (!PROJECT_ICONS.has(icon as string)) throw new OperationHandleError("invalid_operation_target", "target.icon is unsupported.");
+    }
+    if (color !== undefined) {
+      validateBoundedString(color, "target.color");
+      if (!PROJECT_COLORS.has(color as string)) throw new OperationHandleError("invalid_operation_target", "target.color is unsupported.");
+    }
+    if (confirmCreation !== undefined && confirmCreation !== true) {
+      throw new OperationHandleError("invalid_operation_target", "target.confirmCreation may only be true when present.");
+    }
     return;
   }
   if (type === "tab_id") {

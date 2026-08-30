@@ -94,6 +94,7 @@
         "rate_limited",
         "permission_required",
         "needs_confirmation",
+        "project_creation_indeterminate",
         "selector_drift",
         "send_control_unavailable",
         "capture_ownership_lost",

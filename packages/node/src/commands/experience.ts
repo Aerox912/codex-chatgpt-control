@@ -289,6 +289,12 @@ export function detectExperienceFromSnapshot(snapshot: SurfaceSnapshot): DetectE
   for (const label of chatComposer) {
     evidence.push({ source: "composer", label });
   }
+  const projectChatComposer = /\/g\/g-p-[^/]+\/project(?:[/?#]|$)/i.test(url)
+    ? composerLabels.filter(label => /^new chat in\s+\S/u.test(label))
+    : [];
+  for (const label of projectChatComposer) {
+    evidence.push({ source: "composer", label });
+  }
 
   const workAxisCount = (["model", "effort", "speed"] as const)
     .filter(axis => hasAnyLabel(controls, localeLabels.configurationAxes[axis]))
@@ -334,6 +340,7 @@ export function detectExperienceFromSnapshot(snapshot: SurfaceSnapshot): DetectE
     + (/\/work(?:\/|$|\?)/.test(url) ? 3 : 0)
     + (containsAny(mainText, ["work on something else", "work on anything"]) ? 2 : 0);
   const chatScore = chatComposer.length * 4
+    + projectChatComposer.length * 6
     + (chatSurfaceSelected ? 10 : 0)
     + (compactChatAdvanced ? 4 : 0);
 
@@ -477,6 +484,13 @@ function profileFromSnapshot(
   }
   if (experience !== "chat") {
     return "unknown";
+  }
+
+  const projectComposer = snapshot.composerLabels
+    .map(normalizeForLabelMatch)
+    .some(label => /^new chat in\s+\S/u.test(label));
+  if (/\/g\/g-p-[^/]+\/project(?:[/?#]|$)/i.test(snapshot.url) && projectComposer) {
+    return "project_chat_v1";
   }
 
   const simplifiedOptions = [

@@ -413,7 +413,7 @@ export function createOperationBrowserAdapter(
     try {
       probe = await resolveProbe(options, request);
       assertProbePage(page, probe.page);
-      if (request.target.type === "new") {
+      if (isNewConversationTarget(request.target)) {
         if (probe.targetLifecycle !== undefined && probe.targetLifecycle !== "new_pending") {
           throw new OperationBrowserAdapterError("target_binding_mismatch");
         }
@@ -431,7 +431,7 @@ export function createOperationBrowserAdapter(
       const input: BrowserTargetBindingInput = {
         page,
         evidence: probe.evidence,
-        ...(request.target.type === "new"
+        ...(isNewConversationTarget(request.target)
           ? { targetLifecycle: "new_pending" as const }
           : probe.targetLifecycle === undefined ? {} : { targetLifecycle: probe.targetLifecycle }),
         ...((probe.newTargetAnchorDigest ?? options.newTargetAnchorDigest) === undefined
@@ -1908,10 +1908,15 @@ function assertStaticTarget(
       if (evidence.conversation.status === "available" && evidence.conversation.value === target.conversationId) return;
       break;
     case "new":
+    case "project":
     case "url":
       break;
   }
   throw new OperationBrowserAdapterError("target_evidence_unavailable");
+}
+
+function isNewConversationTarget(target: OperationTargetRequestV1): boolean {
+  return target.type === "new" || target.type === "project";
 }
 
 function bindingFor(

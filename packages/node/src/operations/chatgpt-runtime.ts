@@ -12,6 +12,10 @@ import {
   openExperience,
   readSurfaceSnapshot
 } from "../commands/experience.js";
+import {
+  openOrCreateProjectForNewThread,
+  projectPageMatchesTarget
+} from "../commands/projects.js";
 import type {
   BootstrapArgs,
   BrowserLike,
@@ -184,11 +188,12 @@ export function createChatGPTOperationControlAdapterFactory(
 export const createChatGPTControlAdapterFactory = createChatGPTOperationControlAdapterFactory;
 
 export class ChatGPTRuntimeFactoryError extends Error {
-  readonly code = "chatgpt_runtime_unavailable" as const;
+  readonly code: "chatgpt_runtime_unavailable" | "needs_confirmation" | "project_creation_indeterminate" | "selector_drift";
 
-  constructor() {
+  constructor(code: "chatgpt_runtime_unavailable" | "needs_confirmation" | "project_creation_indeterminate" | "selector_drift" = "chatgpt_runtime_unavailable") {
     super("The ChatGPT operation runtime could not prove the requested browser target safely.");
     this.name = "ChatGPTRuntimeFactoryError";
+    this.code = code;
   }
 }
 
@@ -387,20 +392,25 @@ function snapshotOwner(value: CoordinatorOwner): CoordinatorOwner {
 
 function snapshotRuntimeEnv(value: RuntimeEnv): RuntimeEnv {
   if (value === null || typeof value !== "object") throw new ChatGPTRuntimeFactoryError();
-  assertOwnDataKeys(value, ["agent", "browser", "page", "clipboard", "now", "expectedTabId"]);
+  assertOwnDataKeys(value, ["agent", "browser", "browserKind", "page", "clipboard", "now", "expectedTabId"]);
   const snapshot: RuntimeEnv = {};
   const agent = readDataProperty(value, "agent");
   const browser = readDataProperty<BrowserLike>(value, "browser");
+  const browserKind = readDataProperty<RuntimeEnv["browserKind"]>(value, "browserKind");
   const page = readDataProperty<PageLike>(value, "page");
   const clipboard = readDataProperty(value, "clipboard");
   const now = readDataProperty<() => Date>(value, "now");
   const expectedTabId = readDataProperty(value, "expectedTabId");
   if (now !== undefined && typeof now !== "function") throw new ChatGPTRuntimeFactoryError();
+  if (browserKind !== undefined && browserKind !== "iab" && browserKind !== "chrome" && browserKind !== "extension" && browserKind !== "unknown") {
+    throw new ChatGPTRuntimeFactoryError();
+  }
   if (expectedTabId !== undefined && (typeof expectedTabId !== "string" || !ID_PATTERN.test(expectedTabId))) {
     throw new ChatGPTRuntimeFactoryError();
   }
   if (agent !== undefined) snapshot.agent = agent;
   if (browser !== undefined) snapshot.browser = unwrapCoordinatedBrowser(browser);
+  if (browserKind !== undefined) snapshot.browserKind = browserKind;
   if (page !== undefined) snapshot.page = unwrapCoordinatedPage(page);
   if (clipboard !== undefined && clipboard !== null && typeof clipboard === "object") {
     snapshot.clipboard = clipboard as ClipboardLike;
@@ -505,6 +515,29 @@ function snapshotTargetRequest(value: OperationTargetRequestV1): OperationTarget
     case "selected_tab":
       assertOwnDataKeys(value, ["type"]);
       return Object.freeze({ type });
+    case "project": {
+      assertOwnDataKeys(value, ["type", "name", "icon", "color", "confirmCreation"]);
+      const name = readDataProperty(value, "name");
+      const icon = readDataProperty<string>(value, "icon");
+      const color = readDataProperty<string>(value, "color");
+      const confirmCreation = readDataProperty(value, "confirmCreation");
+      if (typeof name !== "string" || name.trim().length === 0 || name.length > 512 || /[\u0000-\u001f\u007f]/u.test(name)) {
+        throw new ChatGPTRuntimeFactoryError();
+      }
+      if (icon !== undefined && (icon.length === 0 || icon.length > 256 || /[\u0000-\u001f\u007f]/u.test(icon))) {
+        throw new ChatGPTRuntimeFactoryError();
+      }
+      if (icon !== undefined && !PROJECT_ICONS.has(icon)) throw new ChatGPTRuntimeFactoryError();
+      if (color !== undefined && !PROJECT_COLORS.has(color)) throw new ChatGPTRuntimeFactoryError();
+      if (confirmCreation !== undefined && confirmCreation !== true) throw new ChatGPTRuntimeFactoryError();
+      return Object.freeze({
+        type,
+        name,
+        ...(icon === undefined ? {} : { icon: icon as NonNullable<Extract<OperationTargetRequestV1, { type: "project" }>["icon"]> }),
+        ...(color === undefined ? {} : { color: color as NonNullable<Extract<OperationTargetRequestV1, { type: "project" }>["color"]> }),
+        ...(confirmCreation === true ? { confirmCreation: true as const } : {})
+      });
+    }
     case "tab_id": {
       assertOwnDataKeys(value, ["type", "tabId"]);
       const tabId = readDataProperty(value, "tabId");
@@ -611,8 +644,9 @@ async function captureChatGPTRequest(options: CaptureRequestOptions): Promise<Op
       label: "operation-target-prepare"
     },
     async () => {
+      await routeProjectTarget(rawPage, targetRequest, options.surfaceTimeoutMs);
       await validateExactNavigation(rawPage, targetRequest);
-      await ensureSurface(rawPage, targetSurface, targetRequest.type === "new", options.surfaceTimeoutMs, tabId);
+      await ensureSurface(rawPage, targetSurface, isNewConversationTarget(targetRequest), options.surfaceTimeoutMs, tabId);
     }
   );
 
@@ -651,7 +685,7 @@ async function captureChatGPTRequest(options: CaptureRequestOptions): Promise<Op
         return Object.freeze({
           page: rawPage,
           evidence: observed.snapshot.target,
-          ...(request.target.type === "new" ? { targetLifecycle: "new_pending" as const } : {}),
+          ...(isNewConversationTarget(request.target) ? { targetLifecycle: "new_pending" as const } : {}),
           ...(anchor === undefined ? {} : {
             newTargetAnchorDigest: anchor.anchorDigest,
             blankTaskEvidenceDigest: anchor.blankTaskEvidenceDigest
@@ -1046,6 +1080,8 @@ function bootstrapArgsForTarget(target: OperationTargetRequestV1): BootstrapArgs
   switch (target.type) {
     case "new":
       return Object.freeze({ url: CHATGPT_HOME, preferExistingTab: false });
+    case "project":
+      return Object.freeze({ url: "https://chatgpt.com/projects", preferExistingTab: false });
     case "selected_tab":
       return Object.freeze({
         existingTab: {
@@ -1095,7 +1131,7 @@ function bootstrapEnvironment(
   const copy: RuntimeEnv = { ...env };
   // A selected-tab request must be proven through browser.tabs.selected. A
   // cached arbitrary page would make `existingTab: selected` non-exact.
-  if (target.type === "new" || target.type === "selected_tab") {
+  if (isNewConversationTarget(target) || target.type === "selected_tab") {
     delete copy.page;
   }
   if (recoveryTarget !== undefined) {
@@ -1138,6 +1174,10 @@ async function validateExactNavigation(
   page: Readonly<PageLike>,
   target: OperationTargetRequestV1
 ): Promise<void> {
+  if (target.type === "project") {
+    if (!await projectPageMatchesTarget(page as PageLike, target.name)) throw new ChatGPTRuntimeFactoryError();
+    return;
+  }
   if (target.type !== "conversation_id" && target.type !== "url") return;
   const actual = await Promise.resolve(page.url?.()).catch(() => undefined);
   const actualCanonical = canonicalChatGPTUrl(actual);
@@ -1202,7 +1242,7 @@ function observationTargetForRequest(
     browserId,
     tabId,
     coordinationScope: "process",
-    ...(target.type === "new" ? { targetLifecycle: "new_pending" as const } : {}),
+    ...(isNewConversationTarget(target) ? { targetLifecycle: "new_pending" as const } : {}),
     ...(expectedConversationId === undefined ? {} : { expectedConversationId })
   };
 }
@@ -1276,6 +1316,12 @@ function sameTargetRequest(
     case "new":
     case "selected_tab":
       return true;
+    case "project":
+      return right.type === "project"
+        && left.name === right.name
+        && left.icon === right.icon
+        && left.color === right.color
+        && left.confirmCreation === right.confirmCreation;
     case "tab_id":
       return right.type === "tab_id" && left.tabId === right.tabId;
     case "conversation_id":
@@ -1284,6 +1330,44 @@ function sameTargetRequest(
       return right.type === "url" && left.url === right.url;
   }
 }
+
+function isNewConversationTarget(target: OperationTargetRequestV1): boolean {
+  return target.type === "new" || target.type === "project";
+}
+
+async function routeProjectTarget(
+  page: PageLike,
+  target: OperationTargetRequestV1,
+  timeoutMs: number
+): Promise<void> {
+  if (target.type !== "project") return;
+  const routed = await openOrCreateProjectForNewThread(
+    { page },
+    {
+      name: target.name,
+      ...(target.icon === undefined ? {} : { icon: target.icon }),
+      ...(target.color === undefined ? {} : { color: target.color }),
+      ...(target.confirmCreation === undefined ? {} : { confirmCreation: target.confirmCreation })
+    },
+    timeoutMs
+  );
+  if (routed.ok) return;
+  if (routed.blocker?.code === "chatgpt_project_creation_confirmation_required") {
+    throw new ChatGPTRuntimeFactoryError("needs_confirmation");
+  }
+  if (routed.blocker?.code === "chatgpt_project_creation_indeterminate") {
+    throw new ChatGPTRuntimeFactoryError("project_creation_indeterminate");
+  }
+  throw new ChatGPTRuntimeFactoryError("selector_drift");
+}
+
+const PROJECT_ICONS = new Set([
+  "Folder", "Currency Dollar", "Book", "Graduation Cap", "Pencil", "Writing", "Code Brackets", "Terminal",
+  "Music", "Popcorn", "Customize", "Palette", "Stethoscope", "Health", "Lotus", "Suitcase", "Bar Chart",
+  "Kettlebell", "Dumbbell", "Logs", "Balancing Scale", "Globe Spin", "Plane", "Globe", "Wrench", "Paw",
+  "Flask", "Brain", "Heart", "Plant"
+]);
+const PROJECT_COLORS = new Set(["default", "red", "orange", "yellow", "green", "blue", "purple", "pink"]);
 
 function readDataProperty<T = unknown>(value: object, key: string): T | undefined {
   try {

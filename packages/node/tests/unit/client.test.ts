@@ -65,6 +65,31 @@ describe("createChatGPT", () => {
     }
   });
 
+  it("prepares a durable operation handle before constructing a browser adapter", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chatgpt-operation-prepare-"));
+    const factory = vi.fn(async () => throwingOperationAdapter());
+    const chatgpt = createChatGPT({ operations: { stateRoot: root, adapterFactory: factory } });
+    try {
+      const prepared = await chatgpt.operations.prepare({
+        schemaVersion: OPERATION_REQUEST_SCHEMA_VERSION,
+        operationId: "10101010-1010-4010-8010-101010101010",
+        surface: "chat",
+        prompt: "private prompt",
+        target: { type: "project", name: "Pokémon Burning Scales" }
+      });
+
+      expect(prepared.handle).toMatchObject({
+        operationId: "10101010-1010-4010-8010-101010101010",
+        phase: "prepared",
+        mutationBoundary: "none"
+      });
+      expect(prepared.state.phase).toBe("prepared");
+      expect(factory).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses the lazy ChatGPT runtime by default instead of an unavailable placeholder", async () => {
     const root = await mkdtemp(join(tmpdir(), "chatgpt-default-operation-runtime-"));
     let createCalls = 0;
@@ -569,6 +594,77 @@ describe("createChatGPT", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("keeps an explicit workspace Project alias authoritative on the transactional path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chatgpt-transactional-project-alias-"));
+    const captured: OperationSubmitRequestV1[] = [];
+    const chatgpt = createChatGPT({
+      workspaceProject: {
+        name: "Pokémon Burning Scales",
+        path: String.raw`E:\Worktrees\sample\pokemon-burning-scales-voxel-poc`
+      },
+      operations: {
+        stateRoot: root,
+        adapterFactory: async ({ request }) => {
+          captured.push(request);
+          return throwingOperationAdapter();
+        }
+      }
+    });
+    try {
+      const result = await chatgpt.ask({
+        operationId: "45454545-4545-4545-8545-454545454545",
+        prompt: "private prompt",
+        wait: false,
+        read: false
+      });
+
+      expect(result.status).toBe("blocked");
+      expect(captured).toHaveLength(1);
+      expect(captured[0]?.target).toEqual({
+        type: "project",
+        name: "Pokémon Burning Scales",
+        icon: "Folder",
+        color: "blue"
+      });
+      expect(captured[0]?.target).not.toEqual({ type: "new" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports Project creation uncertainty as a resumable machine-readable stage", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chatgpt-transactional-project-indeterminate-"));
+    const base = throwingOperationAdapter();
+    const adapter: OperationBrowserAdapter = {
+      ...base,
+      resolveTarget: async () => {
+        const error = new Error("redacted");
+        Object.defineProperty(error, "code", { value: "project_creation_indeterminate" });
+        throw error;
+      }
+    };
+    const chatgpt = createChatGPT({
+      workspaceProject: { name: "Pokémon Burning Scales", confirmCreation: true },
+      operations: { stateRoot: root, adapterFactory: async () => adapter }
+    });
+    try {
+      const result = await chatgpt.ask({
+        operationId: "46464646-4646-4646-8646-464646464646",
+        prompt: "private prompt",
+        wait: false,
+        read: false
+      });
+
+      expect(result).toMatchObject({
+        status: "blocked",
+        blocker: { code: "project_creation_indeterminate", resumable: true },
+        data: { stage: "creation-indeterminate", submissionState: "not_submitted" }
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("propagates one caller operationId and does not resubmit on the same-ID retry", async () => {
     const root = await mkdtemp(join(tmpdir(), "chatgpt-transactional-ask-retry-"));
     const operationId = "66666666-6666-4666-8666-666666666666";
@@ -649,9 +745,46 @@ describe("createChatGPT", () => {
 
     expect(result.status).toBe("partial");
     expect((result.data as { submissionState?: string }).submissionState).toBe("not_submitted");
+    expect((result.data as { stage?: string }).stage).toBe("upload-indeterminate");
     expect((result.data as { handle?: OperationHandleV1 }).handle?.mutationBoundary).toBe("handoff_may_have_occurred");
 
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("reports an immediate post-Send uncertainty and recovers the same ID without sending twice", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chatgpt-transactional-send-uncertain-"));
+    const operationId = "91919191-9191-4191-8191-919191919191";
+    const calls = { send: 0, observeSend: 0, allowRecovery: false };
+    const chatgpt = createChatGPT({
+      operations: {
+        stateRoot: root,
+        adapterFactory: async () => pendingOperationAdapter(calls, "send_uncertain")
+      }
+    });
+
+    try {
+      const first = await chatgpt.ask({ operationId, prompt: "private prompt", wait: false, read: false });
+      expect(first).toMatchObject({
+        status: "partial",
+        data: {
+          stage: "submission-indeterminate",
+          submissionState: "submitted_unconfirmed",
+          handle: { operationId, mutationBoundary: "send_may_have_occurred" }
+        }
+      });
+      const observationsBeforeRecovery = calls.observeSend;
+      calls.allowRecovery = true;
+
+      const recovered = await chatgpt.ask({ operationId, prompt: "private prompt", wait: false, read: false });
+      expect(recovered).toMatchObject({
+        status: "partial",
+        data: { stage: "generating", submissionState: "submitted_generating" }
+      });
+      expect(calls.send).toBe(1);
+      expect(calls.observeSend).toBeGreaterThan(observationsBeforeRecovery);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("routes runner operation opt-in through the same journal and preserves rendered instructions", async () => {
@@ -1758,8 +1891,8 @@ function throwingOperationAdapter(): OperationBrowserAdapter {
 }
 
 function pendingOperationAdapter(
-  calls: { send: number; observeSend: number; legacy?: number },
-  finalStatus: "pending" | "blocked" | "completed" | "handoff_uncertain" = "pending"
+  calls: { send: number; observeSend: number; legacy?: number; allowRecovery?: boolean },
+  finalStatus: "pending" | "blocked" | "completed" | "handoff_uncertain" | "send_uncertain" = "pending"
 ): OperationBrowserAdapter {
   return {
     resolveTarget: async () => ({ target: operationTarget() }),
@@ -1779,6 +1912,12 @@ function pendingOperationAdapter(
       }),
       executePreparedSend: async (): Promise<SubmissionExecutePreparedSendResult> => {
         calls.send += 1;
+        if (finalStatus === "send_uncertain") {
+          return {
+            status: "uncertain",
+            result: { status: "uncertain", evidenceDigest: digest("m"), quarantine: "provider" }
+          };
+        }
         if (finalStatus === "blocked") {
           return {
             status: "blocked",
@@ -1791,16 +1930,24 @@ function pendingOperationAdapter(
         }
         return { status: "activated", activation: "activated", mutationMayHaveOccurred: true };
       },
-      verifyPreparedSend: async request => ({
-        status: "submitted",
-        targetBindingDigest: request.expected.targetBindingDigest,
-        evidenceDigest: digest("s"),
-        userTurnId: "user-1",
-        userTurnEvidenceDigest: digest("u"),
-        postSendDeltaDigest: digest("d")
-      } satisfies SubmissionFinalTransactionResult),
+      verifyPreparedSend: async request => {
+        if (finalStatus === "send_uncertain" && calls.allowRecovery !== true) {
+          return { status: "uncertain", evidenceDigest: digest("m"), quarantine: "provider" };
+        }
+        return {
+          status: "submitted",
+          targetBindingDigest: request.expected.targetBindingDigest,
+          evidenceDigest: digest("s"),
+          userTurnId: "user-1",
+          userTurnEvidenceDigest: digest("u"),
+          postSendDeltaDigest: digest("d")
+        } satisfies SubmissionFinalTransactionResult;
+      },
       recoverSend: async request => {
         calls.observeSend += 1;
+        if (finalStatus === "send_uncertain" && calls.allowRecovery !== true) {
+          return { status: "uncertain", evidenceDigest: digest("m"), quarantine: "provider" };
+        }
         return {
           status: "already_submitted",
           targetBindingDigest: request.expected.targetBindingDigest,

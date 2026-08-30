@@ -6988,7 +6988,8 @@ function isPageWrapper(value) {
 var MAX_EXISTING_TAB_DIAGNOSTIC_CANDIDATES = 10;
 var MAX_EXISTING_TAB_DIAGNOSTIC_FIELD_LENGTH = 240;
 async function attachChatGPTBrowser(env, args = {}, coordination) {
-  const browser = await getBrowser(env, coordination);
+  const resolved = await getBrowser(env, coordination);
+  const browser = resolved.browser;
   const page = await getOrCreateChatGPTPage(browser, env, args, coordination);
   await assertPageOnChatGPTOrigin(page);
   const state = await readPageState(page);
@@ -6999,7 +7000,8 @@ async function attachChatGPTBrowser(env, args = {}, coordination) {
   const attached = {
     browser,
     page,
-    browserName: browser.name ?? "chrome"
+    browserName: browser.name ?? "chrome",
+    browserKind: resolved.kind
   };
   const tabId = tabIdFromPage(page);
   if (tabId !== void 0) {
@@ -7008,16 +7010,21 @@ async function attachChatGPTBrowser(env, args = {}, coordination) {
   return attached;
 }
 async function resolveChatGPTBrowser(env, coordination) {
-  return await getBrowser(env, coordination);
+  const resolved = await getBrowser(env, coordination);
+  env.browserKind = resolved.kind;
+  return resolved.browser;
 }
 async function getBrowser(env, coordination) {
   if (env.browser !== void 0) {
     if (unwrapCoordinatedBrowser(env.browser) !== env.browser) {
-      return env.browser;
+      return { browser: env.browser, kind: env.browserKind ?? browserKindFromName(env.browser.name) };
     }
     const normalized = normalizeBrowserProvider(env.browser);
     if (normalized !== void 0) {
-      return createCoordinatedBrowser(normalized, coordination);
+      return {
+        browser: createCoordinatedBrowser(normalized, coordination),
+        kind: env.browserKind ?? browserKindFromName(normalized.name)
+      };
     }
   }
   const anyEnv = env;
@@ -7026,7 +7033,10 @@ async function getBrowser(env, coordination) {
   if (browsers !== void 0 && typeof browsers === "object") {
     const maybeBrowser = await tryBrowserGet(browsers, "iab") ?? await tryBrowserGetPreferredListed(browsers) ?? await tryBrowserGet(browsers, "extension") ?? await tryBrowserGet(browsers, "chrome");
     if (maybeBrowser !== void 0) {
-      return createCoordinatedBrowser(maybeBrowser, coordination);
+      return {
+        browser: createCoordinatedBrowser(maybeBrowser.browser, coordination),
+        kind: maybeBrowser.kind
+      };
     }
   }
   throw new BrowserBridgeUnavailableError();
@@ -7042,7 +7052,7 @@ async function tryBrowserGet(browsers, name) {
     if (normalized !== void 0 && normalized.name === void 0) {
       normalized.name = browserNameFromSelector(name);
     }
-    return normalized;
+    return normalized === void 0 ? void 0 : { browser: normalized, kind: browserKindFromSelector(name) };
   } catch {
     return void 0;
   }
@@ -7067,7 +7077,12 @@ async function tryBrowserGetPreferredListed(browsers) {
         preferred?.type === "iab" ? "iab" : preferred?.type === "extension" ? "extension" : id2
       );
     }
-    return normalized;
+    return normalized === void 0 ? void 0 : {
+      browser: normalized,
+      kind: browserKindFromSelector(
+        preferred?.type === "iab" ? "iab" : preferred?.type === "extension" ? "extension" : id2
+      )
+    };
   } catch {
     return void 0;
   }
@@ -7076,6 +7091,17 @@ function browserNameFromSelector(selector) {
   if (selector === "iab") return "iab";
   if (selector === "extension" || selector === "chrome") return "chrome";
   return selector;
+}
+function browserKindFromSelector(selector) {
+  if (selector === "iab") return "iab";
+  if (selector === "extension") return "extension";
+  return /chrome/i.test(selector) ? "chrome" : "unknown";
+}
+function browserKindFromName(name) {
+  if (name === void 0) return "unknown";
+  if (/\biab\b|in[- ]?app/i.test(name)) return "iab";
+  if (/extension/i.test(name)) return "extension";
+  return /chrome/i.test(name) ? "chrome" : "unknown";
 }
 async function getOrCreateChatGPTPage(browser, env, args, coordination) {
   const targetUrl = args.url ?? CHATGPT_HOME;
@@ -7555,6 +7581,7 @@ async function bootstrap(env, args = {}) {
   try {
     const attached = await attachChatGPTBrowser(env, args);
     env.browser = attached.browser;
+    env.browserKind = attached.browserKind;
     env.page = attached.page;
     if (attached.tabId !== void 0) {
       env.expectedTabId = attached.tabId;
@@ -7562,11 +7589,12 @@ async function bootstrap(env, args = {}) {
     const state = await readPageState(attached.page);
     const data = {
       browserName: attached.browserName,
+      browserKind: attached.browserKind,
       tabId: attached.tabId ?? "unknown",
       url: state.url,
       loggedIn: state.signedIn
     };
-    const context = attached.tabId === void 0 ? { browserName: attached.browserName } : { browserName: attached.browserName, tabId: attached.tabId };
+    const context = attached.tabId === void 0 ? { browserName: attached.browserName, browserKind: attached.browserKind } : { browserName: attached.browserName, browserKind: attached.browserKind, tabId: attached.tabId };
     return resultOk(data, await contextFromPage(attached.page, context));
   } catch (error) {
     return resultError(error instanceof Error ? error : new Error(String(error)));
@@ -10390,6 +10418,12 @@ var ProjectSelectorError = class extends Error {
     this.name = "ProjectSelectorError";
   }
 };
+var ProjectCreationIndeterminateError = class extends Error {
+  constructor() {
+    super("ChatGPT Project creation may have completed, but its exact postcondition could not be reconciled.");
+    this.name = "ProjectCreationIndeterminateError";
+  }
+};
 function projectNameFromWorkspacePath(workspacePath) {
   const segments = workspacePath.trim().replace(/\\/g, "/").split("/").filter(Boolean);
   const leaf = segments.at(-1)?.replace(/^\.+/, "") ?? "";
@@ -10497,7 +10531,7 @@ async function openOrCreateProjectForNewThread(env, input, timeoutMs = 3e4) {
   }
   try {
     const currentUrl = await pageUrl(page);
-    if (currentUrl !== void 0 && PROJECT_PAGE_PATTERN.test(currentUrl) && await projectComposerVisible(page, project.name)) {
+    if (currentUrl !== void 0 && await projectPageMatchesTarget(page, project.name, currentUrl)) {
       return resultOk(projectRef(project, normalizeProjectPageUrl(currentUrl), false), await contextFromPage(page));
     }
     await page.goto?.(CHATGPT_PROJECTS, { waitUntil: "domcontentloaded", timeout: timeoutMs });
@@ -10539,6 +10573,21 @@ async function openOrCreateProjectForNewThread(env, input, timeoutMs = 3e4) {
     const createdUrl = await createProject(page, project, timeoutMs);
     return resultOk(projectRef(project, createdUrl, true), await contextFromPage(page));
   } catch (error) {
+    if (error instanceof ProjectCreationIndeterminateError) {
+      return {
+        ok: false,
+        status: "partial",
+        warnings: [],
+        blocker: {
+          kind: "confirmation",
+          code: "chatgpt_project_creation_indeterminate",
+          fieldPath: "project",
+          message: "Project creation may have occurred, but the exact Project page could not be verified. Resume the same operation or inspect the exact Project name before attempting creation again.",
+          resumable: true
+        },
+        context: await contextFromPage(page)
+      };
+    }
     if (error instanceof ProjectSelectorError) {
       return projectSelectorFailure(page, error.message);
     }
@@ -10658,8 +10707,7 @@ async function findVisibleProjectRow(page, name) {
     const row = rows?.nth?.(index);
     const cells = row?.getByRole?.("gridcell");
     if (await locatorCount3(cells) === 0) continue;
-    const text = (await cells?.first?.()?.innerText?.())?.trim();
-    if (row !== void 0 && text !== void 0 && projectNamesMatch(name, text)) rowMatches.push(row);
+    if (row !== void 0 && await locatorHasExactProjectName(row, name)) rowMatches.push(row);
   }
   if (rowMatches.length > 1) throw ambiguousProjectNameError(name, rowMatches.length);
   if (rowMatches.length === 1) return rowMatches[0];
@@ -10669,8 +10717,7 @@ async function findVisibleProjectRow(page, name) {
   for (let index = 0; index < iconCount; index += 1) {
     const row = icons?.nth?.(index).locator?.("xpath=ancestor::*[@role='button' or @role='link'][1]");
     if (await locatorCount3(row) !== 1) continue;
-    const text = (await row?.innerText?.())?.trim();
-    if (row !== void 0 && text !== void 0 && projectNamesMatch(name, text)) iconMatches.push(row);
+    if (row !== void 0 && await locatorHasExactProjectName(row, name)) iconMatches.push(row);
   }
   if (iconMatches.length > 1) throw ambiguousProjectNameError(name, iconMatches.length);
   if (iconMatches.length === 1) return iconMatches[0];
@@ -10679,8 +10726,7 @@ async function findVisibleProjectRow(page, name) {
   const buttonMatches = [];
   for (let index = 0; index < buttonCount; index += 1) {
     const button = buttons?.nth?.(index);
-    const text = (await button?.innerText?.())?.trim();
-    if (button !== void 0 && text !== void 0 && projectNamesMatch(name, text)) buttonMatches.push(button);
+    if (button !== void 0 && await locatorHasExactProjectName(button, name)) buttonMatches.push(button);
   }
   if (buttonMatches.length > 1) throw ambiguousProjectNameError(name, buttonMatches.length);
   if (buttonMatches.length === 1) return buttonMatches[0];
@@ -10689,12 +10735,20 @@ async function findVisibleProjectRow(page, name) {
   const linkMatches = [];
   for (let index = 0; index < linkCount; index += 1) {
     const link3 = links?.nth?.(index);
-    const text = (await link3?.innerText?.())?.trim();
-    if (link3 !== void 0 && text !== void 0 && projectNamesMatch(name, text)) linkMatches.push(link3);
+    if (link3 !== void 0 && await locatorHasExactProjectName(link3, name)) linkMatches.push(link3);
   }
   if (linkMatches.length > 1) throw ambiguousProjectNameError(name, linkMatches.length);
   if (linkMatches.length === 1) return linkMatches[0];
   return void 0;
+}
+async function locatorHasExactProjectName(locator, name) {
+  const whole = (await locator.innerText?.().catch(() => void 0))?.trim();
+  if (whole !== void 0 && projectNamesMatch(name, whole)) return true;
+  const exact = locator.getByText?.(name, { exact: true });
+  if (await locatorCount3(exact) > 0) return true;
+  const descendants2 = locator.locator?.("*");
+  const texts = await descendants2?.allTextContents?.().catch(() => []);
+  return texts?.some((text) => projectNamesMatch(name, text.trim())) === true;
 }
 function ambiguousProjectNameError(name, count) {
   return new ProjectSelectorError(
@@ -10776,13 +10830,30 @@ async function createProject(page, project, timeoutMs) {
   }
   await submit?.click?.();
   if (!await waitForProjectHome(page, project.name, timeoutMs)) {
-    throw new ProjectSelectorError(`ChatGPT did not verify the new Project "${project.name}" after creation.`);
+    const reconciled = await reconcileCreatedProject(page, project.name, timeoutMs);
+    if (reconciled !== void 0) return reconciled;
+    throw new ProjectCreationIndeterminateError();
   }
   const url = await pageUrl(page);
   if (url === void 0 || !PROJECT_PAGE_PATTERN.test(url)) {
     throw new ProjectSelectorError(`ChatGPT created "${project.name}", but its Project URL could not be verified.`);
   }
   return normalizeProjectPageUrl(url);
+}
+async function reconcileCreatedProject(page, name, timeoutMs) {
+  try {
+    await page.goto?.(CHATGPT_PROJECTS, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await page.waitForTimeout?.(500);
+    if (!await revealProjectList(page)) return void 0;
+    const row = await findProjectRow(page, name);
+    if (row === void 0) return void 0;
+    const url = await resolveProjectPageUrl(page, row, timeoutMs);
+    if (url === void 0) return void 0;
+    await openProjectPage(page, url, name, timeoutMs);
+    return url;
+  } catch {
+    return void 0;
+  }
 }
 async function waitForProjectHome(page, name, timeoutMs) {
   const attempts = Math.max(1, Math.ceil(timeoutMs / 250));
@@ -10795,7 +10866,20 @@ async function waitForProjectHome(page, name, timeoutMs) {
 }
 async function projectComposerVisible(page, name) {
   const composer = page.getByRole?.("textbox", { name: new RegExp(`^New chat in ${escapeRegex(name)}$`, "i") });
-  return await locatorCount3(composer) > 0;
+  if (await locatorCount3(composer) > 0) return true;
+  const candidates = page.getByRole?.("textbox", { name: /^New chat in .+$/i });
+  const count = await locatorCount3(candidates);
+  for (let index = 0; index < count; index += 1) {
+    const candidate = index === 0 ? candidates?.first?.() ?? candidates : candidates?.nth?.(index);
+    const accessibleName = await candidate?.getAttribute?.("aria-label") ?? await candidate?.getAttribute?.("placeholder") ?? await candidate?.innerText?.().catch(() => void 0);
+    const matched = accessibleName?.match(/^New chat in (.+)$/i);
+    if (matched?.[1] !== void 0 && projectNamesMatch(name, matched[1])) return true;
+  }
+  return false;
+}
+async function projectPageMatchesTarget(page, name, knownUrl) {
+  const url = knownUrl ?? await pageUrl(page);
+  return url !== void 0 && PROJECT_PAGE_PATTERN.test(url) && await projectComposerVisible(page, name);
 }
 async function waitForAnyProjectPageUrl(page, timeoutMs) {
   const attempts = Math.max(1, Math.ceil(timeoutMs / 250));
@@ -15208,6 +15292,10 @@ function detectExperienceFromSnapshot(snapshot2) {
   for (const label of chatComposer) {
     evidence.push({ source: "composer", label });
   }
+  const projectChatComposer = /\/g\/g-p-[^/]+\/project(?:[/?#]|$)/i.test(url) ? composerLabels.filter((label) => /^new chat in\s+\S/u.test(label)) : [];
+  for (const label of projectChatComposer) {
+    evidence.push({ source: "composer", label });
+  }
   const workAxisCount = ["model", "effort", "speed"].filter((axis) => hasAnyLabel(controls, localeLabels.configurationAxes[axis])).length;
   const compactChatAdvanced = chatComposer.length > 0 && workAxisCount === 2 && !hasAnyLabel(controls, localeLabels.configurationAxes.speed) && hasExactLabel(controls, localeLabels.configurationOptions.pro);
   if (compactChatAdvanced) {
@@ -15235,7 +15323,7 @@ function detectExperienceFromSnapshot(snapshot2) {
     evidence.push({ source: "heading", label: "Work composer copy" });
   }
   const workScore = workComposer.length * 4 + (workSurfaceSelected ? 10 : 0) + (workAxisCount >= 2 && !compactChatAdvanced ? 4 : 0) + (workConfigurationOpener ? 6 : 0) + (/\/work(?:\/|$|\?)/.test(url) ? 3 : 0) + (containsAny(mainText, ["work on something else", "work on anything"]) ? 2 : 0);
-  const chatScore = chatComposer.length * 4 + (chatSurfaceSelected ? 10 : 0) + (compactChatAdvanced ? 4 : 0);
+  const chatScore = chatComposer.length * 4 + projectChatComposer.length * 6 + (chatSurfaceSelected ? 10 : 0) + (compactChatAdvanced ? 4 : 0);
   let experience = "unknown";
   let confidence = "low";
   if (workScore > chatScore && workScore >= 4) {
@@ -15334,6 +15422,10 @@ function profileFromSnapshot(snapshot2, experience) {
   }
   if (experience !== "chat") {
     return "unknown";
+  }
+  const projectComposer = snapshot2.composerLabels.map(normalizeForLabelMatch).some((label) => /^new chat in\s+\S/u.test(label));
+  if (/\/g\/g-p-[^/]+\/project(?:[/?#]|$)/i.test(snapshot2.url) && projectComposer) {
+    return "project_chat_v1";
   }
   const simplifiedOptions = [
     ...localeLabels.configurationOptions.instant,
@@ -15730,7 +15822,7 @@ function configurationInspectionFromSurface(experience, detectedProfile, evidenc
     const compact = compactChatMenuLooksRecognized(panel);
     const currentCompact = currentCompactChatMenuLooksRecognized(menuItems);
     const simplified = chatObservation !== void 0 || currentCompact || compact || chatMenuLooksSimplified(menuItems);
-    selectorProfile = simplified ? "chat_simplified_v1" : detectedProfile;
+    selectorProfile = detectedProfile === "project_chat_v1" ? detectedProfile : simplified ? "chat_simplified_v1" : detectedProfile;
     if (chatObservation !== void 0) {
       const modelOptions = chatModelMenuOptions(chatObservation.modelItems ?? []);
       if (modelOptions.length > 0) {
@@ -21967,6 +22059,18 @@ var OperationClient = class {
   controlAdapterFactory;
   maxCachedAdapters;
   requestAdapters = /* @__PURE__ */ new Map();
+  /** Persist an immutable operation handle without constructing an adapter. */
+  async prepare(request, options = {}) {
+    const prepared = await this.prepareSubmit(request, options.signal);
+    if (this.service.prepare === void 0) {
+      throw new OperationClientError("prepare_unavailable", "The operation service does not expose browser-free preparation.");
+    }
+    return freshResult(await this.service.prepare(
+      prepared.serviceRequest,
+      prepared.manifest,
+      { signal: prepared.signal }
+    ));
+  }
   /** Fingerprint inputs, then execute the service's one-submit protocol. */
   async submit(request, options = {}) {
     const prepared = await this.prepareSubmit(request, options.signal);
@@ -21977,7 +22081,7 @@ var OperationClient = class {
       adapter,
       forwardSubmitOptions(options, prepared.signal)
     );
-    if (isTerminalSubmitResult(result3)) {
+    if (isTerminalSubmitResult(result3) || result3.handle.targetBindingDigest === void 0) {
       this.forgetAdapter(result3.handle);
     } else {
       this.rememberAdapter(result3.handle, adapter);
@@ -22961,6 +23065,39 @@ var MAX_JSON_KEYS = 1e4;
 var MAX_JSON_STRING_BYTES = 8 * 1024 * 1024;
 var MAX_JSON_KEY_BYTES = 4096;
 var RESERVED_CANONICAL_KEYS2 = /* @__PURE__ */ new Set(["$undefined", "$date", "$bytes"]);
+var PROJECT_ICONS = /* @__PURE__ */ new Set([
+  "Folder",
+  "Currency Dollar",
+  "Book",
+  "Graduation Cap",
+  "Pencil",
+  "Writing",
+  "Code Brackets",
+  "Terminal",
+  "Music",
+  "Popcorn",
+  "Customize",
+  "Palette",
+  "Stethoscope",
+  "Health",
+  "Lotus",
+  "Suitcase",
+  "Bar Chart",
+  "Kettlebell",
+  "Dumbbell",
+  "Logs",
+  "Balancing Scale",
+  "Globe Spin",
+  "Plane",
+  "Globe",
+  "Wrench",
+  "Paw",
+  "Flask",
+  "Brain",
+  "Heart",
+  "Plant"
+]);
+var PROJECT_COLORS = /* @__PURE__ */ new Set(["default", "red", "orange", "yellow", "green", "blue", "purple", "pink"]);
 var activeSnapshots;
 function withSnapshotContext(callback) {
   const previous = activeSnapshots;
@@ -23345,6 +23482,25 @@ function validateTargetRequest(target) {
   }
   if (type === "new" || type === "selected_tab") {
     assertExactKeys(target, "operation target", ["type"]);
+    return;
+  }
+  if (type === "project") {
+    assertExactKeys(target, "operation target", ["type", "name", "icon", "color", "confirmCreation"]);
+    validateBoundedString(readData(target, "name"), "target.name");
+    const icon = readData(target, "icon");
+    const color = readData(target, "color");
+    const confirmCreation = readData(target, "confirmCreation");
+    if (icon !== void 0) {
+      validateBoundedString(icon, "target.icon");
+      if (!PROJECT_ICONS.has(icon)) throw new OperationHandleError("invalid_operation_target", "target.icon is unsupported.");
+    }
+    if (color !== void 0) {
+      validateBoundedString(color, "target.color");
+      if (!PROJECT_COLORS.has(color)) throw new OperationHandleError("invalid_operation_target", "target.color is unsupported.");
+    }
+    if (confirmCreation !== void 0 && confirmCreation !== true) {
+      throw new OperationHandleError("invalid_operation_target", "target.confirmCreation may only be true when present.");
+    }
     return;
   }
   if (type === "tab_id") {
@@ -28466,6 +28622,7 @@ function isBlockerCode(value) {
     "rate_limited",
     "permission_required",
     "needs_confirmation",
+    "project_creation_indeterminate",
     "selector_drift",
     "journal_unavailable",
     "port_protocol_violation",
@@ -30421,6 +30578,19 @@ var OperationService = class {
    * an arbitrary adapter to begin the same local effect concurrently.
    */
   artifactTransfersInFlight = /* @__PURE__ */ new Map();
+  /**
+   * Create or authenticate the immutable operation record without constructing
+   * an adapter or touching a browser. Callers can retain the returned handle
+   * before they enter a host-controlled timeout around submit/run.
+   */
+  async prepare(request, files, options = {}) {
+    const requestDigest = this.computeRequestDigest(request, files, options.requestDigest);
+    const signal = options.signal ?? new AbortController().signal;
+    if (!isAbortSignal3(signal)) throw new OperationServiceError("invalid_signal", "Preparation signal must be an AbortSignal.");
+    if (signal.aborted) throw new OperationServiceError("operation_cancelled", "The operation was cancelled before preparation.");
+    const loaded = await this.ensureCreated(request, requestDigest);
+    return { handle: this.journal.handleFromState(loaded.state), state: loaded.state };
+  }
   /**
    * Submit once and return a fresh locator. A successful return means only
    * that the submission result has been reconciled and durably bridged; it
@@ -32607,6 +32777,7 @@ var TARGET_RESOLUTION_BLOCKER_CODES = /* @__PURE__ */ new Set([
   "rate_limited",
   "permission_required",
   "needs_confirmation",
+  "project_creation_indeterminate",
   "selector_drift",
   "journal_unavailable",
   "port_protocol_violation"
@@ -32894,6 +33065,7 @@ function assertTerminalArtifactProjection(projected, observed) {
 // src/runtime/runtime-session.ts
 var MUTABLE_FIELDS = Object.freeze([
   "browser",
+  "browserKind",
   "page",
   "expectedTabId"
 ]);
@@ -32955,11 +33127,16 @@ function validateOptions(options) {
   const descriptors2 = readDataOptions(options);
   const expectedTabId = readOption(descriptors2, "expectedTabId");
   if (expectedTabId !== void 0 && typeof expectedTabId !== "string") throw invalidOptions();
+  const browserKind = readOption(descriptors2, "browserKind");
+  if (browserKind !== void 0 && browserKind !== "iab" && browserKind !== "chrome" && browserKind !== "extension" && browserKind !== "unknown") {
+    throw invalidOptions();
+  }
   const now = readOption(descriptors2, "now");
   if (now !== void 0 && typeof now !== "function") throw invalidOptions();
   return {
     agent: readOption(descriptors2, "agent"),
     browser: readOption(descriptors2, "browser"),
+    browserKind,
     page: readOption(descriptors2, "page"),
     clipboard: readOption(descriptors2, "clipboard"),
     now,
@@ -33011,6 +33188,9 @@ function readInvocationSnapshot(env) {
     if (key === "expectedTabId" && value !== void 0 && typeof value !== "string") {
       throw invalidCapture();
     }
+    if (key === "browserKind" && value !== void 0 && value !== "iab" && value !== "chrome" && value !== "extension" && value !== "unknown") {
+      throw invalidCapture();
+    }
     snapshot2[key] = value;
   }
   return snapshot2;
@@ -33037,6 +33217,7 @@ var RuntimeEnvSession = class {
     });
     this.state = {
       browser: validated.browser,
+      browserKind: validated.browserKind,
       page: validated.page,
       expectedTabId: validated.expectedTabId,
       revision: 0
@@ -33059,6 +33240,7 @@ var RuntimeEnvSession = class {
       }),
       snapshot: Object.freeze({
         browser: presence(this.state.browser),
+        browserKind: presence(this.state.browserKind),
         page: presence(this.state.page),
         expectedTabId: presence(this.state.expectedTabId)
       })
@@ -33068,6 +33250,7 @@ var RuntimeEnvSession = class {
     const capturedRevision = this.state.revision;
     const baseline = {
       browser: this.state.browser,
+      browserKind: this.state.browserKind,
       page: this.state.page,
       expectedTabId: this.state.expectedTabId
     };
@@ -33104,12 +33287,14 @@ var RuntimeEnvSession = class {
       }
       const nextState = {
         browser: this.state.browser,
+        browserKind: this.state.browserKind,
         page: this.state.page,
         expectedTabId: this.state.expectedTabId,
         revision: this.state.revision + 1
       };
       for (const key of appliedFields) {
         if (key === "browser") nextState.browser = candidate.browser;
+        else if (key === "browserKind") nextState.browserKind = candidate.browserKind;
         else if (key === "page") nextState.page = candidate.page;
         else nextState.expectedTabId = candidate.expectedTabId;
       }
@@ -42513,7 +42698,7 @@ function createOperationBrowserAdapter(options) {
     try {
       probe = await resolveProbe(options, request);
       assertProbePage(page, probe.page);
-      if (request.target.type === "new") {
+      if (isNewConversationTarget(request.target)) {
         if (probe.targetLifecycle !== void 0 && probe.targetLifecycle !== "new_pending") {
           throw new OperationBrowserAdapterError("target_binding_mismatch");
         }
@@ -42531,7 +42716,7 @@ function createOperationBrowserAdapter(options) {
       const input = {
         page,
         evidence: probe.evidence,
-        ...request.target.type === "new" ? { targetLifecycle: "new_pending" } : probe.targetLifecycle === void 0 ? {} : { targetLifecycle: probe.targetLifecycle },
+        ...isNewConversationTarget(request.target) ? { targetLifecycle: "new_pending" } : probe.targetLifecycle === void 0 ? {} : { targetLifecycle: probe.targetLifecycle },
         ...(probe.newTargetAnchorDigest ?? options.newTargetAnchorDigest) === void 0 ? {} : { newTargetAnchorDigest: probe.newTargetAnchorDigest ?? options.newTargetAnchorDigest },
         ...(probe.blankTaskEvidenceDigest ?? options.blankTaskEvidenceDigest) === void 0 ? {} : { blankTaskEvidenceDigest: probe.blankTaskEvidenceDigest ?? options.blankTaskEvidenceDigest },
         ...probe.authoritativeClaim === void 0 ? {} : { authoritativeClaim: probe.authoritativeClaim },
@@ -43781,10 +43966,14 @@ function assertStaticTarget(target, evidence, hasResolver) {
       if (evidence.conversation.status === "available" && evidence.conversation.value === target.conversationId) return;
       break;
     case "new":
+    case "project":
     case "url":
       break;
   }
   throw new OperationBrowserAdapterError("target_evidence_unavailable");
+}
+function isNewConversationTarget(target) {
+  return target.type === "new" || target.type === "project";
 }
 function bindingFor(bindings, operationId2, _targetBindingDigest) {
   const binding = bindings.get(operationId2);
@@ -44702,7 +44891,7 @@ function validateRecoveryContext2(value) {
     throw new OperationRuntimeAdapterError("adapter_incomplete");
   }
   const targetType = readOwnData5(targetRequest, "type");
-  if (targetType !== "new" && targetType !== "selected_tab" && targetType !== "tab_id" && targetType !== "conversation_id" && targetType !== "url") {
+  if (targetType !== "new" && targetType !== "project" && targetType !== "selected_tab" && targetType !== "tab_id" && targetType !== "conversation_id" && targetType !== "url") {
     throw new OperationRuntimeAdapterError("adapter_incomplete");
   }
 }
@@ -44733,6 +44922,8 @@ function sameTargetRequest(left, right) {
   const rightType = readOwnData5(right, "type");
   if (leftType !== rightType) return false;
   switch (leftType) {
+    case "project":
+      return readOwnData5(left, "name") === readOwnData5(right, "name") && readOwnData5(left, "icon") === readOwnData5(right, "icon") && readOwnData5(left, "color") === readOwnData5(right, "color") && readOwnData5(left, "confirmCreation") === readOwnData5(right, "confirmCreation");
     case "tab_id":
     case "conversation_id":
     case "url":
@@ -44996,6 +45187,8 @@ function captureErrorCode(error) {
     case "rate_limited":
     case "permission_required":
     case "needs_confirmation":
+    case "project_creation_indeterminate":
+    case "selector_drift":
     case "runtime_incompatible":
     case "target_evidence_unavailable":
     case "target_binding_mismatch":
@@ -47016,10 +47209,11 @@ function createChatGPTOperationControlAdapterFactory(options) {
   };
 }
 var ChatGPTRuntimeFactoryError = class extends Error {
-  code = "chatgpt_runtime_unavailable";
-  constructor() {
+  code;
+  constructor(code = "chatgpt_runtime_unavailable") {
     super("The ChatGPT operation runtime could not prove the requested browser target safely.");
     this.name = "ChatGPTRuntimeFactoryError";
+    this.code = code;
   }
 };
 var DEFAULT_SURFACE_TIMEOUT_MS = 3e4;
@@ -47154,20 +47348,25 @@ function snapshotOwner(value) {
 }
 function snapshotRuntimeEnv(value) {
   if (value === null || typeof value !== "object") throw new ChatGPTRuntimeFactoryError();
-  assertOwnDataKeys2(value, ["agent", "browser", "page", "clipboard", "now", "expectedTabId"]);
+  assertOwnDataKeys2(value, ["agent", "browser", "browserKind", "page", "clipboard", "now", "expectedTabId"]);
   const snapshot2 = {};
   const agent = readDataProperty2(value, "agent");
   const browser = readDataProperty2(value, "browser");
+  const browserKind = readDataProperty2(value, "browserKind");
   const page = readDataProperty2(value, "page");
   const clipboard = readDataProperty2(value, "clipboard");
   const now = readDataProperty2(value, "now");
   const expectedTabId = readDataProperty2(value, "expectedTabId");
   if (now !== void 0 && typeof now !== "function") throw new ChatGPTRuntimeFactoryError();
+  if (browserKind !== void 0 && browserKind !== "iab" && browserKind !== "chrome" && browserKind !== "extension" && browserKind !== "unknown") {
+    throw new ChatGPTRuntimeFactoryError();
+  }
   if (expectedTabId !== void 0 && (typeof expectedTabId !== "string" || !ID_PATTERN10.test(expectedTabId))) {
     throw new ChatGPTRuntimeFactoryError();
   }
   if (agent !== void 0) snapshot2.agent = agent;
   if (browser !== void 0) snapshot2.browser = unwrapCoordinatedBrowser(browser);
+  if (browserKind !== void 0) snapshot2.browserKind = browserKind;
   if (page !== void 0) snapshot2.page = unwrapCoordinatedPage(page);
   if (clipboard !== void 0 && clipboard !== null && typeof clipboard === "object") {
     snapshot2.clipboard = clipboard;
@@ -47253,6 +47452,29 @@ function snapshotTargetRequest(value) {
     case "selected_tab":
       assertOwnDataKeys2(value, ["type"]);
       return Object.freeze({ type });
+    case "project": {
+      assertOwnDataKeys2(value, ["type", "name", "icon", "color", "confirmCreation"]);
+      const name = readDataProperty2(value, "name");
+      const icon = readDataProperty2(value, "icon");
+      const color = readDataProperty2(value, "color");
+      const confirmCreation = readDataProperty2(value, "confirmCreation");
+      if (typeof name !== "string" || name.trim().length === 0 || name.length > 512 || /[\u0000-\u001f\u007f]/u.test(name)) {
+        throw new ChatGPTRuntimeFactoryError();
+      }
+      if (icon !== void 0 && (icon.length === 0 || icon.length > 256 || /[\u0000-\u001f\u007f]/u.test(icon))) {
+        throw new ChatGPTRuntimeFactoryError();
+      }
+      if (icon !== void 0 && !PROJECT_ICONS2.has(icon)) throw new ChatGPTRuntimeFactoryError();
+      if (color !== void 0 && !PROJECT_COLORS2.has(color)) throw new ChatGPTRuntimeFactoryError();
+      if (confirmCreation !== void 0 && confirmCreation !== true) throw new ChatGPTRuntimeFactoryError();
+      return Object.freeze({
+        type,
+        name,
+        ...icon === void 0 ? {} : { icon },
+        ...color === void 0 ? {} : { color },
+        ...confirmCreation === true ? { confirmCreation: true } : {}
+      });
+    }
     case "tab_id": {
       assertOwnDataKeys2(value, ["type", "tabId"]);
       const tabId = readDataProperty2(value, "tabId");
@@ -47348,8 +47570,9 @@ async function captureChatGPTRequest(options) {
       label: "operation-target-prepare"
     },
     async () => {
+      await routeProjectTarget(rawPage, targetRequest, options.surfaceTimeoutMs);
       await validateExactNavigation(rawPage, targetRequest);
-      await ensureSurface(rawPage, targetSurface, targetRequest.type === "new", options.surfaceTimeoutMs, tabId);
+      await ensureSurface(rawPage, targetSurface, isNewConversationTarget2(targetRequest), options.surfaceTimeoutMs, tabId);
     }
   );
   const capabilities = options.capabilities;
@@ -47384,7 +47607,7 @@ async function captureChatGPTRequest(options) {
         return Object.freeze({
           page: rawPage,
           evidence: observed.snapshot.target,
-          ...request2.target.type === "new" ? { targetLifecycle: "new_pending" } : {},
+          ...isNewConversationTarget2(request2.target) ? { targetLifecycle: "new_pending" } : {},
           ...anchor === void 0 ? {} : {
             newTargetAnchorDigest: anchor.anchorDigest,
             blankTaskEvidenceDigest: anchor.blankTaskEvidenceDigest
@@ -47710,6 +47933,8 @@ function bootstrapArgsForTarget(target) {
   switch (target.type) {
     case "new":
       return Object.freeze({ url: CHATGPT_HOME, preferExistingTab: false });
+    case "project":
+      return Object.freeze({ url: "https://chatgpt.com/projects", preferExistingTab: false });
     case "selected_tab":
       return Object.freeze({
         existingTab: {
@@ -47752,7 +47977,7 @@ function bootstrapArgsForTarget(target) {
 }
 function bootstrapEnvironment(env, target, recoveryTarget) {
   const copy = { ...env };
-  if (target.type === "new" || target.type === "selected_tab") {
+  if (isNewConversationTarget2(target) || target.type === "selected_tab") {
     delete copy.page;
   }
   if (recoveryTarget !== void 0) {
@@ -47781,6 +48006,10 @@ async function selectExactSelectedPage(browser) {
   return page;
 }
 async function validateExactNavigation(page, target) {
+  if (target.type === "project") {
+    if (!await projectPageMatchesTarget(page, target.name)) throw new ChatGPTRuntimeFactoryError();
+    return;
+  }
   if (target.type !== "conversation_id" && target.type !== "url") return;
   const actual = await Promise.resolve(page.url?.()).catch(() => void 0);
   const actualCanonical = canonicalChatGPTUrl(actual);
@@ -47821,7 +48050,7 @@ function observationTargetForRequest(request, browserId, tabId, target) {
     browserId,
     tabId,
     coordinationScope: "process",
-    ...target.type === "new" ? { targetLifecycle: "new_pending" } : {},
+    ...isNewConversationTarget2(target) ? { targetLifecycle: "new_pending" } : {},
     ...expectedConversationId === void 0 ? {} : { expectedConversationId }
   };
 }
@@ -47870,6 +48099,8 @@ function sameTargetRequest2(left, right) {
     case "new":
     case "selected_tab":
       return true;
+    case "project":
+      return right.type === "project" && left.name === right.name && left.icon === right.icon && left.color === right.color && left.confirmCreation === right.confirmCreation;
     case "tab_id":
       return right.type === "tab_id" && left.tabId === right.tabId;
     case "conversation_id":
@@ -47878,6 +48109,63 @@ function sameTargetRequest2(left, right) {
       return right.type === "url" && left.url === right.url;
   }
 }
+function isNewConversationTarget2(target) {
+  return target.type === "new" || target.type === "project";
+}
+async function routeProjectTarget(page, target, timeoutMs) {
+  if (target.type !== "project") return;
+  const routed = await openOrCreateProjectForNewThread(
+    { page },
+    {
+      name: target.name,
+      ...target.icon === void 0 ? {} : { icon: target.icon },
+      ...target.color === void 0 ? {} : { color: target.color },
+      ...target.confirmCreation === void 0 ? {} : { confirmCreation: target.confirmCreation }
+    },
+    timeoutMs
+  );
+  if (routed.ok) return;
+  if (routed.blocker?.code === "chatgpt_project_creation_confirmation_required") {
+    throw new ChatGPTRuntimeFactoryError("needs_confirmation");
+  }
+  if (routed.blocker?.code === "chatgpt_project_creation_indeterminate") {
+    throw new ChatGPTRuntimeFactoryError("project_creation_indeterminate");
+  }
+  throw new ChatGPTRuntimeFactoryError("selector_drift");
+}
+var PROJECT_ICONS2 = /* @__PURE__ */ new Set([
+  "Folder",
+  "Currency Dollar",
+  "Book",
+  "Graduation Cap",
+  "Pencil",
+  "Writing",
+  "Code Brackets",
+  "Terminal",
+  "Music",
+  "Popcorn",
+  "Customize",
+  "Palette",
+  "Stethoscope",
+  "Health",
+  "Lotus",
+  "Suitcase",
+  "Bar Chart",
+  "Kettlebell",
+  "Dumbbell",
+  "Logs",
+  "Balancing Scale",
+  "Globe Spin",
+  "Plane",
+  "Globe",
+  "Wrench",
+  "Paw",
+  "Flask",
+  "Brain",
+  "Heart",
+  "Plant"
+]);
+var PROJECT_COLORS2 = /* @__PURE__ */ new Set(["default", "red", "orange", "yellow", "green", "blue", "purple", "pink"]);
 function readDataProperty2(value, key) {
   try {
     let current = value;
@@ -48013,6 +48301,9 @@ function createChatGPT(options = {}) {
     return runtime.run((env) => operationRuntime.run(env, callback));
   };
   const operations = Object.freeze({
+    prepare: (request, operationOptions) => runOperationInvocation(
+      () => operationClient().then((client) => client.prepare(request, operationOptions))
+    ),
     submit: (request, operationOptions) => runOperationInvocation(
       () => operationClient().then((client) => client.submit(request, operationOptions))
     ),
@@ -49168,6 +49459,8 @@ function transactionalTarget(args, defaults) {
   const thread = args.thread ?? defaults?.thread;
   const existingTab = args.existingTab ?? defaults?.existingTab;
   const preferExistingTab = args.preferExistingTab ?? defaults?.preferExistingTab;
+  const defaultProject = defaults?.project;
+  const defaultConfirmGlobal = defaults?.confirmGlobal;
   if (thread !== void 0) {
     if (existingTab !== void 0 || preferExistingTab === true) {
       return {
@@ -49176,7 +49469,17 @@ function transactionalTarget(args, defaults) {
         fieldPath: "thread"
       };
     }
-    return targetFromWorkflowThread(thread);
+    return targetFromWorkflowThread(thread, defaultProject, defaultConfirmGlobal);
+  }
+  if (defaultProject !== void 0) {
+    if (existingTab !== void 0 || preferExistingTab === true) {
+      return {
+        ok: false,
+        message: "workspace Project routing cannot be combined with existingTab or preferExistingTab on the transactional ask path.",
+        fieldPath: "project"
+      };
+    }
+    return targetFromProject(defaultProject, defaultConfirmGlobal, "project");
   }
   if (preferExistingTab === true) {
     if (existingTab !== void 0) {
@@ -49191,11 +49494,15 @@ function transactionalTarget(args, defaults) {
   if (existingTab !== void 0) return targetFromExistingTab(existingTab);
   return { ok: true, target: { type: "new" } };
 }
-function targetFromWorkflowThread(thread) {
+function targetFromWorkflowThread(thread, defaultProject, defaultConfirmGlobal) {
   if (isTypedThread(thread)) {
     switch (thread.type) {
       case "new":
-        return { ok: true, target: { type: "new" } };
+        return targetFromProject(
+          thread.project === void 0 ? defaultProject : thread.project,
+          thread.confirmGlobal ?? defaultConfirmGlobal,
+          "thread.project"
+        );
       case "current":
         return { ok: true, target: { type: "selected_tab" } };
       case "url":
@@ -49225,7 +49532,31 @@ function targetFromWorkflowThread(thread) {
       fieldPath: "thread"
     };
   }
-  return { ok: true, target: { type: "new" } };
+  return targetFromProject(defaultProject, defaultConfirmGlobal, "project");
+}
+function targetFromProject(project, confirmGlobal, fieldPath) {
+  if (project === false) {
+    return confirmGlobal === true ? { ok: true, target: { type: "new" } } : {
+      ok: false,
+      message: "Global Chat routing requires confirmGlobal: true on the transactional ask path.",
+      fieldPath: "confirmGlobal"
+    };
+  }
+  if (project === void 0) return { ok: true, target: { type: "new" } };
+  const name = project.name.trim();
+  if (name.length === 0) {
+    return { ok: false, message: "Project name must be non-empty.", fieldPath: `${fieldPath}.name` };
+  }
+  return {
+    ok: true,
+    target: {
+      type: "project",
+      name,
+      ...project.icon === void 0 ? {} : { icon: project.icon },
+      ...project.color === void 0 ? {} : { color: project.color },
+      ...project.confirmCreation === true ? { confirmCreation: true } : {}
+    }
+  };
 }
 function targetFromExistingTab(existingTab) {
   if (existingTab === true) return { ok: true, target: { type: "selected_tab" } };
@@ -49384,6 +49715,7 @@ function transactionalAskCommandResult(prepared, run, handle) {
   const base = {
     operationId: handle.operationId,
     responseFormat: prepared.responseFormat,
+    stage: transactionalOperationStage(handle),
     handle,
     requestDigest: handle.requestDigest
   };
@@ -49392,7 +49724,8 @@ function transactionalAskCommandResult(prepared, run, handle) {
     return transactionalBlockerResult(
       {
         ...base,
-        submissionState: transactionalSubmissionState(handle, submission.blocker.mutationBoundary),
+        stage: transactionalOperationStage(handle, submission.blocker.code, submission.blocker.mutationBoundary),
+        submissionState: transactionalSubmissionState(handle, submission.blocker.mutationBoundary, false),
         complete: false,
         completionState: transactionalCompletionState(handle.phase),
         generationActive: handle.phase === "generating"
@@ -49459,7 +49792,10 @@ function transactionalAskCommandResult(prepared, run, handle) {
     true
   );
 }
-function transactionalSubmissionState(handle, boundary) {
+function transactionalSubmissionState(handle, boundary, submissionConfirmed = true) {
+  if (!submissionConfirmed) {
+    return boundary === "send_may_have_occurred" || boundary === "control_may_have_occurred" ? "submitted_unconfirmed" : "not_submitted";
+  }
   if (["submitted", "generating", "capturing", "completed"].includes(handle.phase)) {
     return handle.phase === "generating" ? "submitted_generating" : "submitted";
   }
@@ -49470,6 +49806,25 @@ function transactionalCompletionState(phase) {
   if (phase === "generating") return "generating";
   if (phase === "uncertain" || phase === "capturing") return "partial";
   return "unknown";
+}
+function transactionalOperationStage(handle, blockerCode, unconfirmedBoundary) {
+  if (blockerCode === "project_creation_indeterminate") return "creation-indeterminate";
+  if (unconfirmedBoundary === "send_may_have_occurred" || unconfirmedBoundary === "control_may_have_occurred") {
+    return "submission-indeterminate";
+  }
+  if (unconfirmedBoundary === "handoff_may_have_occurred") return "upload-indeterminate";
+  if (handle.phase === "completed") return "completed";
+  if (handle.phase === "capturing") return "capturing";
+  if (handle.phase === "generating") return "generating";
+  if (handle.phase === "submitted") return "submitted";
+  if (handle.phase === "send_pending" || handle.mutationBoundary === "send_may_have_occurred") {
+    return "submission-indeterminate";
+  }
+  if (handle.phase === "handoff_pending" || handle.mutationBoundary === "handoff_may_have_occurred") {
+    return "upload-indeterminate";
+  }
+  if (handle.phase === "ready") return "ready-to-submit";
+  return "blocked-before-submit";
 }
 function transactionalBlockerResult(data, code, uncertain3, recoverable) {
   const kind = transactionalBlockerKind(code);
@@ -50817,6 +51172,39 @@ function requiredActionPolicy(kind) {
 }
 
 // src/operations/wire-requests.ts
+var PROJECT_ICONS3 = /* @__PURE__ */ new Set([
+  "Folder",
+  "Currency Dollar",
+  "Book",
+  "Graduation Cap",
+  "Pencil",
+  "Writing",
+  "Code Brackets",
+  "Terminal",
+  "Music",
+  "Popcorn",
+  "Customize",
+  "Palette",
+  "Stethoscope",
+  "Health",
+  "Lotus",
+  "Suitcase",
+  "Bar Chart",
+  "Kettlebell",
+  "Dumbbell",
+  "Logs",
+  "Balancing Scale",
+  "Globe Spin",
+  "Plane",
+  "Globe",
+  "Wrench",
+  "Paw",
+  "Flask",
+  "Brain",
+  "Heart",
+  "Plant"
+]);
+var PROJECT_COLORS3 = /* @__PURE__ */ new Set(["default", "red", "orange", "yellow", "green", "blue", "purple", "pink"]);
 var OperationWireRequestError = class extends Error {
   code = "invalid_operation_request";
   recoverable = false;
@@ -50920,6 +51308,21 @@ function validateOperationTarget(value) {
     case "new":
     case "selected_tab":
       operationExactKeys(target, ["type"]);
+      return;
+    case "project":
+      operationExactKeys(target, ["type", "name", "icon", "color", "confirmCreation"]);
+      operationText(propertyValue(target, "name"), 512, true);
+      if (propertyValue(target, "icon") !== void 0) {
+        operationText(propertyValue(target, "icon"), 256, true);
+        if (!PROJECT_ICONS3.has(propertyValue(target, "icon"))) throw invalidOperationRequest();
+      }
+      if (propertyValue(target, "color") !== void 0) {
+        operationText(propertyValue(target, "color"), 32, true);
+        if (!PROJECT_COLORS3.has(propertyValue(target, "color"))) throw invalidOperationRequest();
+      }
+      if (propertyValue(target, "confirmCreation") !== void 0 && propertyValue(target, "confirmCreation") !== true) {
+        throw invalidOperationRequest();
+      }
       return;
     case "tab_id":
       operationExactKeys(target, ["type", "tabId"]);

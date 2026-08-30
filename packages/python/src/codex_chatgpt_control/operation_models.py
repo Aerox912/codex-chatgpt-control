@@ -458,6 +458,7 @@ BlockerCode = Literal[
     "rate_limited",
     "permission_required",
     "needs_confirmation",
+    "project_creation_indeterminate",
     "selector_drift",
     "send_control_unavailable",
     "capture_ownership_lost",
@@ -471,6 +472,24 @@ BlockerCode = Literal[
 
 class NewTarget(StrictWireModel):
     type: Literal["new"]
+
+
+class ProjectTarget(StrictWireModel):
+    type: Literal["project"]
+    name: BoundedText512
+    icon: Literal[
+        "Folder", "Currency Dollar", "Book", "Graduation Cap", "Pencil", "Writing", "Code Brackets", "Terminal",
+        "Music", "Popcorn", "Customize", "Palette", "Stethoscope", "Health", "Lotus", "Suitcase", "Bar Chart",
+        "Kettlebell", "Dumbbell", "Logs", "Balancing Scale", "Globe Spin", "Plane", "Globe", "Wrench", "Paw",
+        "Flask", "Brain", "Heart", "Plant",
+    ] | None = None
+    color: Literal["default", "red", "orange", "yellow", "green", "blue", "purple", "pink"] | None = None
+    confirm_creation: Literal[True] | None = Field(default=None, alias="confirmCreation")
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_null_optional_fields(cls, value: Any) -> Any:
+        return _reject_explicit_nulls(value, ("icon", "color", "confirmCreation", "confirm_creation"))
 
 
 class SelectedTabTarget(StrictWireModel):
@@ -521,7 +540,7 @@ class UrlTarget(StrictWireModel):
 
 
 OperationTargetRequest = Annotated[
-    Union[NewTarget, SelectedTabTarget, TabIdTarget, ConversationIdTarget, UrlTarget],
+    Union[NewTarget, ProjectTarget, SelectedTabTarget, TabIdTarget, ConversationIdTarget, UrlTarget],
     Field(discriminator="type"),
 ]
 

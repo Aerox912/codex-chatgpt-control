@@ -385,7 +385,9 @@ export function configurationInspectionFromSurface(
     const compact = compactChatMenuLooksRecognized(panel);
     const currentCompact = currentCompactChatMenuLooksRecognized(menuItems);
     const simplified = chatObservation !== undefined || currentCompact || compact || chatMenuLooksSimplified(menuItems);
-    selectorProfile = simplified ? "chat_simplified_v1" : detectedProfile;
+    selectorProfile = detectedProfile === "project_chat_v1"
+      ? detectedProfile
+      : simplified ? "chat_simplified_v1" : detectedProfile;
     if (chatObservation !== undefined) {
       const modelOptions = chatModelMenuOptions(chatObservation.modelItems ?? []);
       if (modelOptions.length > 0) {

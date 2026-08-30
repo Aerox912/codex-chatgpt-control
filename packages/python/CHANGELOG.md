@@ -2,13 +2,17 @@
 
 ## 0.5.1a3
 
+- Adds strict Project operation-target and `project_chat_v1` profile parity for
+  the Node-owned exact Project routing and Project Chat detection behavior.
+- Includes the Project-creation uncertainty blocker in the shared typed
+  operation protocol while preserving the Node runtime as browser authority.
 - Adds idiomatic sync and async transactional operation clients over the
   TypeScript-authoritative backend, including caller-owned operation/control
   IDs, inspect/collect recovery, typed compatibility diagnostics, and exact
   receipt models.
 - Replaces coarse request serialization with correlated bounded transport
   routing and preserves cancellation, blocker, Runner, Responses, and ordinary
-  shell behavior across the shared 82-fixture protocol.
+  shell behavior across the shared 83-fixture protocol.
 
 ## 0.5.1a2
 

@@ -5,7 +5,9 @@ import type { BrowserLike, PageLike } from "../../src/types.js";
 describe("automatic browser selection", () => {
   it("prefers the in-app browser selector", async () => {
     const requested: string[] = [];
-    const inAppBrowser = fakeBrowser(undefined, "iab-tab");
+    // The IAB provider currently reports the backend abstraction name
+    // "chrome"; browserKind must retain the selected visible host surface.
+    const inAppBrowser = fakeBrowser("chrome", "iab-tab");
     const chrome = fakeBrowser("chrome", "chrome-tab");
     const agent = {
       browsers: {
@@ -21,7 +23,9 @@ describe("automatic browser selection", () => {
     const result = await bootstrap({ agent }, { preferExistingTab: false });
 
     expect(result.ok).toBe(true);
-    expect(result.data?.browserName).toBe("iab");
+    expect(result.data?.browserName).toBe("chrome");
+    expect(result.data?.browserKind).toBe("iab");
+    expect(result.context.browserKind).toBe("iab");
     expect(result.context.tabId).toBe("iab-tab");
     expect(requested).toEqual(["iab"]);
   });
@@ -50,6 +54,7 @@ describe("automatic browser selection", () => {
 
     expect(result.ok).toBe(true);
     expect(result.data?.browserName).toBe("iab");
+    expect(result.data?.browserKind).toBe("iab");
     expect(result.context.tabId).toBe("listed-iab-tab");
     expect(requested).toEqual(["iab", "iab-id"]);
   });
@@ -75,6 +80,7 @@ describe("automatic browser selection", () => {
 
     expect(result.ok).toBe(true);
     expect(result.data?.browserName).toBe("chrome");
+    expect(result.data?.browserKind).toBe("extension");
     expect(result.context.tabId).toBe("chrome-tab");
     expect(requested).toEqual(["iab", "chrome-id"]);
   });
@@ -95,6 +101,7 @@ describe("automatic browser selection", () => {
 
     expect(result.ok).toBe(true);
     expect(result.data?.browserName).toBe("chrome");
+    expect(result.data?.browserKind).toBe("chrome");
     expect(result.context.tabId).toBe("explicit-chrome-tab");
     expect(requested).toEqual([]);
   });

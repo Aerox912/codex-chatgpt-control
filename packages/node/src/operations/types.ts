@@ -25,6 +25,7 @@ import type {
   ArtifactTransferReceiptV1
 } from "./artifact-transfer.js";
 import type { OwnershipBaseline } from "./turn-ownership.js";
+import type { ChatGPTProjectColor, ChatGPTProjectIcon } from "../types.js";
 
 export type OperationSurface = "chat" | "work";
 
@@ -38,6 +39,15 @@ export type OperationJsonValue =
 
 export type OperationTargetRequestV1 =
   | { type: "new" }
+  /** Start a new conversation inside one exact existing ChatGPT Project. */
+  | {
+      type: "project";
+      name: string;
+      icon?: ChatGPTProjectIcon;
+      color?: ChatGPTProjectColor;
+      /** Explicit account-mutation authority; omitted means existing-only. */
+      confirmCreation?: true;
+    }
   | { type: "selected_tab" }
   | { type: "tab_id"; tabId: string }
   | { type: "conversation_id"; conversationId: string }
@@ -182,6 +192,7 @@ export type OperationBlockerCode =
   | "rate_limited"
   | "permission_required"
   | "needs_confirmation"
+  | "project_creation_indeterminate"
   | "selector_drift"
   | "send_control_unavailable"
   | "capture_ownership_lost"

@@ -159,6 +159,20 @@ const chatgpt = createChatGPT({
 });
 ```
 
+When the ChatGPT Project has a curated name that cannot be reconstructed from
+the checkout or worktree leaf, set an explicit alias. The explicit `name`
+always wins over `path`:
+
+```ts
+const chatgpt = createChatGPT({
+  agent: globalThis.agent,
+  workspaceProject: {
+    name: "Pokémon Burning Scales",
+    path: workspacePath
+  }
+});
+```
+
 The local path is reduced to a display name before browser work. For example,
 `C:\Users\you\codex-chatgpt-control` becomes `Codex ChatGPT Control`. Matching is
 case- and punctuation-insensitive but not fuzzy, so a similarly formatted
@@ -180,6 +194,9 @@ Work task and does not apply the workspace default.
 
 Project routing is fail-closed. A selector-drift blocker, missing creation
 confirmation, or lost Project context ends that workflow before submission.
+If a confirmed creation loses its browser acknowledgement, the SDK returns
+`chatgpt_project_creation_indeterminate`; inspect or resume the same exact
+Project/operation identity instead of attempting a second creation.
 Callers must not convert the failure into a plain/global Chat or Work run. The
 absence of a submission rules out duplicates, but does not authorize a global
 fallback. Only an explicit user request for a global conversation authorizes

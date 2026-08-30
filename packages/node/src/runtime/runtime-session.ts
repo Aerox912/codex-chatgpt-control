@@ -1,10 +1,11 @@
-import type { BrowserLike, ClipboardLike, PageLike, RuntimeEnv } from "../types.js";
+import type { BrowserKind, BrowserLike, ClipboardLike, PageLike, RuntimeEnv } from "../types.js";
 
 /** The mutable fields carried between invocations of a legacy RuntimeEnv. */
-export type RuntimeEnvSessionMutableField = "browser" | "page" | "expectedTabId";
+export type RuntimeEnvSessionMutableField = "browser" | "browserKind" | "page" | "expectedTabId";
 
 const MUTABLE_FIELDS = Object.freeze([
   "browser",
+  "browserKind",
   "page",
   "expectedTabId"
 ] as const satisfies readonly RuntimeEnvSessionMutableField[]);
@@ -46,6 +47,7 @@ export class RuntimeEnvSessionError extends Error {
 export type RuntimeEnvSessionOptions = Readonly<{
   agent?: unknown;
   browser?: BrowserLike;
+  browserKind?: BrowserKind;
   page?: PageLike;
   clipboard?: ClipboardLike;
   now?: () => Date;
@@ -59,6 +61,7 @@ type RuntimeEnvBase = {
 };
 type RuntimeEnvSnapshot = {
   browser: BrowserLike | undefined;
+  browserKind: BrowserKind | undefined;
   page: PageLike | undefined;
   expectedTabId: string | undefined;
 };
@@ -77,6 +80,7 @@ export type RuntimeEnvSessionDiagnostics = Readonly<{
   }>;
   snapshot: Readonly<{
     browser: RuntimeEnvSessionFieldPresence;
+    browserKind: RuntimeEnvSessionFieldPresence;
     page: RuntimeEnvSessionFieldPresence;
     expectedTabId: RuntimeEnvSessionFieldPresence;
   }>;
@@ -166,12 +170,18 @@ function validateOptions(options: unknown): ValidatedOptions {
   const expectedTabId = readOption<string>(descriptors, "expectedTabId");
   if (expectedTabId !== undefined && typeof expectedTabId !== "string") throw invalidOptions();
 
+  const browserKind = readOption<BrowserKind>(descriptors, "browserKind");
+  if (browserKind !== undefined && browserKind !== "iab" && browserKind !== "chrome" && browserKind !== "extension" && browserKind !== "unknown") {
+    throw invalidOptions();
+  }
+
   const now = readOption<() => Date>(descriptors, "now");
   if (now !== undefined && typeof now !== "function") throw invalidOptions();
 
   return {
     agent: readOption<unknown>(descriptors, "agent"),
     browser: readOption<BrowserLike>(descriptors, "browser"),
+    browserKind,
     page: readOption<PageLike>(descriptors, "page"),
     clipboard: readOption<ClipboardLike>(descriptors, "clipboard"),
     now,
@@ -234,6 +244,10 @@ function readInvocationSnapshot(env: RuntimeEnv): RuntimeEnvSnapshot {
     if (key === "expectedTabId" && value !== undefined && typeof value !== "string") {
       throw invalidCapture();
     }
+    if (key === "browserKind" && value !== undefined
+      && value !== "iab" && value !== "chrome" && value !== "extension" && value !== "unknown") {
+      throw invalidCapture();
+    }
     (snapshot as { [K in RuntimeEnvSessionMutableField]: unknown })[key] = value;
   }
   return snapshot;
@@ -274,6 +288,7 @@ export class RuntimeEnvSession {
     });
     this.state = {
       browser: validated.browser,
+      browserKind: validated.browserKind,
       page: validated.page,
       expectedTabId: validated.expectedTabId,
       revision: 0
@@ -298,6 +313,7 @@ export class RuntimeEnvSession {
       }),
       snapshot: Object.freeze({
         browser: presence(this.state.browser),
+        browserKind: presence(this.state.browserKind),
         page: presence(this.state.page),
         expectedTabId: presence(this.state.expectedTabId)
       })
@@ -308,6 +324,7 @@ export class RuntimeEnvSession {
     const capturedRevision = this.state.revision;
     const baseline: RuntimeEnvSnapshot = {
       browser: this.state.browser,
+      browserKind: this.state.browserKind,
       page: this.state.page,
       expectedTabId: this.state.expectedTabId
     };
@@ -359,12 +376,14 @@ export class RuntimeEnvSession {
       // CAS checks.  Consumers can therefore never observe a partial tuple.
       const nextState: RuntimeEnvSessionState = {
         browser: this.state.browser,
+        browserKind: this.state.browserKind,
         page: this.state.page,
         expectedTabId: this.state.expectedTabId,
         revision: this.state.revision + 1
       };
       for (const key of appliedFields) {
         if (key === "browser") nextState.browser = candidate.browser;
+        else if (key === "browserKind") nextState.browserKind = candidate.browserKind;
         else if (key === "page") nextState.page = candidate.page;
         else nextState.expectedTabId = candidate.expectedTabId;
       }

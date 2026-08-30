@@ -268,6 +268,39 @@ describe("sanitized Chat and Work surface profiles", () => {
     });
   });
 
+  it("classifies a Project home composer as Project Chat and verifies Pro", () => {
+    const detected = detectExperienceFromSnapshot({
+      url: "https://chatgpt.com/g/g-p-sanitized-project/project",
+      composerLabels: ["New chat in Pokémon Burning Scales"],
+      mainControls: ["Chat", "Pro"],
+      mainText: "",
+      selectedSurfaceLabels: []
+    });
+
+    expect(detected).toMatchObject({
+      experience: "chat",
+      selectorProfile: "project_chat_v1",
+      confidence: "high"
+    });
+    const inspection = configurationInspectionFromSurface(
+      detected.experience,
+      detected.selectorProfile,
+      detected.evidence,
+      { openerLabel: "Pro", axisRows: [], advancedVisible: false },
+      [
+        { label: "Medium", normalized: "medium", role: "menuitemradio" },
+        { label: "Pro", normalized: "pro", role: "menuitemradio", checked: true }
+      ]
+    );
+    expect(inspection).toMatchObject({
+      experience: "chat",
+      selectorProfile: "project_chat_v1",
+      active: { effort: "Pro" },
+      verified: true
+    });
+    expect(configurationMatchesSelection(inspection, { effort: "Pro" })).toBe(true);
+  });
+
   it("opens Work configuration from main when no semantic composer root exists", async () => {
     const page = mainScopedWorkConfigurationPage();
 

@@ -349,6 +349,12 @@ export type OperationSubmitResult = Readonly<{
   submission: SubmissionResult;
 }>;
 
+/** Durable browser-free checkpoint created before target routing or mutation. */
+export type OperationPrepareResult = Readonly<{
+  handle: OperationHandleV1;
+  state: OperationStateV1;
+}>;
+
 export type OperationInspectResult = Readonly<{
   handle: OperationHandleV1;
   state: OperationStateV1;
@@ -415,6 +421,24 @@ export class OperationService {
     if (!Number.isSafeInteger(this.maxCasRetries) || this.maxCasRetries < 1 || this.maxCasRetries > 100) {
       throw new OperationServiceError("invalid_cas_retries", "maxCasRetries must be a positive bounded integer.");
     }
+  }
+
+  /**
+   * Create or authenticate the immutable operation record without constructing
+   * an adapter or touching a browser. Callers can retain the returned handle
+   * before they enter a host-controlled timeout around submit/run.
+   */
+  async prepare(
+    request: OperationSubmitRequestV1,
+    files: readonly import("./file-identity.js").OperationFileManifestEntryV1[],
+    options: Pick<OperationSubmitOptions, "signal" | "requestDigest"> = {}
+  ): Promise<OperationPrepareResult> {
+    const requestDigest = this.computeRequestDigest(request, files, options.requestDigest);
+    const signal = options.signal ?? new AbortController().signal;
+    if (!isAbortSignal(signal)) throw new OperationServiceError("invalid_signal", "Preparation signal must be an AbortSignal.");
+    if (signal.aborted) throw new OperationServiceError("operation_cancelled", "The operation was cancelled before preparation.");
+    const loaded = await this.ensureCreated(request, requestDigest);
+    return { handle: this.journal.handleFromState(loaded.state), state: loaded.state };
   }
 
   /**
@@ -3269,6 +3293,7 @@ const TARGET_RESOLUTION_BLOCKER_CODES = new Set<SubmissionBlockerCode>([
   "rate_limited",
   "permission_required",
   "needs_confirmation",
+  "project_creation_indeterminate",
   "selector_drift",
   "journal_unavailable",
   "port_protocol_violation"

@@ -20,6 +20,7 @@ import {
   OperationService,
   type OperationBrowserAdapter,
   type OperationInspectResult,
+  type OperationPrepareResult,
   type OperationRunResult,
   type OperationSubmitOptions,
   type OperationSubmitResult
@@ -139,7 +140,7 @@ export type OperationControlAdapterFactory = (
 export type OperationServicePort = Pick<
   OperationService,
   "submit" | "collect" | "inspect" | "control" | "run"
->;
+> & Partial<Pick<OperationService, "prepare">>;
 
 export type OperationClientOptions = Readonly<{
   /** Optional request-scoped adapter construction for raw prompt/path closure. */
@@ -162,6 +163,10 @@ export type OperationClientOptions = Readonly<{
 
 export type OperationClientSubmitOptions = Readonly<
   Pick<OperationSubmitOptions, "signal" | "deadlineAt">
+>;
+
+export type OperationClientPrepareOptions = Readonly<
+  Pick<OperationSubmitOptions, "signal">
 >;
 
 export type OperationClientCollectOptions = CollectorOptions;
@@ -216,6 +221,22 @@ export class OperationClient {
     this.maxCachedAdapters = validateMaxCachedAdapters(options.maxCachedAdapters);
   }
 
+  /** Persist an immutable operation handle without constructing an adapter. */
+  async prepare(
+    request: OperationSubmitRequestV1,
+    options: OperationClientPrepareOptions = {}
+  ): Promise<OperationPrepareResult> {
+    const prepared = await this.prepareSubmit(request, options.signal);
+    if (this.service.prepare === undefined) {
+      throw new OperationClientError("prepare_unavailable", "The operation service does not expose browser-free preparation.");
+    }
+    return freshResult(await this.service.prepare(
+      prepared.serviceRequest,
+      prepared.manifest,
+      { signal: prepared.signal }
+    ));
+  }
+
   /** Fingerprint inputs, then execute the service's one-submit protocol. */
   async submit(
     request: OperationSubmitRequestV1,
@@ -229,7 +250,7 @@ export class OperationClient {
       adapter,
       forwardSubmitOptions(options, prepared.signal)
     );
-    if (isTerminalSubmitResult(result)) {
+    if (isTerminalSubmitResult(result) || result.handle.targetBindingDigest === undefined) {
       this.forgetAdapter(result.handle);
     } else {
       this.rememberAdapter(result.handle, adapter);

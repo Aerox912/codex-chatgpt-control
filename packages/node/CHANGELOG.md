@@ -2,6 +2,15 @@
 
 ## 0.5.1-alpha.3
 
+- Keeps named workspace Projects authoritative on the transactional path,
+  resolves exact Unicode labels within decorated Project rows, reconciles
+  uncertain creation, and never degrades a failed Project route to global Chat.
+- Detects Project Chat through the `New chat in <Project>` composer with the
+  verified `project_chat_v1` profile and records host-facing browser kind
+  independently from provider browser name.
+- Exposes `operations.prepare()` before browser acquisition and projects
+  creation, upload, and post-Send uncertainty as explicit resumable stages;
+  same-ID recovery remains observation-only after a mutation boundary.
 - Tracks the current compact Chat configuration state machine across Power,
   Select model, and verified GPT-5.5/GPT-5.6 Sol radio selection, including
   clipped menus and delayed menu closure.

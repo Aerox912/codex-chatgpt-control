@@ -10,6 +10,14 @@ import {
   type OperationSubmitRequestV1
 } from "./types.js";
 
+const PROJECT_ICONS = new Set([
+  "Folder", "Currency Dollar", "Book", "Graduation Cap", "Pencil", "Writing", "Code Brackets", "Terminal",
+  "Music", "Popcorn", "Customize", "Palette", "Stethoscope", "Health", "Lotus", "Suitcase", "Bar Chart",
+  "Kettlebell", "Dumbbell", "Logs", "Balancing Scale", "Globe Spin", "Plane", "Globe", "Wrench", "Paw",
+  "Flask", "Brain", "Heart", "Plant"
+]);
+const PROJECT_COLORS = new Set(["default", "red", "orange", "yellow", "green", "blue", "purple", "pink"]);
+
 /**
  * Raised by the closed runtime validators in this module.
  *
@@ -119,6 +127,21 @@ function validateOperationTarget(value: unknown): void {
     case "new":
     case "selected_tab":
       operationExactKeys(target, ["type"]);
+      return;
+    case "project":
+      operationExactKeys(target, ["type", "name", "icon", "color", "confirmCreation"]);
+      operationText(propertyValue(target, "name"), 512, true);
+      if (propertyValue(target, "icon") !== undefined) {
+        operationText(propertyValue(target, "icon"), 256, true);
+        if (!PROJECT_ICONS.has(propertyValue(target, "icon") as string)) throw invalidOperationRequest();
+      }
+      if (propertyValue(target, "color") !== undefined) {
+        operationText(propertyValue(target, "color"), 32, true);
+        if (!PROJECT_COLORS.has(propertyValue(target, "color") as string)) throw invalidOperationRequest();
+      }
+      if (propertyValue(target, "confirmCreation") !== undefined && propertyValue(target, "confirmCreation") !== true) {
+        throw invalidOperationRequest();
+      }
       return;
     case "tab_id":
       operationExactKeys(target, ["type", "tabId"]);

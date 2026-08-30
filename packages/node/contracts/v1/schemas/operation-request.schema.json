@@ -37,6 +37,26 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["type", "name"],
+          "properties": {
+            "type": { "const": "project" },
+            "name": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "icon": {
+              "enum": [
+                "Folder", "Currency Dollar", "Book", "Graduation Cap", "Pencil", "Writing",
+                "Code Brackets", "Terminal", "Music", "Popcorn", "Customize", "Palette",
+                "Stethoscope", "Health", "Lotus", "Suitcase", "Bar Chart", "Kettlebell",
+                "Dumbbell", "Logs", "Balancing Scale", "Globe Spin", "Plane", "Globe",
+                "Wrench", "Paw", "Flask", "Brain", "Heart", "Plant"
+              ]
+            },
+            "color": { "enum": ["default", "red", "orange", "yellow", "green", "blue", "purple", "pink"] },
+            "confirmCreation": { "const": true }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["type"],
           "properties": { "type": { "const": "selected_tab" } }
         },

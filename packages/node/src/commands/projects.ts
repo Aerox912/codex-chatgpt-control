@@ -56,6 +56,13 @@ class ProjectSelectorError extends Error {
   }
 }
 
+class ProjectCreationIndeterminateError extends Error {
+  constructor() {
+    super("ChatGPT Project creation may have completed, but its exact postcondition could not be reconciled.");
+    this.name = "ProjectCreationIndeterminateError";
+  }
+}
+
 export function projectNameFromWorkspacePath(workspacePath: string): string {
   const segments = workspacePath.trim().replace(/\\/g, "/").split("/").filter(Boolean);
   const leaf = segments.at(-1)?.replace(/^\.+/, "") ?? "";
@@ -185,7 +192,7 @@ export async function openOrCreateProjectForNewThread(
 
   try {
     const currentUrl = await pageUrl(page);
-    if (currentUrl !== undefined && PROJECT_PAGE_PATTERN.test(currentUrl) && await projectComposerVisible(page, project.name)) {
+    if (currentUrl !== undefined && await projectPageMatchesTarget(page, project.name, currentUrl)) {
       return resultOk(projectRef(project, normalizeProjectPageUrl(currentUrl), false), await contextFromPage(page));
     }
 
@@ -231,6 +238,21 @@ export async function openOrCreateProjectForNewThread(
     const createdUrl = await createProject(page, project, timeoutMs);
     return resultOk(projectRef(project, createdUrl, true), await contextFromPage(page));
   } catch (error) {
+    if (error instanceof ProjectCreationIndeterminateError) {
+      return {
+        ok: false,
+        status: "partial",
+        warnings: [],
+        blocker: {
+          kind: "confirmation",
+          code: "chatgpt_project_creation_indeterminate",
+          fieldPath: "project",
+          message: "Project creation may have occurred, but the exact Project page could not be verified. Resume the same operation or inspect the exact Project name before attempting creation again.",
+          resumable: true
+        },
+        context: await contextFromPage(page)
+      };
+    }
     if (error instanceof ProjectSelectorError) {
       return projectSelectorFailure(page, error.message);
     }
@@ -387,8 +409,7 @@ async function findVisibleProjectRow(page: PageLike, name: string): Promise<Loca
     const row = rows?.nth?.(index);
     const cells = row?.getByRole?.("gridcell");
     if (await locatorCount(cells) === 0) continue;
-    const text = (await cells?.first?.()?.innerText?.())?.trim();
-    if (row !== undefined && text !== undefined && projectNamesMatch(name, text)) rowMatches.push(row);
+    if (row !== undefined && await locatorHasExactProjectName(row, name)) rowMatches.push(row);
   }
   if (rowMatches.length > 1) throw ambiguousProjectNameError(name, rowMatches.length);
   if (rowMatches.length === 1) return rowMatches[0];
@@ -399,8 +420,7 @@ async function findVisibleProjectRow(page: PageLike, name: string): Promise<Loca
   for (let index = 0; index < iconCount; index += 1) {
     const row = icons?.nth?.(index).locator?.("xpath=ancestor::*[@role='button' or @role='link'][1]");
     if (await locatorCount(row) !== 1) continue;
-    const text = (await row?.innerText?.())?.trim();
-    if (row !== undefined && text !== undefined && projectNamesMatch(name, text)) iconMatches.push(row);
+    if (row !== undefined && await locatorHasExactProjectName(row, name)) iconMatches.push(row);
   }
   if (iconMatches.length > 1) throw ambiguousProjectNameError(name, iconMatches.length);
   if (iconMatches.length === 1) return iconMatches[0];
@@ -410,8 +430,7 @@ async function findVisibleProjectRow(page: PageLike, name: string): Promise<Loca
   const buttonMatches: LocatorLike[] = [];
   for (let index = 0; index < buttonCount; index += 1) {
     const button = buttons?.nth?.(index);
-    const text = (await button?.innerText?.())?.trim();
-    if (button !== undefined && text !== undefined && projectNamesMatch(name, text)) buttonMatches.push(button);
+    if (button !== undefined && await locatorHasExactProjectName(button, name)) buttonMatches.push(button);
   }
   if (buttonMatches.length > 1) throw ambiguousProjectNameError(name, buttonMatches.length);
   if (buttonMatches.length === 1) return buttonMatches[0];
@@ -421,12 +440,28 @@ async function findVisibleProjectRow(page: PageLike, name: string): Promise<Loca
   const linkMatches: LocatorLike[] = [];
   for (let index = 0; index < linkCount; index += 1) {
     const link = links?.nth?.(index);
-    const text = (await link?.innerText?.())?.trim();
-    if (link !== undefined && text !== undefined && projectNamesMatch(name, text)) linkMatches.push(link);
+    if (link !== undefined && await locatorHasExactProjectName(link, name)) linkMatches.push(link);
   }
   if (linkMatches.length > 1) throw ambiguousProjectNameError(name, linkMatches.length);
   if (linkMatches.length === 1) return linkMatches[0];
   return undefined;
+}
+
+/**
+ * Match only a complete Project-name field. The surrounding row may expose
+ * icon and date text, but those decorations are never stripped or compared by
+ * substring. This keeps similarly named Projects fail closed.
+ */
+async function locatorHasExactProjectName(locator: LocatorLike, name: string): Promise<boolean> {
+  const whole = (await locator.innerText?.().catch(() => undefined))?.trim();
+  if (whole !== undefined && projectNamesMatch(name, whole)) return true;
+
+  const exact = locator.getByText?.(name, { exact: true });
+  if (await locatorCount(exact) > 0) return true;
+
+  const descendants = locator.locator?.("*");
+  const texts = await descendants?.allTextContents?.().catch(() => []);
+  return texts?.some(text => projectNamesMatch(name, text.trim())) === true;
 }
 
 function ambiguousProjectNameError(name: string, count: number): ProjectSelectorError {
@@ -523,13 +558,35 @@ async function createProject(page: PageLike, project: ResolvedProjectTarget, tim
   }
   await submit?.click?.();
   if (!await waitForProjectHome(page, project.name, timeoutMs)) {
-    throw new ProjectSelectorError(`ChatGPT did not verify the new Project "${project.name}" after creation.`);
+    const reconciled = await reconcileCreatedProject(page, project.name, timeoutMs);
+    if (reconciled !== undefined) return reconciled;
+    throw new ProjectCreationIndeterminateError();
   }
   const url = await pageUrl(page);
   if (url === undefined || !PROJECT_PAGE_PATTERN.test(url)) {
     throw new ProjectSelectorError(`ChatGPT created "${project.name}", but its Project URL could not be verified.`);
   }
   return normalizeProjectPageUrl(url);
+}
+
+async function reconcileCreatedProject(
+  page: PageLike,
+  name: string,
+  timeoutMs: number
+): Promise<string | undefined> {
+  try {
+    await page.goto?.(CHATGPT_PROJECTS, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await page.waitForTimeout?.(500);
+    if (!await revealProjectList(page)) return undefined;
+    const row = await findProjectRow(page, name);
+    if (row === undefined) return undefined;
+    const url = await resolveProjectPageUrl(page, row, timeoutMs);
+    if (url === undefined) return undefined;
+    await openProjectPage(page, url, name, timeoutMs);
+    return url;
+  } catch {
+    return undefined;
+  }
 }
 
 async function waitForProjectHome(page: PageLike, name: string, timeoutMs: number): Promise<boolean> {
@@ -544,7 +601,31 @@ async function waitForProjectHome(page: PageLike, name: string, timeoutMs: numbe
 
 async function projectComposerVisible(page: PageLike, name: string): Promise<boolean> {
   const composer = page.getByRole?.("textbox", { name: new RegExp(`^New chat in ${escapeRegex(name)}$`, "i") });
-  return await locatorCount(composer) > 0;
+  if (await locatorCount(composer) > 0) return true;
+
+  const candidates = page.getByRole?.("textbox", { name: /^New chat in .+$/i });
+  const count = await locatorCount(candidates);
+  for (let index = 0; index < count; index += 1) {
+    const candidate = index === 0
+      ? candidates?.first?.() ?? candidates
+      : candidates?.nth?.(index);
+    const accessibleName = await candidate?.getAttribute?.("aria-label")
+      ?? await candidate?.getAttribute?.("placeholder")
+      ?? await candidate?.innerText?.().catch(() => undefined);
+    const matched = accessibleName?.match(/^New chat in (.+)$/i);
+    if (matched?.[1] !== undefined && projectNamesMatch(name, matched[1])) return true;
+  }
+  return false;
+}
+
+/** Verify an exact named Project home without navigating or creating state. */
+export async function projectPageMatchesTarget(
+  page: PageLike,
+  name: string,
+  knownUrl?: string
+): Promise<boolean> {
+  const url = knownUrl ?? await pageUrl(page);
+  return url !== undefined && PROJECT_PAGE_PATTERN.test(url) && await projectComposerVisible(page, name);
 }
 
 async function waitForAnyProjectPageUrl(page: PageLike, timeoutMs: number): Promise<string | undefined> {

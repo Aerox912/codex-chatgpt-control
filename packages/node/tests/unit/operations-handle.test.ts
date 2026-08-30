@@ -32,6 +32,23 @@ describe("operation handles and request identity", () => {
     expect(operationSubmitRequestDigest(KEY, { ...request, target: { type: "new" } }, files)).not.toBe(first);
   });
 
+  it("binds the exact Project alias and creation authority into request identity", () => {
+    const request = submitRequest();
+    const files = [{ displayName: "input.txt", bytes: 4, contentSha256: "b".repeat(64) }];
+    const existingOnly = operationSubmitRequestDigest(KEY, {
+      ...request,
+      target: { type: "project", name: "Pokémon Burning Scales" }
+    }, files);
+    expect(operationSubmitRequestDigest(KEY, {
+      ...request,
+      target: { type: "project", name: "Pokémon Burning Scales", confirmCreation: true }
+    }, files)).not.toBe(existingOnly);
+    expect(operationSubmitRequestDigest(KEY, {
+      ...request,
+      target: { type: "project", name: "Pokemon Burning Scales" }
+    }, files)).not.toBe(existingOnly);
+  });
+
   it("does not retain a caller snapshot across separate digest invocations", () => {
     const request = submitRequest();
     const files = [{ displayName: "input.txt", bytes: 4, contentSha256: "b".repeat(64) }];

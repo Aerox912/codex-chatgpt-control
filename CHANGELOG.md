@@ -2,6 +2,16 @@
 
 ## 0.5.1-alpha.3
 
+- Routes explicit workspace Project aliases through the transactional operation
+  path, matches exact Unicode Project-name descendants inside decorated grid
+  rows, and keeps missing or ambiguous Projects fail-closed without a global
+  Chat fallback.
+- Recognizes Project-specific Chat composers as `project_chat_v1`, preserves
+  strict Pro verification, and reports the selected in-app browser separately
+  from the provider backend name.
+- Adds browser-free durable operation preparation plus machine-readable
+  creation, upload, and submission uncertainty stages so same-ID recovery can
+  observe before retrying any mutation.
 - Restores current compact Chat model selection by setting Power first, entering
   the nested Select model pane, verifying the chosen GPT-5.5 or GPT-5.6 Sol
   radio, and closing the configuration menu only after the postcondition holds.
@@ -23,7 +33,7 @@
   stale, hidden, cross-tab, oversized, late-settling, and acts-then-throws state.
 - Adds deterministic cleanup and Chat/Work restoration to the live release
   canary, structured visible rate-limit diagnosis, expanded privacy/performance
-  boundaries, 82 shared fixtures, and rebuilt plugin runtimes.
+  boundaries, 83 shared fixtures, and rebuilt plugin runtimes.
 
 ## 0.5.1-alpha.2
 

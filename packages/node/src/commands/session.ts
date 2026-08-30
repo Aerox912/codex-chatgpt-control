@@ -16,6 +16,7 @@ export async function bootstrap(
   try {
     const attached = await attachChatGPTBrowser(env, args);
     env.browser = attached.browser;
+    env.browserKind = attached.browserKind;
     env.page = attached.page;
     if (attached.tabId !== undefined) {
       env.expectedTabId = attached.tabId;
@@ -24,14 +25,15 @@ export async function bootstrap(
     const state = await readPageState(attached.page);
     const data: BootstrapData = {
       browserName: attached.browserName,
+      browserKind: attached.browserKind,
       tabId: attached.tabId ?? "unknown",
       url: state.url,
       loggedIn: state.signedIn
     };
 
     const context = attached.tabId === undefined
-      ? { browserName: attached.browserName }
-      : { browserName: attached.browserName, tabId: attached.tabId };
+      ? { browserName: attached.browserName, browserKind: attached.browserKind }
+      : { browserName: attached.browserName, browserKind: attached.browserKind, tabId: attached.tabId };
 
     return resultOk(data, await contextFromPage(attached.page, context));
   } catch (error) {

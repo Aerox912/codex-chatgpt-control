@@ -177,6 +177,8 @@ export type OperationRuntimeAdapterErrorCode =
   | "rate_limited"
   | "permission_required"
   | "needs_confirmation"
+  | "project_creation_indeterminate"
+  | "selector_drift"
   | "runtime_incompatible";
 
 /** Stable, redacted error boundary for a request-scoped runtime adapter. */
@@ -665,6 +667,7 @@ function validateRecoveryContext(value: unknown): asserts value is OperationRunt
   const targetType = readOwnData(targetRequest, "type");
   if (
     targetType !== "new"
+    && targetType !== "project"
     && targetType !== "selected_tab"
     && targetType !== "tab_id"
     && targetType !== "conversation_id"
@@ -707,6 +710,15 @@ function sameTargetRequest(
   const rightType = readOwnData(right as unknown as Record<string, unknown>, "type");
   if (leftType !== rightType) return false;
   switch (leftType) {
+    case "project":
+      return readOwnData(left as unknown as Record<string, unknown>, "name")
+          === readOwnData(right as unknown as Record<string, unknown>, "name")
+        && readOwnData(left as unknown as Record<string, unknown>, "icon")
+          === readOwnData(right as unknown as Record<string, unknown>, "icon")
+        && readOwnData(left as unknown as Record<string, unknown>, "color")
+          === readOwnData(right as unknown as Record<string, unknown>, "color")
+        && readOwnData(left as unknown as Record<string, unknown>, "confirmCreation")
+          === readOwnData(right as unknown as Record<string, unknown>, "confirmCreation");
     case "tab_id":
     case "conversation_id":
     case "url":
@@ -1011,6 +1023,8 @@ function captureErrorCode(error: unknown): OperationRuntimeAdapterErrorCode {
     case "rate_limited":
     case "permission_required":
     case "needs_confirmation":
+    case "project_creation_indeterminate":
+    case "selector_drift":
     case "runtime_incompatible":
     case "target_evidence_unavailable":
     case "target_binding_mismatch":
