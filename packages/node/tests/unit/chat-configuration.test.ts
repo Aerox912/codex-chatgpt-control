@@ -57,7 +57,7 @@ describe("Project Chat model and Power configuration", () => {
   });
 
   it("waits for full-carousel dismissal before reopening the Power view", async () => {
-    const page = picker({ view: "model", locatorKeyboardOnly: true, dismissWholeMenu: true });
+    const page = picker({ view: "model", locatorKeyboardOnly: true, dismissWholeMenu: true, dismissalMs: 600 });
     const result = await inspectConfiguration({ page }, { experience: "chat", timeoutMs: 0 });
     expect(result.data?.active).toEqual({ model: "Latest", effort: "Pro" });
     expect(result.data?.verified).toBe(true);
@@ -152,6 +152,7 @@ type PickerOptions = {
   changePowerWithModel?: boolean;
   locatorKeyboardOnly?: boolean;
   dismissWholeMenu?: boolean;
+  dismissalMs?: number;
   omitWaitHelper?: boolean;
 };
 
@@ -175,10 +176,10 @@ function picker(options: PickerOptions = {}): PageLike & { mutations: string[]; 
   const opener = control(() => true, () => { view = view === "closed" ? "root" : "closed"; });
   const selectModel = control(() => view === "root", () => { view = "model"; });
   const escape = async (key: string) => {
-    if (key !== "Escape") return;
+    if (key !== "Escape" || dismissalRemainingMs > 0) return;
     if (options.dismissWholeMenu) {
-      dismissalRemainingMs = 200;
-      if (options.omitWaitHelper) setTimeout(() => { view = "closed"; dismissalRemainingMs = 0; }, 200);
+      dismissalRemainingMs = options.dismissalMs ?? 200;
+      if (options.omitWaitHelper) setTimeout(() => { view = "closed"; dismissalRemainingMs = 0; }, options.dismissalMs ?? 200);
     } else view = view === "model" ? "root" : "closed";
   };
   return {
@@ -187,7 +188,7 @@ function picker(options: PickerOptions = {}): PageLike & { mutations: string[]; 
     url: () => "https://chatgpt.com/g/g-p-sanitized-project/project",
     title: async () => "ChatGPT",
     getByRole: (role, args = {}) => {
-      if (role === "menu") return { count: async () => view === "closed" || dismissalRemainingMs > 0 ? 0 : 1, press: escape };
+      if (role === "menu") return { count: async () => view === "closed" ? 0 : 1, press: escape };
       if (role === "button" && args.name === label()) return opener;
       if (role === "menuitem" && args.name === "Select model") return selectModel;
       if (role === "menuitemradio" && typeof args.name === "string" && models.includes(args.name)) {

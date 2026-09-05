@@ -1242,10 +1242,17 @@ async function closeConfigurationMenus(page: PageLike): Promise<void> {
   if (!await pressMenuEscape(page)) return;
   await waitForConfigurationUi(page, 50);
   await pressMenuEscape(page);
-  // A single Escape can dismiss the entire carousel. Its outgoing view can
-  // still be observable after the visible menu locator disappears, so always
-  // let dismissal settle, including providers without a browser wait helper.
-  await waitForConfigurationUi(page, 200);
+  // An outgoing carousel remains observable during its close animation.
+  // Wait for the menu to disappear before a fresh root can be recognized.
+  const menus = page.getByRole?.("menu");
+  if (menus?.count !== undefined) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (await menus.count() === 0) return;
+      await waitForConfigurationUi(page, 50);
+    }
+  } else {
+    await waitForConfigurationUi(page, 200);
+  }
 }
 
 async function closeConfigurationSubmenu(page: PageLike): Promise<void> {

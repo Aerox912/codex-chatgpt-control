@@ -14773,7 +14773,15 @@ async function closeConfigurationMenus(page) {
   if (!await pressMenuEscape(page)) return;
   await waitForConfigurationUi(page, 50);
   await pressMenuEscape(page);
-  await waitForConfigurationUi(page, 200);
+  const menus = page.getByRole?.("menu");
+  if (menus?.count !== void 0) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (await menus.count() === 0) return;
+      await waitForConfigurationUi(page, 50);
+    }
+  } else {
+    await waitForConfigurationUi(page, 200);
+  }
 }
 async function closeConfigurationSubmenu(page) {
   if (!await pressMenuEscape(page)) return;
