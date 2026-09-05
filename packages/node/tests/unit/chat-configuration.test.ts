@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyConfiguration, configurationInspectionFromSurface, configurationMatchesSelection, inspectConfiguration } from "../../src/commands/configuration.js";
 import { chatModelMenuOptions, findChatModelMenuOption, selectedChatModelMenuOption } from "../../src/dom/chat-configuration-menu.js";
 import type { MenuItem } from "../../src/dom/menus.js";
@@ -54,6 +54,33 @@ describe("Project Chat model and Power configuration", () => {
     expect(result.data?.after.active).toEqual({ model: "Latest", effort: "Pro" });
     expect(page.view()).toBe("closed");
     expect(page.mutations).toEqual([]);
+  });
+
+  it("waits for full-carousel dismissal before reopening the Power view", async () => {
+    const page = picker({ view: "model", locatorKeyboardOnly: true, dismissWholeMenu: true });
+    const result = await inspectConfiguration({ page }, { experience: "chat", timeoutMs: 0 });
+    expect(result.data?.active).toEqual({ model: "Latest", effort: "Pro" });
+    expect(result.data?.verified).toBe(true);
+    expect(result.warnings).toEqual([]);
+    expect(page.view()).toBe("closed");
+    expect(page.mutations).toEqual([]);
+  });
+
+  it("settles menu transitions when the browser has no wait helper", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = picker({ view: "model", locatorKeyboardOnly: true, dismissWholeMenu: true, omitWaitHelper: true });
+      const pending = inspectConfiguration({ page }, { experience: "chat", timeoutMs: 0 });
+      await vi.runAllTimersAsync();
+      const result = await pending;
+      expect(result.data?.active).toEqual({ model: "Latest", effort: "Pro" });
+      expect(result.data?.verified).toBe(true);
+      expect(result.warnings).toEqual([]);
+      expect(page.view()).toBe("closed");
+      expect(page.mutations).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("changes the requested model and verifies both axes afterwards", async () => {
@@ -124,12 +151,15 @@ type PickerOptions = {
   unreadablePower?: boolean;
   changePowerWithModel?: boolean;
   locatorKeyboardOnly?: boolean;
+  dismissWholeMenu?: boolean;
+  omitWaitHelper?: boolean;
 };
 
 // A stateful browser boundary: production inspection, application, menu
 // classification and Power classification run unchanged against these views.
 function picker(options: PickerOptions = {}): PageLike & { mutations: string[]; view: () => string } {
   let view = options.view ?? "closed";
+  let dismissalRemainingMs = 0;
   let selected = options.selected ?? ["Latest"];
   let effort = "Pro";
   const models = options.modelLabels ?? ["Latest", "GPT-5.6 Sol", "GPT-5.5"];
@@ -145,7 +175,11 @@ function picker(options: PickerOptions = {}): PageLike & { mutations: string[]; 
   const opener = control(() => true, () => { view = view === "closed" ? "root" : "closed"; });
   const selectModel = control(() => view === "root", () => { view = "model"; });
   const escape = async (key: string) => {
-    if (key === "Escape") view = view === "model" ? "root" : "closed";
+    if (key !== "Escape") return;
+    if (options.dismissWholeMenu) {
+      dismissalRemainingMs = 200;
+      if (options.omitWaitHelper) setTimeout(() => { view = "closed"; dismissalRemainingMs = 0; }, 200);
+    } else view = view === "model" ? "root" : "closed";
   };
   return {
     mutations,
@@ -153,7 +187,7 @@ function picker(options: PickerOptions = {}): PageLike & { mutations: string[]; 
     url: () => "https://chatgpt.com/g/g-p-sanitized-project/project",
     title: async () => "ChatGPT",
     getByRole: (role, args = {}) => {
-      if (role === "menu") return { count: async () => view === "closed" ? 0 : 1, press: escape };
+      if (role === "menu") return { count: async () => view === "closed" || dismissalRemainingMs > 0 ? 0 : 1, press: escape };
       if (role === "button" && args.name === label()) return opener;
       if (role === "menuitem" && args.name === "Select model") return selectModel;
       if (role === "menuitemradio" && typeof args.name === "string" && models.includes(args.name)) {
@@ -192,6 +226,10 @@ function picker(options: PickerOptions = {}): PageLike & { mutations: string[]; 
       }
       throw new Error(`Unexpected browser observation: ${source.slice(0, 100)}`);
     },
-    waitForTimeout: async () => {}
+    ...(options.omitWaitHelper ? {} : { waitForTimeout: async (ms: number) => {
+      if (dismissalRemainingMs <= 0) return;
+      dismissalRemainingMs -= ms;
+      if (dismissalRemainingMs <= 0) view = "closed";
+    } })
   };
 }

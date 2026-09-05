@@ -92,7 +92,7 @@ export async function inspectConfiguration(
       args.timeoutMs
     );
     if (rootOpened) {
-      await page.waitForTimeout?.(150);
+      await waitForConfigurationUi(page, 150);
     }
 
     let panel = await readConfigurationPanel(page);
@@ -141,7 +141,7 @@ export async function inspectConfiguration(
       if (modelViewOpen) {
         await closeConfigurationMenus(page);
         await waitForConfigurationRoot(page, "chat", args.timeoutMs);
-        await page.waitForTimeout?.(150);
+        await waitForConfigurationUi(page, 150);
         rootItems = await enumerateVisibleMenuItems(page);
       }
       const currentPicker = modelViewOpen || findChatModelViewOpener(rootItems) !== undefined;
@@ -166,7 +166,7 @@ export async function inspectConfiguration(
       }
     }
     if (chatAdvancedRequired && chatAdvancedOpened) {
-      await page.waitForTimeout?.(150);
+      await waitForConfigurationUi(page, 150);
       panel = await readConfigurationPanel(page);
       if (initialPanel.openerLabel !== undefined
         && (panel.openerLabel === undefined || isProConfigurationOpener(initialPanel.openerLabel))) {
@@ -178,7 +178,7 @@ export async function inspectConfiguration(
     const workAdvancedOpened = experience !== "work"
       || (rootOpened && await ensureWorkAdvancedPanel(page));
     if (experience === "work" && workAdvancedOpened) {
-      await page.waitForTimeout?.(150);
+      await waitForConfigurationUi(page, 150);
       panel = await readConfigurationPanel(page);
       if (initialPanel.openerLabel !== undefined
         && (panel.openerLabel === undefined || isProConfigurationOpener(initialPanel.openerLabel))) {
@@ -243,7 +243,7 @@ async function waitForConfigurationRoot(
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (await openConfigurationRoot(page, experience)) return true;
     if (attempt + 1 < attempts) {
-      await page.waitForTimeout?.(CONFIGURATION_CONTROL_POLL_MS);
+      await waitForConfigurationUi(page, CONFIGURATION_CONTROL_POLL_MS);
     }
   }
   return false;
@@ -503,7 +503,7 @@ async function selectWorkAxis(
     const candidates = await openWorkAxisOptions(env, axis);
     const match = findConfigurationOption(candidates, requested);
     if (match !== undefined && await clickVisibleMenuItem(page, match)) {
-      await page.waitForTimeout?.(150);
+      await waitForConfigurationUi(page, 150);
       return match.label;
     }
     if (attempt + 1 < attempts) {
@@ -513,7 +513,7 @@ async function selectWorkAxis(
       // fresh DOM instance for a small bounded window instead of treating the
       // transient state as permanent selector drift.
       await closeConfigurationMenus(page);
-      await page.waitForTimeout?.(CONFIGURATION_SELECTION_RETRY_MS);
+      await waitForConfigurationUi(page, CONFIGURATION_SELECTION_RETRY_MS);
     }
   }
   return undefined;
@@ -537,7 +537,7 @@ async function openWorkAxisOptions(
 
   const point = await locatorCenter(row);
   if (point !== undefined && await movePointerWithCdp(env, point)) {
-    await page.waitForTimeout?.(180);
+    await waitForConfigurationUi(page, 180);
     const hoveredOptions = await visibleOptions();
     if (hoveredOptions.length > 0) return hoveredOptions;
 
@@ -546,7 +546,7 @@ async function openWorkAxisOptions(
     // creates a fresh hover transition without ever leaving the root menu.
     await movePointerWithCdp(env, { x: point.x - 2, y: point.y });
     await movePointerWithCdp(env, point);
-    await page.waitForTimeout?.(180);
+    await waitForConfigurationUi(page, 180);
     const retriedOptions = await visibleOptions();
     if (retriedOptions.length > 0) return retriedOptions;
   }
@@ -557,7 +557,7 @@ async function openWorkAxisOptions(
     } catch {
       // Fall through to the Computer Use and click fallbacks.
     }
-    await page.waitForTimeout?.(180);
+    await waitForConfigurationUi(page, 180);
     const mouseOptions = await visibleOptions();
     if (mouseOptions.length > 0) return mouseOptions;
   }
@@ -568,14 +568,14 @@ async function openWorkAxisOptions(
     } catch {
       // Fall through to the click fallback.
     }
-    await page.waitForTimeout?.(180);
+    await waitForConfigurationUi(page, 180);
     const movedOptions = await visibleOptions();
     if (movedOptions.length > 0) return movedOptions;
   }
 
   if (row.click !== undefined) {
     await row.click().catch(() => undefined);
-    await page.waitForTimeout?.(180);
+    await waitForConfigurationUi(page, 180);
   }
   const clickedOptions = await visibleOptions();
   if (clickedOptions.length > 0 || !allowRootRetry) return clickedOptions;
@@ -584,7 +584,7 @@ async function openWorkAxisOptions(
   // complete Advanced panel once and resolve a fresh row locator; stale row
   // handles and same-coordinate pointer moves cannot recover a detached menu.
   await closeConfigurationMenus(page);
-  await page.waitForTimeout?.(200);
+  await waitForConfigurationUi(page, 200);
   return openWorkAxisOptions(env, axis, false);
 }
 
@@ -845,7 +845,7 @@ async function ensureWorkAdvancedPanel(page: PageLike): Promise<boolean> {
   if (advanced.length !== 1 || !await clickVisibleMenuItem(page, advanced[0]!)) {
     return false;
   }
-  await page.waitForTimeout?.(200);
+  await waitForConfigurationUi(page, 200);
   return (await readConfigurationPanel(page)).axisRows.length > 0;
 }
 
@@ -853,7 +853,7 @@ async function ensureChatModelPanel(page: PageLike, items: MenuItem[]): Promise<
   if (chatModelMenuOptions(items).length > 0) return items;
   const opener = findChatModelViewOpener(items);
   if (opener === undefined || !await clickVisibleMenuItem(page, opener)) return undefined;
-  await page.waitForTimeout?.(200);
+  await waitForConfigurationUi(page, 200);
   const modelItems = await enumerateVisibleMenuItems(page);
   return chatModelMenuOptions(modelItems).length > 0 ? modelItems : undefined;
 }
@@ -863,7 +863,7 @@ async function ensureChatAdvancedPanel(page: PageLike, items: MenuItem[]): Promi
   if (advanced.length !== 1 || !await clickVisibleMenuItem(page, advanced[0]!)) {
     return false;
   }
-  await page.waitForTimeout?.(200);
+  await waitForConfigurationUi(page, 200);
   return compactChatMenuLooksRecognized(await readConfigurationPanel(page));
 }
 
@@ -1233,14 +1233,19 @@ function normalizeConfigurationId(value: string): string {
     .trim();
 }
 
+async function waitForConfigurationUi(page: PageLike, ms: number): Promise<void> {
+  if (page.waitForTimeout !== undefined) await page.waitForTimeout(ms);
+  else await new Promise<void>(resolve => setTimeout(resolve, ms));
+}
+
 async function closeConfigurationMenus(page: PageLike): Promise<void> {
   if (!await pressMenuEscape(page)) return;
-  await page.waitForTimeout?.(50);
-  if (await pressMenuEscape(page)) {
-    // The carousel root uses a short pointer-grace dismissal. Reopening before
-    // it settles can detach the fresh model view during the next selection.
-    await page.waitForTimeout?.(200);
-  }
+  await waitForConfigurationUi(page, 50);
+  await pressMenuEscape(page);
+  // A single Escape can dismiss the entire carousel. Its outgoing view can
+  // still be observable after the visible menu locator disappears, so always
+  // let dismissal settle, including providers without a browser wait helper.
+  await waitForConfigurationUi(page, 200);
 }
 
 async function closeConfigurationSubmenu(page: PageLike): Promise<void> {
@@ -1248,7 +1253,7 @@ async function closeConfigurationSubmenu(page: PageLike): Promise<void> {
   // Radix retains a short pointer-grace timer after a submenu closes. If the
   // next axis is hovered too quickly, that stale timer can dismiss the newly
   // opened submenu. Let the prior close settle before moving to another row.
-  await page.waitForTimeout?.(200);
+  await waitForConfigurationUi(page, 200);
 }
 
 async function clickIfUnique(locator: LocatorLike | undefined): Promise<boolean> {

@@ -9526,7 +9526,7 @@ async function inspectConfiguration(env, args = {}) {
       args.timeoutMs
     );
     if (rootOpened) {
-      await page.waitForTimeout?.(150);
+      await waitForConfigurationUi(page, 150);
     }
     let panel = await readConfigurationPanel(page);
     if (initialPanel.openerLabel !== void 0 && (panel.openerLabel === void 0 || isProConfigurationOpener(initialPanel.openerLabel))) {
@@ -9562,7 +9562,7 @@ async function inspectConfiguration(env, args = {}) {
       if (modelViewOpen) {
         await closeConfigurationMenus(page);
         await waitForConfigurationRoot(page, "chat", args.timeoutMs);
-        await page.waitForTimeout?.(150);
+        await waitForConfigurationUi(page, 150);
         rootItems = await enumerateVisibleMenuItems(page);
       }
       const currentPicker = modelViewOpen || findChatModelViewOpener(rootItems) !== void 0;
@@ -9583,7 +9583,7 @@ async function inspectConfiguration(env, args = {}) {
       }
     }
     if (chatAdvancedRequired && chatAdvancedOpened) {
-      await page.waitForTimeout?.(150);
+      await waitForConfigurationUi(page, 150);
       panel = await readConfigurationPanel(page);
       if (initialPanel.openerLabel !== void 0 && (panel.openerLabel === void 0 || isProConfigurationOpener(initialPanel.openerLabel))) {
         panel.openerLabel = initialPanel.openerLabel;
@@ -9592,7 +9592,7 @@ async function inspectConfiguration(env, args = {}) {
     }
     const workAdvancedOpened = experience !== "work" || rootOpened && await ensureWorkAdvancedPanel(page);
     if (experience === "work" && workAdvancedOpened) {
-      await page.waitForTimeout?.(150);
+      await waitForConfigurationUi(page, 150);
       panel = await readConfigurationPanel(page);
       if (initialPanel.openerLabel !== void 0 && (panel.openerLabel === void 0 || isProConfigurationOpener(initialPanel.openerLabel))) {
         panel.openerLabel = initialPanel.openerLabel;
@@ -9647,7 +9647,7 @@ async function waitForConfigurationRoot(page, experience, timeoutMs) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (await openConfigurationRoot(page, experience)) return true;
     if (attempt + 1 < attempts) {
-      await page.waitForTimeout?.(CONFIGURATION_CONTROL_POLL_MS);
+      await waitForConfigurationUi(page, CONFIGURATION_CONTROL_POLL_MS);
     }
   }
   return false;
@@ -9866,12 +9866,12 @@ async function selectWorkAxis(env, axis, requested, timeoutMs) {
     const candidates = await openWorkAxisOptions(env, axis);
     const match = findConfigurationOption(candidates, requested);
     if (match !== void 0 && await clickVisibleMenuItem(page, match)) {
-      await page.waitForTimeout?.(150);
+      await waitForConfigurationUi(page, 150);
       return match.label;
     }
     if (attempt + 1 < attempts) {
       await closeConfigurationMenus(page);
-      await page.waitForTimeout?.(CONFIGURATION_SELECTION_RETRY_MS);
+      await waitForConfigurationUi(page, CONFIGURATION_SELECTION_RETRY_MS);
     }
   }
   return void 0;
@@ -9886,12 +9886,12 @@ async function openWorkAxisOptions(env, axis, allowRootRetry = true) {
   if (alreadyOpen.length > 0) return alreadyOpen;
   const point = await locatorCenter(row);
   if (point !== void 0 && await movePointerWithCdp(env, point)) {
-    await page.waitForTimeout?.(180);
+    await waitForConfigurationUi(page, 180);
     const hoveredOptions = await visibleOptions();
     if (hoveredOptions.length > 0) return hoveredOptions;
     await movePointerWithCdp(env, { x: point.x - 2, y: point.y });
     await movePointerWithCdp(env, point);
-    await page.waitForTimeout?.(180);
+    await waitForConfigurationUi(page, 180);
     const retriedOptions = await visibleOptions();
     if (retriedOptions.length > 0) return retriedOptions;
   }
@@ -9900,7 +9900,7 @@ async function openWorkAxisOptions(env, axis, allowRootRetry = true) {
       await page.mouse.move(point.x, point.y);
     } catch {
     }
-    await page.waitForTimeout?.(180);
+    await waitForConfigurationUi(page, 180);
     const mouseOptions = await visibleOptions();
     if (mouseOptions.length > 0) return mouseOptions;
   }
@@ -9909,18 +9909,18 @@ async function openWorkAxisOptions(env, axis, allowRootRetry = true) {
       await page.cua.move(point);
     } catch {
     }
-    await page.waitForTimeout?.(180);
+    await waitForConfigurationUi(page, 180);
     const movedOptions = await visibleOptions();
     if (movedOptions.length > 0) return movedOptions;
   }
   if (row.click !== void 0) {
     await row.click().catch(() => void 0);
-    await page.waitForTimeout?.(180);
+    await waitForConfigurationUi(page, 180);
   }
   const clickedOptions = await visibleOptions();
   if (clickedOptions.length > 0 || !allowRootRetry) return clickedOptions;
   await closeConfigurationMenus(page);
-  await page.waitForTimeout?.(200);
+  await waitForConfigurationUi(page, 200);
   return openWorkAxisOptions(env, axis, false);
 }
 async function locatorCenter(locator) {
@@ -10114,14 +10114,14 @@ async function ensureWorkAdvancedPanel(page) {
   if (advanced.length !== 1 || !await clickVisibleMenuItem(page, advanced[0])) {
     return false;
   }
-  await page.waitForTimeout?.(200);
+  await waitForConfigurationUi(page, 200);
   return (await readConfigurationPanel(page)).axisRows.length > 0;
 }
 async function ensureChatModelPanel(page, items) {
   if (chatModelMenuOptions(items).length > 0) return items;
   const opener = findChatModelViewOpener(items);
   if (opener === void 0 || !await clickVisibleMenuItem(page, opener)) return void 0;
-  await page.waitForTimeout?.(200);
+  await waitForConfigurationUi(page, 200);
   const modelItems = await enumerateVisibleMenuItems(page);
   return chatModelMenuOptions(modelItems).length > 0 ? modelItems : void 0;
 }
@@ -10130,7 +10130,7 @@ async function ensureChatAdvancedPanel(page, items) {
   if (advanced.length !== 1 || !await clickVisibleMenuItem(page, advanced[0])) {
     return false;
   }
-  await page.waitForTimeout?.(200);
+  await waitForConfigurationUi(page, 200);
   return compactChatMenuLooksRecognized(await readConfigurationPanel(page));
 }
 async function readConfigurationPanel(page) {
@@ -10412,16 +10412,19 @@ function isConfigurationAxisRow(label) {
 function normalizeConfigurationId(value) {
   return normalizeForLabelMatch(value).replace(/^gpt[\s-]*/i, "gpt ").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 }
+async function waitForConfigurationUi(page, ms2) {
+  if (page.waitForTimeout !== void 0) await page.waitForTimeout(ms2);
+  else await new Promise((resolve9) => setTimeout(resolve9, ms2));
+}
 async function closeConfigurationMenus(page) {
   if (!await pressMenuEscape(page)) return;
-  await page.waitForTimeout?.(50);
-  if (await pressMenuEscape(page)) {
-    await page.waitForTimeout?.(200);
-  }
+  await waitForConfigurationUi(page, 50);
+  await pressMenuEscape(page);
+  await waitForConfigurationUi(page, 200);
 }
 async function closeConfigurationSubmenu(page) {
   if (!await pressMenuEscape(page)) return;
-  await page.waitForTimeout?.(200);
+  await waitForConfigurationUi(page, 200);
 }
 async function clickIfUnique3(locator) {
   if (locator?.count === void 0 || locator.click === void 0) return false;
