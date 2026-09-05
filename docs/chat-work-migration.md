@@ -82,6 +82,20 @@ await chatgpt.configuration.apply({
 Visible labels are not guaranteed underlying model identifiers. Do not claim an
 effective model solely from DOM text.
 
+Current Project Chat reads the selected model radio, including `Latest`, behind
+`Select model` and reads Power independently from its slider. A collapsed label
+such as `6 Pro` is only a menu opener. It is never an alias for `Latest` or a
+complete effort value. Inspection also visits both views when the menu starts
+open in the model view.
+
+`configuration.inspect().data.verified` means every discovered axis has a
+readable selected value. Surface recognition alone is insufficient. Missing or
+ambiguous model selection and unreadable Power leave the snapshot unverified.
+`configuration.apply().data.verified` checks every requested axis after the
+operation; `strict: true` blocks when any requested value cannot be verified.
+`intelligence` and `effort` remain Chat aliases, while a picker with a separate
+model axis always requires its own selected-model evidence.
+
 ## Work Lifecycle
 
 ```ts

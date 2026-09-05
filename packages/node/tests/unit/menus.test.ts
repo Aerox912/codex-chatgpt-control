@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { visibleLabelMatches } from "../../src/dom/label-match.js";
-import { enumerateVisibleMenuItems, extractMenuItemsFromText, findUniqueMenuItem } from "../../src/dom/menus.js";
+import { enumerateVisibleMenuItems, extractMenuItemsFromText, findUniqueMenuItem, pressMenuEscape } from "../../src/dom/menus.js";
 import type { PageLike } from "../../src/types.js";
 
 describe("menu helpers", () => {
+  it("does not guess which menu should receive Escape when multiple menus are visible", async () => {
+    let presses = 0;
+    const page: PageLike = { getByRole: () => ({ count: async () => 2, press: async () => { presses += 1; } }) };
+    expect(await pressMenuEscape(page)).toBe(false);
+    expect(presses).toBe(0);
+  });
+
   it("normalizes bullet-separated menu labels", () => {
     expect(extractMenuItemsFromText("Latest • Instant • Extended").map(item => item.normalized)).toEqual([
       "latest",

@@ -45,7 +45,8 @@ export function findChatModelViewOpener(items: readonly MenuItem[]): MenuItem | 
 
 export function chatModelLabelLooksSelectable(label: string): boolean {
   const normalized = normalizeForLabelMatch(label);
-  return CHAT_MODEL_LABEL_PATTERN.test(normalized)
+  return localeLabels.modeOptions.latest.some(candidate => normalizeForLabelMatch(candidate) === normalized)
+    || CHAT_MODEL_LABEL_PATTERN.test(normalized)
     || CHAT_MODEL_VERSION_PATTERN.test(normalized.replace(/^gpt\s+/i, ""));
 }
 

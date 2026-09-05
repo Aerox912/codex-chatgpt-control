@@ -22,6 +22,31 @@ export function extractMenuItemsFromText(text: string): MenuItem[] {
     .map(label => ({ label, normalized: normalizeLabel(label) }));
 }
 
+/** Dismiss one menu layer through the keyboard surface this browser exposes. */
+export async function pressMenuEscape(page: PageLike): Promise<boolean> {
+  try {
+    if (page.keyboard?.press !== undefined) {
+      await page.keyboard.press("Escape");
+      return true;
+    }
+    if (page.cua?.keypress !== undefined) {
+      await page.cua.keypress({ keys: ["ESC"] });
+      return true;
+    }
+    // Current in-app tabs expose keyboard input on semantic locators, without
+    // the legacy page.keyboard or page.cua surfaces. Scope it to the open menu.
+    const menus = page.getByRole?.("menu");
+    const visibleMenus = menus?.filter?.({ visible: true }) ?? menus;
+    if (visibleMenus?.press !== undefined && await visibleMenus.count?.() === 1) {
+      await visibleMenus.press("Escape");
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 export async function enumerateVisibleMenuItems(page: PageLike): Promise<MenuItem[]> {
   if (typeof page.evaluate === "function") {
     const labels = await page.evaluate(() => {

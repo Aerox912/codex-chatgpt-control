@@ -31,8 +31,7 @@
     "selectorProfile": "chat_simplified_v1",
     "availableAxes": ["model", "effort"],
     "active": {
-      "model": "GPT-5.6 Sol",
-      "effort": "Pro"
+      "model": "GPT-5.6 Sol"
     }
   }
 }

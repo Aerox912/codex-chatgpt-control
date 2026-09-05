@@ -1,4 +1,4 @@
-import { enumerateVisibleMenuItems, type MenuItem } from "../dom/menus.js";
+import { enumerateVisibleMenuItems, pressMenuEscape, type MenuItem } from "../dom/menus.js";
 import {
   chatModelMenuOptions,
   chatPowerValueLabels,
@@ -134,6 +134,17 @@ export async function inspectConfiguration(
       && (compactChatRootLooksRecognized(panel, rootItems) || chatModelMenuOptions(rootItems).length > 0);
     let chatAdvancedOpened = !chatAdvancedRequired;
     if (chatAdvancedRequired) {
+      // The model carousel hides Power. Reopen the root before reading either
+      // axis so an already-open model view uses the same independent evidence.
+      const modelViewOpen = chatModelMenuOptions(rootItems).length > 0
+        && findChatModelViewOpener(rootItems) === undefined;
+      if (modelViewOpen) {
+        await closeConfigurationMenus(page);
+        await waitForConfigurationRoot(page, "chat", args.timeoutMs);
+        await page.waitForTimeout?.(150);
+        rootItems = await enumerateVisibleMenuItems(page);
+      }
+      const currentPicker = modelViewOpen || findChatModelViewOpener(rootItems) !== undefined;
       const power = await discoverPowerSlider(page, {
         powerLabels: localeLabels.configurationAxes.power,
         valueLabels: chatPowerValueLabels
@@ -143,13 +154,13 @@ export async function inspectConfiguration(
         : findChatModelViewOpener(rootItems) === undefined
           ? undefined
           : await ensureChatModelPanel(page, rootItems);
-      if (currentModelItems !== undefined && chatModelMenuOptions(currentModelItems).length > 0) {
+      if (currentPicker) {
         chatObservation = {
           ...(power.ok ? { power } : {}),
-          modelItems: currentModelItems
+          modelItems: currentModelItems ?? []
         };
-        chatAdvancedOpened = power.ok;
-        rootItems = currentModelItems;
+        chatAdvancedOpened = power.ok && selectedChatModelMenuOption(currentModelItems ?? []) !== undefined;
+        rootItems = currentModelItems ?? [];
       } else {
         chatAdvancedOpened = await ensureChatAdvancedPanel(page, rootItems);
       }
@@ -373,6 +384,7 @@ export function configurationInspectionFromSurface(
   const active: Partial<Record<ConfigurationAxis, string>> = {};
   const options: Partial<Record<ConfigurationAxis, ConfigurationOption[]>> = {};
   const availableAxes: ConfigurationAxis[] = [];
+  const configurationEvidence = [...evidence];
   let selectorProfile = detectedProfile;
 
   if (experience === "work") {
@@ -390,16 +402,21 @@ export function configurationInspectionFromSurface(
       : simplified ? "chat_simplified_v1" : detectedProfile;
     if (chatObservation !== undefined) {
       const modelOptions = chatModelMenuOptions(chatObservation.modelItems ?? []);
+      availableAxes.push("model", "effort");
       if (modelOptions.length > 0) {
-        availableAxes.push("model");
         options.model = modelOptions.map(menuItemToOption);
         const selectedModel = selectedChatModelMenuOption(modelOptions);
-        if (selectedModel !== undefined) active.model = selectedModel.label;
+        if (selectedModel !== undefined) {
+          active.model = selectedModel.label;
+          configurationEvidence.push({ source: "control", label: `Selected model radio: ${selectedModel.label}` });
+        }
       }
       if (chatObservation.power !== undefined) {
         const powerLabel = selectedPowerLabel(chatObservation.power);
-        availableAxes.push("effort");
-        if (powerLabel !== undefined) active.effort = powerLabel;
+        if (powerLabel !== undefined) {
+          active.effort = powerLabel;
+          configurationEvidence.push({ source: "control", label: `Selected Power slider: ${powerLabel}` });
+        }
         options.effort = chatObservation.power.options.map(option => ({
           id: normalizeConfigurationId(option.label),
           label: option.label,
@@ -412,9 +429,9 @@ export function configurationInspectionFromSurface(
       options.model = modelOptions.map(menuItemToOption);
       const selectedModel = selectedChatModelMenuOption(modelOptions);
       if (selectedModel !== undefined) active.model = selectedModel.label;
-      if (panel.openerLabel !== undefined) active.effort = panel.openerLabel;
+      // Power belongs to the other carousel view and needs its own evidence.
     } else if (compact) {
-      if (panel.openerLabel !== undefined) {
+      if (isStandaloneChatModeLabel(panel.openerLabel)) {
         availableAxes.push("intelligence");
         active.intelligence = panel.openerLabel;
       }
@@ -427,7 +444,7 @@ export function configurationInspectionFromSurface(
       if (menuItems.length > 0 || panel.openerLabel !== undefined) {
         availableAxes.push(axis);
       }
-      if (panel.openerLabel !== undefined) {
+      if (isStandaloneChatModeLabel(panel.openerLabel)) {
         active[axis] = panel.openerLabel;
       }
       const chatOptions = menuItems
@@ -450,8 +467,9 @@ export function configurationInspectionFromSurface(
     availableAxes,
     active,
     options,
-    verified: experience !== "unknown" && (availableAxes.length > 0 || Object.keys(active).length > 0),
-    evidence
+    verified: experience !== "unknown" && availableAxes.length > 0
+      && availableAxes.every(axis => active[axis] !== undefined),
+    evidence: configurationEvidence
   };
 }
 
@@ -674,6 +692,7 @@ async function openConfigurationRoot(page: PageLike, experience: ChatGPTExperien
     return true;
   }
   const existingItems = await enumerateVisibleMenuItems(page).catch(() => []);
+  if (experience === "chat" && chatModelMenuOptions(existingItems).length > 0) return true;
   if (compactChatRootLooksRecognized(existing, existingItems)) {
     return true;
   }
@@ -978,6 +997,11 @@ function isProConfigurationOpener(label: string | undefined): boolean {
     && localeLabels.configurationOptions.pro.some(candidate => visibleLabelMatches(label, candidate));
 }
 
+function isStandaloneChatModeLabel(label: string | undefined): label is string {
+  return label !== undefined && Object.values(localeLabels.modeOptions).flat()
+    .some(candidate => normalizeForLabelMatch(candidate) === normalizeForLabelMatch(label));
+}
+
 function menuItemMatchesConfigurationAxis(
   item: MenuItem,
   axis: "advanced"
@@ -1109,6 +1133,8 @@ function activeConfigurationValue(
     return direct;
   }
 
+  // Only legacy reasoning pickers may alias model to intelligence or effort.
+  if (axis === "model" && inspection.availableAxes.includes("model")) return undefined;
   if (axis === "model" || axis === "intelligence") {
     return inspection.active.intelligence ?? inspection.active.effort;
   }
@@ -1208,9 +1234,9 @@ function normalizeConfigurationId(value: string): string {
 }
 
 async function closeConfigurationMenus(page: PageLike): Promise<void> {
-  if (!await pressConfigurationEscape(page)) return;
+  if (!await pressMenuEscape(page)) return;
   await page.waitForTimeout?.(50);
-  if (await pressConfigurationEscape(page)) {
+  if (await pressMenuEscape(page)) {
     // The carousel root uses a short pointer-grace dismissal. Reopening before
     // it settles can detach the fresh model view during the next selection.
     await page.waitForTimeout?.(200);
@@ -1218,31 +1244,11 @@ async function closeConfigurationMenus(page: PageLike): Promise<void> {
 }
 
 async function closeConfigurationSubmenu(page: PageLike): Promise<void> {
-  if (!await pressConfigurationEscape(page)) return;
+  if (!await pressMenuEscape(page)) return;
   // Radix retains a short pointer-grace timer after a submenu closes. If the
   // next axis is hovered too quickly, that stale timer can dismiss the newly
   // opened submenu. Let the prior close settle before moving to another row.
   await page.waitForTimeout?.(200);
-}
-
-async function pressConfigurationEscape(page: PageLike): Promise<boolean> {
-  if (page.keyboard?.press !== undefined) {
-    try {
-      await page.keyboard.press("Escape");
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  if (page.cua?.keypress !== undefined) {
-    try {
-      await page.cua.keypress({ keys: ["ESC"] });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  return false;
 }
 
 async function clickIfUnique(locator: LocatorLike | undefined): Promise<boolean> {

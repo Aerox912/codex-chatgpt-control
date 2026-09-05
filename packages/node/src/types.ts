@@ -859,6 +859,7 @@ export type ConfigurationInspectionData = {
   availableAxes: ConfigurationAxis[];
   active: Partial<Record<ConfigurationAxis, string>>;
   options: Partial<Record<ConfigurationAxis, ConfigurationOption[]>>;
+  /** Every discovered axis has a readable selected value, beyond surface recognition. */
   verified: boolean;
   evidence: ExperienceEvidence[];
 };

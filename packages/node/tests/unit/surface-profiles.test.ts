@@ -57,6 +57,11 @@ describe("sanitized Chat and Work surface profiles", () => {
       expect(inspection.selectorProfile, fixture.id).toBe(fixture.expected.selectorProfile);
       expect(inspection.availableAxes, fixture.id).toEqual(fixture.expected.availableAxes);
       expect(inspection.active, fixture.id).toEqual(fixture.expected.active);
+      if (fixtureName === "surface-chat-compact.json") {
+        // This historical fixture has menu labels but no Power slider reading.
+        expect(inspection.verified).toBe(false);
+        expect(configurationMatchesSelection(inspection, { model: "GPT-5.6 Sol", effort: "Pro" })).toBe(false);
+      }
     });
   }
 

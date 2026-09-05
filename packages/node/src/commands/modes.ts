@@ -1,5 +1,5 @@
 import { resultError, resultOk } from "../errors.js";
-import { enumerateVisibleMenuItems, findUniqueMenuItem, type MenuItem } from "../dom/menus.js";
+import { enumerateVisibleMenuItems, findUniqueMenuItem, pressMenuEscape, type MenuItem } from "../dom/menus.js";
 import { localeLabels } from "../dom/locale-labels.js";
 import { isShortLatinToken, normalizeForLabelMatch, visibleLabelMatches } from "../dom/label-match.js";
 import { normalizeLabel, normalizeWhitespace } from "../dom/visible-text.js";
@@ -430,23 +430,10 @@ async function verifyCompactChatModel(
 }
 
 async function closeModeMenus(page: PageLike): Promise<void> {
-  if (page.keyboard?.press !== undefined) {
-    await page.keyboard.press("Escape");
-    await page.waitForTimeout?.(50);
-    await page.keyboard.press("Escape");
-    await page.waitForTimeout?.(200);
-    return;
-  }
-  if (page.cua?.keypress !== undefined) {
-    try {
-      await page.cua.keypress({ keys: ["ESC"] });
-      await page.waitForTimeout?.(50);
-      await page.cua.keypress({ keys: ["ESC"] });
-      await page.waitForTimeout?.(200);
-    } catch {
-      // Closing is best effort; the verified selection remains authoritative.
-    }
-  }
+  if (!await pressMenuEscape(page)) return;
+  await page.waitForTimeout?.(50);
+  await pressMenuEscape(page);
+  await page.waitForTimeout?.(200);
 }
 
 /**

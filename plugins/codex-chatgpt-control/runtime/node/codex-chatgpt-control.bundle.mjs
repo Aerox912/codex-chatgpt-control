@@ -11758,6 +11758,27 @@ function escapeRegExp2(value) {
 function extractMenuItemsFromText(text) {
   return text.split(/\n| {2,}| • /).map((label) => normalizeWhitespace(label)).filter(Boolean).map((label) => ({ label, normalized: normalizeLabel(label) }));
 }
+async function pressMenuEscape(page) {
+  try {
+    if (page.keyboard?.press !== void 0) {
+      await page.keyboard.press("Escape");
+      return true;
+    }
+    if (page.cua?.keypress !== void 0) {
+      await page.cua.keypress({ keys: ["ESC"] });
+      return true;
+    }
+    const menus = page.getByRole?.("menu");
+    const visibleMenus = menus?.filter?.({ visible: true }) ?? menus;
+    if (visibleMenus?.press !== void 0 && await visibleMenus.count?.() === 1) {
+      await visibleMenus.press("Escape");
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
 async function enumerateVisibleMenuItems(page) {
   if (typeof page.evaluate === "function") {
     const labels = await page.evaluate(() => {
@@ -11879,7 +11900,7 @@ function findChatModelViewOpener(items) {
 }
 function chatModelLabelLooksSelectable(label) {
   const normalized = normalizeForLabelMatch(label);
-  return CHAT_MODEL_LABEL_PATTERN.test(normalized) || CHAT_MODEL_VERSION_PATTERN.test(normalized.replace(/^gpt\s+/i, ""));
+  return localeLabels.modeOptions.latest.some((candidate) => normalizeForLabelMatch(candidate) === normalized) || CHAT_MODEL_LABEL_PATTERN.test(normalized) || CHAT_MODEL_VERSION_PATTERN.test(normalized.replace(/^gpt\s+/i, ""));
 }
 function normalizeChatModelLabel(value) {
   return normalizeForLabelMatch(value).replace(/^gpt\s*/i, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
@@ -13219,22 +13240,10 @@ async function verifyCompactChatModel(page, request, timeoutMs) {
   return selected?.checked === true ? { selected: selected.label, items } : { items };
 }
 async function closeModeMenus(page) {
-  if (page.keyboard?.press !== void 0) {
-    await page.keyboard.press("Escape");
-    await page.waitForTimeout?.(50);
-    await page.keyboard.press("Escape");
-    await page.waitForTimeout?.(200);
-    return;
-  }
-  if (page.cua?.keypress !== void 0) {
-    try {
-      await page.cua.keypress({ keys: ["ESC"] });
-      await page.waitForTimeout?.(50);
-      await page.cua.keypress({ keys: ["ESC"] });
-      await page.waitForTimeout?.(200);
-    } catch {
-    }
-  }
+  if (!await pressMenuEscape(page)) return;
+  await page.waitForTimeout?.(50);
+  await pressMenuEscape(page);
+  await page.waitForTimeout?.(200);
 }
 async function modeVerificationWarnings(page, requested, selected) {
   if (requested.length === 0) {
@@ -13902,18 +13911,26 @@ async function inspectConfiguration(env, args = {}) {
     const chatAdvancedRequired = experience === "chat" && rootOpened && (compactChatRootLooksRecognized(panel, rootItems) || chatModelMenuOptions(rootItems).length > 0);
     let chatAdvancedOpened = !chatAdvancedRequired;
     if (chatAdvancedRequired) {
+      const modelViewOpen = chatModelMenuOptions(rootItems).length > 0 && findChatModelViewOpener(rootItems) === void 0;
+      if (modelViewOpen) {
+        await closeConfigurationMenus(page);
+        await waitForConfigurationRoot(page, "chat", args.timeoutMs);
+        await page.waitForTimeout?.(150);
+        rootItems = await enumerateVisibleMenuItems(page);
+      }
+      const currentPicker = modelViewOpen || findChatModelViewOpener(rootItems) !== void 0;
       const power = await discoverPowerSlider(page, {
         powerLabels: localeLabels.configurationAxes.power,
         valueLabels: chatPowerValueLabels
       });
       const currentModelItems = chatModelMenuOptions(rootItems).length > 0 ? rootItems : findChatModelViewOpener(rootItems) === void 0 ? void 0 : await ensureChatModelPanel(page, rootItems);
-      if (currentModelItems !== void 0 && chatModelMenuOptions(currentModelItems).length > 0) {
+      if (currentPicker) {
         chatObservation = {
           ...power.ok ? { power } : {},
-          modelItems: currentModelItems
+          modelItems: currentModelItems ?? []
         };
-        chatAdvancedOpened = power.ok;
-        rootItems = currentModelItems;
+        chatAdvancedOpened = power.ok && selectedChatModelMenuOption(currentModelItems ?? []) !== void 0;
+        rootItems = currentModelItems ?? [];
       } else {
         chatAdvancedOpened = await ensureChatAdvancedPanel(page, rootItems);
       }
@@ -14099,6 +14116,7 @@ function configurationInspectionFromSurface(experience, detectedProfile, evidenc
   const active = {};
   const options = {};
   const availableAxes = [];
+  const configurationEvidence = [...evidence];
   let selectorProfile = detectedProfile;
   if (experience === "work") {
     for (const row of panel.axisRows) {
@@ -14113,16 +14131,21 @@ function configurationInspectionFromSurface(experience, detectedProfile, evidenc
     selectorProfile = detectedProfile === "project_chat_v1" ? detectedProfile : simplified ? "chat_simplified_v1" : detectedProfile;
     if (chatObservation !== void 0) {
       const modelOptions = chatModelMenuOptions(chatObservation.modelItems ?? []);
+      availableAxes.push("model", "effort");
       if (modelOptions.length > 0) {
-        availableAxes.push("model");
         options.model = modelOptions.map(menuItemToOption);
         const selectedModel = selectedChatModelMenuOption(modelOptions);
-        if (selectedModel !== void 0) active.model = selectedModel.label;
+        if (selectedModel !== void 0) {
+          active.model = selectedModel.label;
+          configurationEvidence.push({ source: "control", label: `Selected model radio: ${selectedModel.label}` });
+        }
       }
       if (chatObservation.power !== void 0) {
         const powerLabel = selectedPowerLabel(chatObservation.power);
-        availableAxes.push("effort");
-        if (powerLabel !== void 0) active.effort = powerLabel;
+        if (powerLabel !== void 0) {
+          active.effort = powerLabel;
+          configurationEvidence.push({ source: "control", label: `Selected Power slider: ${powerLabel}` });
+        }
         options.effort = chatObservation.power.options.map((option) => ({
           id: normalizeConfigurationId(option.label),
           label: option.label,
@@ -14135,9 +14158,8 @@ function configurationInspectionFromSurface(experience, detectedProfile, evidenc
       options.model = modelOptions.map(menuItemToOption);
       const selectedModel = selectedChatModelMenuOption(modelOptions);
       if (selectedModel !== void 0) active.model = selectedModel.label;
-      if (panel.openerLabel !== void 0) active.effort = panel.openerLabel;
     } else if (compact) {
-      if (panel.openerLabel !== void 0) {
+      if (isStandaloneChatModeLabel(panel.openerLabel)) {
         availableAxes.push("intelligence");
         active.intelligence = panel.openerLabel;
       }
@@ -14150,7 +14172,7 @@ function configurationInspectionFromSurface(experience, detectedProfile, evidenc
       if (menuItems.length > 0 || panel.openerLabel !== void 0) {
         availableAxes.push(axis);
       }
-      if (panel.openerLabel !== void 0) {
+      if (isStandaloneChatModeLabel(panel.openerLabel)) {
         active[axis] = panel.openerLabel;
       }
       const chatOptions = menuItems.filter((item) => !isConfigurationAxisRow(item.label)).map(menuItemToOption);
@@ -14170,8 +14192,8 @@ function configurationInspectionFromSurface(experience, detectedProfile, evidenc
     availableAxes,
     active,
     options,
-    verified: experience !== "unknown" && (availableAxes.length > 0 || Object.keys(active).length > 0),
-    evidence
+    verified: experience !== "unknown" && availableAxes.length > 0 && availableAxes.every((axis) => active[axis] !== void 0),
+    evidence: configurationEvidence
   };
 }
 async function inspectWorkAxisOptions(env, axis) {
@@ -14325,6 +14347,7 @@ async function openConfigurationRoot(page, experience) {
     return true;
   }
   const existingItems = await enumerateVisibleMenuItems(page).catch(() => []);
+  if (experience === "chat" && chatModelMenuOptions(existingItems).length > 0) return true;
   if (compactChatRootLooksRecognized(existing, existingItems)) {
     return true;
   }
@@ -14562,6 +14585,9 @@ function currentCompactChatMenuLooksRecognized(items) {
 function isProConfigurationOpener(label) {
   return label !== void 0 && localeLabels.configurationOptions.pro.some((candidate) => visibleLabelMatches(label, candidate));
 }
+function isStandaloneChatModeLabel(label) {
+  return label !== void 0 && Object.values(localeLabels.modeOptions).flat().some((candidate) => normalizeForLabelMatch(candidate) === normalizeForLabelMatch(label));
+}
 function menuItemMatchesConfigurationAxis(item, axis) {
   return localeLabels.configurationAxes[axis].some((label) => visibleLabelMatches(item.label, label) || item.ariaLabel !== void 0 && visibleLabelMatches(item.ariaLabel, label));
 }
@@ -14662,6 +14688,7 @@ function activeConfigurationValue(inspection, axis) {
   if (direct !== void 0 || inspection.experience !== "chat") {
     return direct;
   }
+  if (axis === "model" && inspection.availableAxes.includes("model")) return void 0;
   if (axis === "model" || axis === "intelligence") {
     return inspection.active.intelligence ?? inspection.active.effort;
   }
@@ -14739,34 +14766,15 @@ function normalizeConfigurationId(value) {
   return normalizeForLabelMatch(value).replace(/^gpt[\s-]*/i, "gpt ").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 }
 async function closeConfigurationMenus(page) {
-  if (!await pressConfigurationEscape(page)) return;
+  if (!await pressMenuEscape(page)) return;
   await page.waitForTimeout?.(50);
-  if (await pressConfigurationEscape(page)) {
+  if (await pressMenuEscape(page)) {
     await page.waitForTimeout?.(200);
   }
 }
 async function closeConfigurationSubmenu(page) {
-  if (!await pressConfigurationEscape(page)) return;
+  if (!await pressMenuEscape(page)) return;
   await page.waitForTimeout?.(200);
-}
-async function pressConfigurationEscape(page) {
-  if (page.keyboard?.press !== void 0) {
-    try {
-      await page.keyboard.press("Escape");
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  if (page.cua?.keypress !== void 0) {
-    try {
-      await page.cua.keypress({ keys: ["ESC"] });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  return false;
 }
 async function clickIfUnique3(locator) {
   if (locator?.count === void 0 || locator.click === void 0) return false;
@@ -55469,6 +55477,7 @@ export {
   preflightAttachmentRearm,
   preflightFiles,
   prepareSendOnce,
+  pressMenuEscape,
   projectContextMatches,
   projectNameFromWorkspacePath,
   projectNamesMatch,
