@@ -56,7 +56,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro", timeoutMs: 0 });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro"],
       candidates: ["Pro"]
@@ -68,7 +68,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro", timeoutMs: 0 });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro"],
       candidates: ["Pro"]
@@ -108,7 +108,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, {});
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Thinking"],
       candidates: ["Instant", "Thinking", "Pro"]
@@ -124,7 +124,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro • Extended"],
       candidates: ["Instant", "Thinking • Extended", "Pro • Extended", "Configure..."]
@@ -140,7 +140,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro • Extended" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro • Extended"],
       candidates: ["Instant", "Thinking • Extended", "Pro • Extended"]
@@ -152,7 +152,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro"],
       candidates: ["Instant", "Medium", "High", "Extra High", "Pro", "GPT-5.5"]
@@ -164,7 +164,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { effort: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro"],
       candidates: [
@@ -185,7 +185,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { effort: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro"],
       candidates: ["Advanced"]
@@ -201,7 +201,7 @@ describe("mode and tool selection blockers", () => {
       model: "GPT-5.5"
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data?.selected).toEqual(["Pro", "GPT-5.5"]);
     expect(page.currentSelection()).toEqual({ effort: "Pro", model: "GPT-5.5" });
     expect(page.actions()).toEqual([
@@ -224,7 +224,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { effort: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data?.selected).toEqual(["حرفه‌ای"]);
     expect(page.sliderPressCount()).toBe(4);
     expect(page.advancedOpenCount()).toBe(0);
@@ -238,7 +238,7 @@ describe("mode and tool selection blockers", () => {
     });
 
     const result = await setMode({ page }, { effort: "Max" });
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data?.selected).toEqual(["Max"]);
     expect(page.sliderPressCount()).toBe(2);
     expect(page.advancedOpenCount()).toBe(0);
@@ -252,7 +252,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { effort: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data?.selected).toEqual(["Pro"]);
     expect(page.sliderPressCount()).toBe(0);
     expect(page.advancedOpenCount()).toBe(1);
@@ -266,7 +266,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { effort: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data?.selected).toEqual(["Pro"]);
     expect(page.sliderPressCount()).toBe(0);
     expect(page.advancedOpenCount()).toBe(1);
@@ -280,7 +280,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { effort: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data?.selected).toEqual(["Pro"]);
     expect(page.sliderPressCount()).toBe(0);
     expect(page.advancedOpenCount()).toBe(1);
@@ -291,7 +291,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { effort: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("unverified");
     expect(page.sliderPressCount()).toBe(1);
@@ -314,7 +314,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { intelligence: "Pro", modelVersion: "5.4" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro", "5.4"],
       candidates: ["Instant", "Medium", "High", "Extra High", "Pro", "GPT-5.5", "5.5", "5.4", "5.3", "5.2", "4.5", "o3"]
@@ -327,7 +327,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["حرفه‌ای"],
       candidates: ["فوری", "متوسط", "بالا", "بسیار زیاد", "حرفه‌ای", "GPT-5.5"]
@@ -339,7 +339,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Ｐｒｏ"],
       candidates: ["Ｐｒｏ", "Thinking"]
@@ -351,7 +351,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["حرفه‌ای"],
       candidates: ["حرفه‌ای"]
@@ -363,7 +363,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { intelligence: "high" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["بالا"],
       candidates: ["متوسط", "بالا"]
@@ -447,7 +447,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro"],
       candidates: ["Pin CopyBench Pro Consultation", "Instant", "Thinking", "Pro"]
@@ -459,7 +459,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { effort: "Thinking" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.warnings.join(" ")).toContain("Mode selection is unverified");
   });
 
@@ -468,7 +468,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.warnings).toEqual([]);
   });
 
@@ -477,7 +477,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await getMode({ page });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({ modes: ["Thinking"] });
     expect(result.warnings).toEqual([]);
   });
@@ -487,7 +487,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await getMode({ page });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({ modes: [] });
     expect(result.warnings.join(" ")).toContain("could not be read");
   });
@@ -497,7 +497,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { version: "5.4" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["5.4"],
       candidates: ["5.5", "5.4"]
@@ -510,7 +510,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { intelligence: "Pro", modelVersion: "5.4" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["حرفه‌ای", "5.4"],
       candidates: ["فوری", "متوسط", "بالا", "بسیار زیاد", "حرفه‌ای", "GPT-5.5", "5.5", "5.4", "5.3", "5.2", "4.5", "o3"]
@@ -522,7 +522,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { intelligence: "Pro", modelVersion: "5.4" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro", "5.4"],
       candidates: ["Instant", "Medium", "High", "Extra High", "Pro", "GPT-5.5", "5.5", "5.4", "5.3", "5.2", "4.5", "o3"]
@@ -534,7 +534,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { intelligence: "Pro", modelVersion: "5.4" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Pro", "5.4"],
       candidates: ["Instant", "Medium", "High", "Extra High", "Pro", "GPT-5.5", "5.5", "5.4", "5.3", "5.2", "4.5", "o3"]
@@ -591,7 +591,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { modelVersion: "GPT-5.6 Sol" });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data?.selected).toEqual(["GPT-5.6 Sol"]);
   });
 
@@ -600,7 +600,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, { model: "Pro", timeoutMs: 1000 });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Extended Pro"],
       candidates: ["Extended Pro"]
@@ -616,7 +616,7 @@ describe("mode and tool selection blockers", () => {
 
     const result = await setMode({ page }, {});
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data).toEqual({
       selected: ["Thinking • Extended"],
       candidates: ["Instant", "Thinking • Extended", "Pro • Extended"]

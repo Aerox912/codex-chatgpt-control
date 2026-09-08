@@ -93,6 +93,9 @@ function fakePage(options: FakePageOptions): PageLike & { clicks: () => number; 
   let presses = 0;
   const page: PageLike = {
     evaluate: async <T, A>(callback: (arg: A) => T | Promise<T>, arg?: A) => {
+      // These independent scoped probes execute real callbacks in the new
+      // DOM fixture suite. This legacy menu/ARIA-map fixture has no popover.
+      if (typeof arg === "object" && arg !== null && (("powerLabels" in arg && !("maxSliders" in arg)) || "chatLabels" in arg)) return undefined as T;
       if (typeof arg === "object" && arg !== null && "maxControls" in arg) {
         expect(callback.toString()).not.toContain("querySelectorAll");
         expect(callback.toString()).not.toContain("Array.from");
@@ -225,7 +228,7 @@ describe("production configuration staging primitive", () => {
   it("recognizes one compact Chat configuration menu trigger as the current effort", async () => {
     const current = await primitive({
       experience: "chat",
-      additional: { effort: "Pro" }
+      additional: { intelligence: "Pro" }
     }).readCurrent!({
       ...request("configuration_set"),
       page: fakePage({ menuSnapshots: [menuSnapshot([
@@ -236,7 +239,7 @@ describe("production configuration staging primitive", () => {
     });
     const missingPopupEvidence = await primitive({
       experience: "chat",
-      additional: { effort: "Pro" }
+      additional: { intelligence: "Pro" }
     }).readCurrent!({
       ...request("configuration_set", { actionId: "33333333-3333-4333-8333-333333333333" }),
       page: fakePage({ menuSnapshots: [menuSnapshot([
@@ -246,7 +249,7 @@ describe("production configuration staging primitive", () => {
     });
     const ambiguous = await primitive({
       experience: "chat",
-      additional: { effort: "Pro" }
+      additional: { intelligence: "Pro" }
     }).readCurrent!({
       ...request("configuration_set", { actionId: "44444444-4444-4444-8444-444444444444" }),
       page: fakePage({ menuSnapshots: [menuSnapshot([

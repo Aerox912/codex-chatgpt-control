@@ -330,6 +330,7 @@ export class OperationJournal {
   static async open(options: OperationJournalOptions = {}): Promise<OperationJournal> {
     validatePositiveInteger(options.maxStateBytes, "maxStateBytes");
     validatePositiveInteger(options.lockTimeoutMs, "lockTimeoutMs");
+    requireJournalRuntime(true);
     const clock = resolveClock(options.clock);
     const entropy = resolveEntropy(options.entropy);
     const requestedRoot = options.stateRoot ?? defaultOperationStateRoot();
@@ -1059,6 +1060,30 @@ export class OperationJournal {
 
   private async inject(point: JournalFaultPoint): Promise<void> {
     await this.faultInjector?.(point);
+  }
+}
+
+export const JOURNAL_RUNTIME_UNAVAILABLE_MESSAGE =
+  "Transactional operations require a Node host with process identity, file ownership, and process liveness APIs. This host cannot safely open the operation journal.";
+
+/** Validate security-critical host capabilities before creating any journal paths. */
+function requireJournalRuntime(probeLiveness = false): NodeJS.Process {
+  try {
+    if (typeof process === "undefined"
+      || !Number.isSafeInteger(process.pid) || process.pid <= 0
+      || typeof process.kill !== "function"
+      || typeof process.env !== "object" || process.env === null) {
+      throw new Error("unavailable");
+    }
+    if (platform() !== "win32") {
+      if (typeof process.getuid !== "function") throw new Error("unavailable");
+      const uid = process.getuid();
+      if (!Number.isSafeInteger(uid) || uid < 0) throw new Error("unavailable");
+    }
+    if (probeLiveness) process.kill(process.pid, 0);
+    return process;
+  } catch {
+    throw new OperationJournalError("journal_runtime_unavailable", JOURNAL_RUNTIME_UNAVAILABLE_MESSAGE);
   }
 }
 
@@ -1924,14 +1949,8 @@ function assertOwnerAndMode(
   expectedMode: number
 ): void {
   if (platform() === "win32") return;
-  const getuid = currentRuntimeProcess()?.getuid;
-  if (typeof getuid !== "function") {
-    throw new OperationJournalError(
-      "unsafe_state_owner",
-      "Operation state path ownership cannot be verified in this runtime."
-    );
-  }
-  if (Number(metadata.uid) !== getuid()) {
+  const runtime = requireJournalRuntime();
+  if (Number(metadata.uid) !== runtime.getuid!()) {
     throw new OperationJournalError("unsafe_state_owner", "Operation state path is not owned by the current user.");
   }
   if ((Number(metadata.mode) & 0o077) !== 0) {

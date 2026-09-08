@@ -366,7 +366,7 @@ describe("sanitized Chat and Work surface profiles", () => {
       timeoutMs: 100
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data?.verified).toBe(true);
     expect(result.data?.selected).toEqual([
       { axis: "intelligence", requested: "Pro", selected: "Pro" },

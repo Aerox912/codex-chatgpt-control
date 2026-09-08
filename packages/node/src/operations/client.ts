@@ -486,6 +486,7 @@ export class OperationClient {
     const executePreparedSend = requiredMethod<OperationBrowserAdapter["submission"]["executePreparedSend"]>(submissionInput, "executePreparedSend");
     const verifyPreparedSend = requiredMethod<OperationBrowserAdapter["submission"]["verifyPreparedSend"]>(submissionInput, "verifyPreparedSend");
     const recoverSend = requiredMethod<OperationBrowserAdapter["submission"]["recoverSend"]>(submissionInput, "recoverSend");
+    const recoverAuthenticatedSend = optionalMethod<NonNullable<OperationBrowserAdapter["submission"]["recoverAuthenticatedSend"]>>(submissionInput, "recoverAuthenticatedSend");
     const executeFinalTabTransaction = requiredMethod<OperationBrowserAdapter["submission"]["executeFinalTabTransaction"]>(submissionInput, "executeFinalTabTransaction");
     const collectorInput = requiredAdapterObject(adapter, "collector");
     const readContext = requiredMethod<OperationBrowserAdapter["collector"]["readContext"]>(collectorInput, "readContext");
@@ -515,6 +516,7 @@ export class OperationClient {
         verifyPreparedSend(request),
       recoverSend: (request: Parameters<OperationBrowserAdapter["submission"]["recoverSend"]>[0]) =>
         recoverSend(request),
+      ...(recoverAuthenticatedSend === undefined ? {} : { recoverAuthenticatedSend }),
       executeFinalTabTransaction: (request: Parameters<OperationBrowserAdapter["submission"]["executeFinalTabTransaction"]>[0]) =>
         executeFinalTabTransaction(request)
     });

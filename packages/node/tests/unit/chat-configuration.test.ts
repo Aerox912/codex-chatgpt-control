@@ -30,7 +30,7 @@ describe("Project Chat model and Power configuration", () => {
     it(`applies Latest + Pro without a setting change from the ${view} view`, async () => {
       const page = picker({ view });
       const result = await applyConfiguration({ page }, { experience: "chat", desired, strict: true, timeoutMs: 0 });
-      expect(result.ok).toBe(true);
+      expect(result.ok, JSON.stringify(result)).toBe(true);
       expect(result.data?.verified).toBe(true);
       expect(result.data?.selected).toEqual([
         { axis: "intelligence", requested: "Pro", selected: "Pro" },
@@ -50,7 +50,7 @@ describe("Project Chat model and Power configuration", () => {
   it("reads both axes when the browser exposes Escape only on menu locators", async () => {
     const page = picker({ view: "model", locatorKeyboardOnly: true });
     const result = await applyConfiguration({ page }, { experience: "chat", desired, strict: true, timeoutMs: 0 });
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data?.after.active).toEqual({ model: "Latest", effort: "Pro" });
     expect(page.view()).toBe("closed");
     expect(page.mutations).toEqual([]);
@@ -86,7 +86,7 @@ describe("Project Chat model and Power configuration", () => {
   it("changes the requested model and verifies both axes afterwards", async () => {
     const page = picker({ selected: ["GPT-5.6 Sol"] });
     const result = await applyConfiguration({ page }, { experience: "chat", desired, strict: true, timeoutMs: 0 });
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.data?.after.active).toEqual({ model: "Latest", effort: "Pro" });
     expect(page.mutations).toEqual(["model:Latest"]);
   });

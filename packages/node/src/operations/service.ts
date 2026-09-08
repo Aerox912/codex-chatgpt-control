@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { canonicalJson } from "./canonical.js";
 import {
-  OperationJournal,
   OperationJournalError,
   type LoadedOperationJournalV1
 } from "./journal.js";
+import type { OperationJournalAuthority } from "./journal-authority.js";
+import { configurationHasMenuValues, configurationPowerValues } from "./configuration-routing.js";
 import {
   collectOperation,
   type CollectorDurableSnapshot,
@@ -181,6 +182,13 @@ const SAFE_SERVICE_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.fre
   event_not_serializable: "The operation event is not serializable.",
   journal_quota_exceeded: "The operation journal quota is exhausted.",
   journal_unavailable: "The operation journal is unavailable.",
+  journal_rpc_unavailable: "The operation journal authority is unavailable.",
+  journal_rpc_unsupported_platform: "The private-file journal service is unavailable on this operating system.",
+  journal_rpc_authentication_failed: "The operation journal authority could not be authenticated.",
+  journal_rpc_protocol_error: "The operation journal authority returned an invalid response.",
+  journal_rpc_limit_exceeded: "The operation journal request exceeded its safety bound.",
+  journal_rpc_outcome_indeterminate: "The operation journal write may have completed; reconcile durable state before another effect.",
+  journal_rpc_request_rejected: "The operation journal authority rejected the request.",
   journal_corrupt: "The operation journal failed integrity validation.",
   journal_snapshot_corrupt: "The operation snapshot failed integrity validation.",
   journal_tombstone_corrupt: "The operation tombstone failed integrity validation.",
@@ -266,9 +274,13 @@ export type OperationSubmissionAdapter = Readonly<{
   executePreparedSend(request: SubmissionExecutePreparedSendRequest): Promise<SubmissionExecutePreparedSendResult>;
   verifyPreparedSend(request: SubmissionVerifyPreparedSendRequest): Promise<SubmissionFinalTransactionResult>;
   recoverSend(request: SubmissionRecoverSendRequest): Promise<SubmissionFinalTransactionResult>;
+  /** Internal read-only restart port; only the service supplies this authenticated durable target. */
+  recoverAuthenticatedSend?(request: AuthenticatedSendRecoveryRequest): Promise<SubmissionFinalTransactionResult>;
   /** Compatibility-only legacy composition; the transactional path never invokes it. */
   executeFinalTabTransaction(request: SubmissionFinalTransactionRequest): Promise<SubmissionFinalTransactionResult>;
 }>;
+
+export type AuthenticatedSendRecoveryRequest = SubmissionRecoverSendRequest & Readonly<{ target: OperationTargetBindingV1 }>;
 
 export type OperationCollectorAdapter = Readonly<{
   readContext(request: OperationCollectorContextRequest): Promise<OperationCollectorContext>;
@@ -420,7 +432,7 @@ export class OperationService {
   private readonly artifactTransfersInFlight = new Map<string, Promise<ArtifactTransferResult>>();
 
   constructor(
-    private readonly journal: OperationJournal,
+    private readonly journal: OperationJournalAuthority,
     options: OperationServiceOptions = {}
   ) {
     this.now = options.now ?? Date.now;
@@ -440,12 +452,12 @@ export class OperationService {
     files: readonly import("./file-identity.js").OperationFileManifestEntryV1[],
     options: Pick<OperationSubmitOptions, "signal" | "requestDigest"> = {}
   ): Promise<OperationPrepareResult> {
-    const requestDigest = this.computeRequestDigest(request, files, options.requestDigest);
+    const requestDigest = await this.computeRequestDigest(request, files, options.requestDigest);
     const signal = options.signal ?? new AbortController().signal;
     if (!isAbortSignal(signal)) throw new OperationServiceError("invalid_signal", "Preparation signal must be an AbortSignal.");
     if (signal.aborted) throw new OperationServiceError("operation_cancelled", "The operation was cancelled before preparation.");
     const loaded = await this.ensureCreated(request, requestDigest);
-    return { handle: this.journal.handleFromState(loaded.state), state: loaded.state };
+    return { handle: await this.journal.handleFromState(loaded.state), state: loaded.state };
   }
 
   /**
@@ -459,7 +471,7 @@ export class OperationService {
     adapter: OperationBrowserAdapter,
     options: OperationSubmitOptions = {}
   ): Promise<OperationSubmitResult> {
-    const requestDigest = this.computeRequestDigest(request, files, options.requestDigest);
+    const requestDigest = await this.computeRequestDigest(request, files, options.requestDigest);
     const signal = options.signal ?? new AbortController().signal;
     if (!isAbortSignal(signal)) throw new OperationServiceError("invalid_signal", "Submission signal must be an AbortSignal.");
     if (signal.aborted) throw new OperationServiceError("operation_cancelled", "The operation was cancelled before submission.");
@@ -470,7 +482,7 @@ export class OperationService {
     let loaded = await this.ensureCreated(request, requestDigest);
     if (loaded.state.phase === "completed" && loaded.state.receipt !== undefined) {
       return {
-        handle: this.journal.handleFromState(loaded.state),
+        handle: await this.journal.handleFromState(loaded.state),
         submission: submissionFromCompleted(loaded.state)
       };
     }
@@ -486,12 +498,12 @@ export class OperationService {
       // failure must therefore return the same resumable operation identity,
       // not collapse into a transport error that loses the handle.
       const current = await this.journal.load(request.operationId, requestDigest);
-      const handle = this.journal.handleFromState(current.state);
+      const handle = await this.journal.handleFromState(current.state);
       await this.persistReturnedSubmissionBlocker(
         submissionFromTargetResolutionFailure(current.state, handle, error, signal)
       );
       const fresh = await this.journal.load(request.operationId, requestDigest);
-      const freshHandle = this.journal.handleFromState(fresh.state);
+      const freshHandle = await this.journal.handleFromState(fresh.state);
       return {
         handle: freshHandle,
         submission: submissionFromTargetResolutionFailure(fresh.state, freshHandle, error, signal)
@@ -511,14 +523,14 @@ export class OperationService {
       if (staging !== undefined) {
         await this.persistReturnedSubmissionBlocker(staging);
         const fresh = await this.journal.load(request.operationId, requestDigest);
-        return { handle: this.journal.handleFromState(fresh.state), submission: staging };
+        return { handle: await this.journal.handleFromState(fresh.state), submission: staging };
       }
       loaded = await this.journal.load(request.operationId, requestDigest);
     }
-    const attachmentManifest = files.map((file, ordinal) => ({
-      identityDigest: this.journal.evidenceDigest("file-manifest", { ordinal, ...file }),
+    const attachmentManifest = await Promise.all(files.map(async (file, ordinal) => ({
+      identityDigest: await this.journal.evidenceDigest("file-manifest", { ordinal, ...file }),
       ordinal
-    }));
+    })));
     const expected: SubmissionExpectedEnvelope = {
       surface: request.surface,
       targetBindingDigest,
@@ -535,7 +547,7 @@ export class OperationService {
     const handoff = uniqueAction(loaded.state, "file_handoff");
     const operation: SubmissionOperationSnapshot = {
       state: loaded.state,
-      handle: this.journal.handleFromState(loaded.state),
+      handle: await this.journal.handleFromState(loaded.state),
       actionIds: {
         sendActionId: send?.actionId ?? randomUUID(),
         ...(files.length === 0 ? {} : { fileHandoffActionId: handoff?.actionId ?? randomUUID() })
@@ -545,12 +557,12 @@ export class OperationService {
     const submission = await runAtomicSubmission(
       operation,
       expected,
-      this.submissionPorts(adapter.submission),
+      this.submissionPorts(adapter.submission, loaded.state.target),
       { signal, ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }) }
     );
     await this.persistReturnedSubmissionBlocker(submission);
     const fresh = await this.journal.load(request.operationId, requestDigest);
-    return { handle: this.journal.handleFromState(fresh.state), submission };
+    return { handle: await this.journal.handleFromState(fresh.state), submission };
   }
 
   private async submitWithAttachmentRearm(
@@ -570,11 +582,11 @@ export class OperationService {
       authorization = await this.authorizeAttachmentRearm(request, requestDigest, adapter, signal, initial);
     } catch (error) {
       const current = await this.journal.load(request.operationId, requestDigest);
-      const handle = this.journal.handleFromState(current.state);
+      const handle = await this.journal.handleFromState(current.state);
       const submission = submissionFromTargetResolutionFailure(current.state, handle, error, signal);
       await this.persistReturnedSubmissionBlocker(submission);
       const fresh = await this.journal.load(request.operationId, requestDigest);
-      return { handle: this.journal.handleFromState(fresh.state), submission };
+      return { handle: await this.journal.handleFromState(fresh.state), submission };
     }
 
     let loaded = authorization.loaded;
@@ -590,15 +602,15 @@ export class OperationService {
       if (staging !== undefined) {
         await this.persistReturnedSubmissionBlocker(staging);
         const fresh = await this.journal.load(request.operationId, requestDigest);
-        return { handle: this.journal.handleFromState(fresh.state), submission: staging };
+        return { handle: await this.journal.handleFromState(fresh.state), submission: staging };
       }
       loaded = await this.journal.load(request.operationId, requestDigest);
     }
 
-    const attachmentManifest = files.map((file, ordinal) => ({
-      identityDigest: this.journal.evidenceDigest("file-manifest", { ordinal, ...file }),
+    const attachmentManifest = await Promise.all(files.map(async (file, ordinal) => ({
+      identityDigest: await this.journal.evidenceDigest("file-manifest", { ordinal, ...file }),
       ordinal
-    }));
+    })));
     const expected: SubmissionExpectedEnvelope = {
       surface: request.surface,
       targetBindingDigest: authorization.targetBindingDigest,
@@ -614,9 +626,9 @@ export class OperationService {
     if (handoff === undefined) {
       throw new OperationServiceError("attachment_rearm_unavailable", "Attachment rearm requires one unresolved handoff intent.");
     }
-    const operationFor = (state: OperationStateV1): SubmissionOperationSnapshot => ({
+    const operationFor = async (state: OperationStateV1): Promise<SubmissionOperationSnapshot> => ({
       state,
-      handle: this.journal.handleFromState(state),
+      handle: await this.journal.handleFromState(state),
       actionIds: {
         sendActionId: uniqueAction(state, "send")?.actionId ?? randomUUID(),
         fileHandoffActionId: handoff.actionId
@@ -626,7 +638,7 @@ export class OperationService {
     let authorizedAttachmentRearmId: string | undefined;
     if (loaded.state.attachmentRearm?.attemptIntentRevision === undefined) {
       const preflight = await preflightAttachmentRearm(
-        operationFor(loaded.state),
+        await operationFor(loaded.state),
         expected,
         ports,
         { signal, ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }) }
@@ -634,7 +646,7 @@ export class OperationService {
       if (preflight.kind === "result") {
         await this.persistReturnedSubmissionBlocker(preflight.result);
         const fresh = await this.journal.load(request.operationId, requestDigest);
-        return { handle: this.journal.handleFromState(fresh.state), submission: preflight.result };
+        return { handle: await this.journal.handleFromState(fresh.state), submission: preflight.result };
       }
       if (preflight.kind === "absent") {
         const intent = await this.appendAttachmentRearmIntent(
@@ -647,7 +659,7 @@ export class OperationService {
     }
 
     const submission = await runAtomicSubmission(
-      operationFor(loaded.state),
+      await operationFor(loaded.state),
       expected,
       ports,
       {
@@ -658,7 +670,7 @@ export class OperationService {
     );
     await this.persistReturnedSubmissionBlocker(submission);
     const fresh = await this.journal.load(request.operationId, requestDigest);
-    return { handle: this.journal.handleFromState(fresh.state), submission };
+    return { handle: await this.journal.handleFromState(fresh.state), submission };
   }
 
   private async authorizeAttachmentRearm(
@@ -699,8 +711,8 @@ export class OperationService {
       throw error;
     }
     validateTargetResolution(resolution);
-    const configurationReceiptDigest = this.journal.evidenceDigest("configuration-request", requestDigest);
-    const composerReceiptDigest = this.journal.evidenceDigest("composer-request", requestDigest);
+    const configurationReceiptDigest = await this.journal.evidenceDigest("configuration-request", requestDigest);
+    const composerReceiptDigest = await this.journal.evidenceDigest("composer-request", requestDigest);
     if (
       resolution.configurationReceiptDigest !== undefined
       && resolution.configurationReceiptDigest !== configurationReceiptDigest
@@ -729,9 +741,9 @@ export class OperationService {
       };
     }
 
-    const previousTargetBindingDigest = this.targetBindingDigest(initial.state);
+    const previousTargetBindingDigest = await this.targetBindingDigest(initial.state);
     const provisional = { ...initial.state, target };
-    const targetBindingDigest = this.journal.handleFromState(provisional).targetBindingDigest;
+    const targetBindingDigest = (await this.journal.handleFromState(provisional)).targetBindingDigest;
     if (targetBindingDigest === undefined) {
       throw new OperationServiceError("target_binding_missing", "Attachment rearm target binding is unavailable.");
     }
@@ -745,7 +757,7 @@ export class OperationService {
         actionId: handoff.actionId,
         previousTargetBindingDigest,
         targetBindingDigest,
-        authorizationEvidenceDigest: this.journal.evidenceDigest("attachment-rearm-authorization", {
+        authorizationEvidenceDigest: await this.journal.evidenceDigest("attachment-rearm-authorization", {
           operationId: request.operationId,
           requestDigest,
           actionId: handoff.actionId,
@@ -836,7 +848,7 @@ export class OperationService {
         if (ownership === undefined) {
           throw new OperationServiceError("submission_witness_missing", "Collect cannot recover ownership without a durable causal baseline and witness.");
         }
-        const targetBindingDigest = this.targetBindingDigest(current.state);
+        const targetBindingDigest = await this.targetBindingDigest(current.state);
         const projectedWitness = ownershipWitnessFromDurable(ownership.witness);
         const context = await adapter.collector.readContext({
           operationId: current.state.operationId,
@@ -897,7 +909,7 @@ export class OperationService {
   /** Browser-free state inspection. The adapter is intentionally not accepted. */
   async inspect(handle: OperationHandleV1): Promise<OperationInspectResult> {
     const loaded = await this.loadForHandle(handle);
-    return { state: loaded.state, handle: this.journal.handleFromState(loaded.state) };
+    return { state: loaded.state, handle: await this.journal.handleFromState(loaded.state) };
   }
 
   /**
@@ -915,7 +927,7 @@ export class OperationService {
       throw new OperationServiceError("target_establishment_delta_missing", "New-target establishment requires exact post-Send delta evidence.");
     }
     let loaded = await this.journal.load(request.operationId, request.requestDigest);
-    const currentHandle = this.journal.handleFromState(loaded.state);
+    const currentHandle = await this.journal.handleFromState(loaded.state);
     if (currentHandle.targetBindingDigest !== request.targetBindingDigest) {
       throw new OperationServiceError("target_binding_mismatch", "Target establishment target digest does not match durable state.");
     }
@@ -973,7 +985,7 @@ export class OperationService {
         ) {
           throw new OperationServiceError("submission_witness_conflict", "A durable submission witness conflicts with the established target evidence.");
         }
-        return { state: loaded.state, handle: this.journal.handleFromState(loaded.state) };
+        return { state: loaded.state, handle: await this.journal.handleFromState(loaded.state) };
       }
       const withWitness = await this.appendSubmissionWitnessConvergent(
         request.operationId,
@@ -984,7 +996,7 @@ export class OperationService {
           loaded.state.updatedAt
         )
       );
-      return { state: withWitness.state, handle: this.journal.handleFromState(withWitness.state) };
+      return { state: withWitness.state, handle: await this.journal.handleFromState(withWitness.state) };
     }
     if (loaded.state.target?.targetLifecycle === "new_established") {
       throw new OperationServiceError("target_establishment_conflict", "A different provider identity is already durably established.");
@@ -1033,7 +1045,7 @@ export class OperationService {
     if (!sameEstablishment(fresh.state) || fresh.state.submissionWitness === undefined || withWitness.state.submissionWitness === undefined) {
       throw new OperationServiceError("target_establishment_indeterminate", "Target establishment was not durably validated after persistence.");
     }
-    return { state: fresh.state, handle: this.journal.handleFromState(fresh.state) };
+    return { state: fresh.state, handle: await this.journal.handleFromState(fresh.state) };
   }
 
   /** Submit followed by collect with the same operation ID and handle. */
@@ -1064,7 +1076,7 @@ export class OperationService {
     if (adapter.control === undefined) {
       throw new OperationServiceError("control_unavailable", "The operation adapter does not expose control ports.");
     }
-    const requestDigest = this.journal.controlRequestDigest(request);
+    const requestDigest = await this.journal.controlRequestDigest(request);
     const ports: ControlPorts = {
       readParent: requestForParent => this.readControlParent(requestForParent),
       observeTurn: requestForTurn => adapter.control!.observeTurn(requestForTurn),
@@ -1092,15 +1104,18 @@ export class OperationService {
     return await runOperationControl(request, requestDigest, ports, options);
   }
 
-  private computeRequestDigest(
+  private async computeRequestDigest(
     request: OperationSubmitRequestV1,
     files: readonly import("./file-identity.js").OperationFileManifestEntryV1[],
     provided?: string
-  ): string {
+  ): Promise<string> {
     let computed: string;
     try {
-      computed = this.journal.submitRequestDigest(request, files);
-    } catch {
+      computed = await this.journal.submitRequestDigest(request, files);
+    } catch (error) {
+      if (readOwnErrorCode(error)?.startsWith("journal_rpc_") === true) {
+        throw this.serviceError(error, "journal_unavailable");
+      }
       // Request canonicalization operates on caller-controlled input. Never
       // forward native messages (or invoke message/string accessors) across
       // the public operations boundary.
@@ -1157,11 +1172,16 @@ export class OperationService {
     // or staging read that could itself be unavailable; the immutable target
     // already recorded in the journal is the only target authority.
     if (durableSubmit && loaded.state.target !== undefined) {
-      const targetBindingDigest = this.targetBindingDigest(loaded.state);
+      const targetBindingDigest = await this.targetBindingDigest(loaded.state);
       const configurationReceiptDigest = loaded.state.target.configurationReceiptDigest
-        ?? this.journal.evidenceDigest("configuration-request", requestDigest);
-      const composerReceiptDigest = this.journal.evidenceDigest("composer-request", requestDigest);
+        ?? await this.journal.evidenceDigest("configuration-request", requestDigest);
+      const composerReceiptDigest = await this.journal.evidenceDigest("composer-request", requestDigest);
       return { loaded, targetBindingDigest, configurationReceiptDigest, composerReceiptDigest };
+    }
+    if (loaded.state.target?.targetLifecycle === "new_pending") {
+      // A saved blank task without Send authority cannot be reconstructed by
+      // creating another task or replaying configuration/composer mutations.
+      throw new OperationServiceError("target_binding_mismatch", "The durable pending target requires read-only recovery authority.");
     }
     let resolution: OperationTargetResolution;
     try {
@@ -1180,8 +1200,8 @@ export class OperationService {
     }
     validateTargetResolution(resolution);
 
-    const expectedConfigurationReceiptDigest = this.journal.evidenceDigest("configuration-request", requestDigest);
-    const expectedComposerReceiptDigest = this.journal.evidenceDigest("composer-request", requestDigest);
+    const expectedConfigurationReceiptDigest = await this.journal.evidenceDigest("configuration-request", requestDigest);
+    const expectedComposerReceiptDigest = await this.journal.evidenceDigest("composer-request", requestDigest);
     if (
       resolution.configurationReceiptDigest !== undefined
       && resolution.configurationReceiptDigest !== expectedConfigurationReceiptDigest
@@ -1211,7 +1231,7 @@ export class OperationService {
     } else if (canonicalJson(current.state.target) !== canonicalJson(resolvedTarget)) {
       throw new OperationServiceError("target_binding_mismatch", "The durable operation target binding is immutable.");
     }
-    const targetBindingDigest = this.targetBindingDigest(current.state);
+    const targetBindingDigest = await this.targetBindingDigest(current.state);
     const configurationReceiptDigest = current.state.target?.configurationReceiptDigest
       ?? expectedConfigurationReceiptDigest;
     const composerReceiptDigest = expectedComposerReceiptDigest;
@@ -1237,7 +1257,7 @@ export class OperationService {
     );
   }
 
-  private submissionPorts(adapter: OperationSubmissionAdapter) {
+  private submissionPorts(adapter: OperationSubmissionAdapter, target?: OperationTargetBindingV1) {
     return {
       observeStaging: (request: SubmissionStageRequest) => adapter.observeStaging(request),
       executeFileHandoffOnce: (request: SubmissionHandoffRequest) => adapter.executeFileHandoffOnce(request),
@@ -1246,7 +1266,15 @@ export class OperationService {
       persistPreparedSend: (request: SubmissionPreparedSendPersistenceRequest) => this.persistPreparedSend(request),
       executePreparedSend: (request: SubmissionExecutePreparedSendRequest) => adapter.executePreparedSend(request),
       verifyPreparedSend: (request: SubmissionVerifyPreparedSendRequest) => adapter.verifyPreparedSend(request),
-      recoverSend: (request: SubmissionRecoverSendRequest) => adapter.recoverSend(request),
+      recoverSend: (request: SubmissionRecoverSendRequest) => {
+        if (target === undefined || adapter.recoverAuthenticatedSend === undefined) return adapter.recoverSend(request);
+        // runAtomicSubmission reaches this port only with the authenticated
+        // durable Send action and its persisted baseline. Never resolve the
+        // caller's original target:new request again after that boundary.
+        return adapter.recoverAuthenticatedSend(Object.freeze({ ...request,
+          target: Object.freeze({ ...target, evidenceProfile: Object.freeze({ ...target.evidenceProfile }) })
+        }));
+      },
       executeFinalTabTransaction: (request: SubmissionFinalTransactionRequest) => adapter.executeFinalTabTransaction(request),
       establishTarget: (request: OperationTargetEstablishmentRequest) => this.establishTarget(request),
       persistActionIntent: (request: ActionIntentRequest) => this.persistActionIntent(request),
@@ -1276,7 +1304,7 @@ export class OperationService {
         targetBindingDigest,
         actionId: await this.stagingActionId(request.operationId, requestDigest, kind),
         kind,
-        desiredStateDigest: this.journal.evidenceDigest("staging-desired", { requestDigest, kind })
+        desiredStateDigest: await this.journal.evidenceDigest("staging-desired", { requestDigest, kind })
       };
       const result = await runOperationStaging(stage, {
         readCurrent: callback => adapter.readCurrent(callback),
@@ -1514,7 +1542,7 @@ export class OperationService {
       if (
         current.state.surface !== request.surface
         || current.state.target === undefined
-        || this.targetBindingDigest(current.state) !== request.targetBindingDigest
+        || await this.targetBindingDigest(current.state) !== request.targetBindingDigest
       ) {
         return { status: "not_committed", blockerCode: "target_binding_mismatch" };
       }
@@ -1677,7 +1705,7 @@ export class OperationService {
     } catch {
       throw new OperationServiceError("operation_state_corrupt", "Work-steer persistence baseline is invalid.");
     }
-    const expectedPreparedDigest = this.journal.evidenceDigest("work-steer-prepared", material);
+    const expectedPreparedDigest = await this.journal.evidenceDigest("work-steer-prepared", material);
     if (expectedPreparedDigest !== request.preparedDigest) {
       throw new OperationServiceError("operation_request_mismatch", "Work-steer prepared evidence does not match the journal identity.");
     }
@@ -1703,7 +1731,7 @@ export class OperationService {
       if (
         current.state.target === undefined
         || current.state.surface !== "work"
-        || this.targetBindingDigest(current.state) !== request.parentTargetBindingDigest
+        || await this.targetBindingDigest(current.state) !== request.parentTargetBindingDigest
       ) {
         throw new OperationServiceError("target_binding_mismatch", "Work-steer target or surface does not match durable state.");
       }
@@ -1724,7 +1752,7 @@ export class OperationService {
         })) {
           throw new OperationServiceError("operation_state_corrupt", "Durable Work-steer baseline does not match the prepared request.");
         }
-        const durablePrepared = this.reconstructSteerIntent(
+        const durablePrepared = await this.reconstructSteerIntent(
           current.state,
           request.controlActionId,
           request.parentRequestDigest,
@@ -1907,7 +1935,7 @@ export class OperationService {
       return;
     }
     const state = await this.journal.load(request.operationId, request.requestDigest);
-    const messageDigest = this.journal.evidenceDigest("blocker", {
+    const messageDigest = await this.journal.evidenceDigest("blocker", {
       code: request.blocker.code,
       evidenceDigest: request.blocker.evidenceDigest
     });
@@ -2444,7 +2472,7 @@ export class OperationService {
     const requestDigest = current.state.requestDigest;
     const targetBindingDigest = observed.targetBindingDigest;
     const existing = findArtifactTransfer(current.state, observed.assistantTurnId, artifact);
-    const transferActionId = this.artifactTransferActionId(
+    const transferActionId = await this.artifactTransferActionId(
       operationId,
       requestDigest,
       observed.assistantTurnId,
@@ -2529,7 +2557,7 @@ export class OperationService {
     // The adapter may have thrown before it could persist its destination
     // identity. Establish a deterministic, path-free durable boundary and
     // close it as blocked. This also handles a missing restart adapter.
-    const fallbackIntent = this.makeUnavailableArtifactTransferIntent(
+    const fallbackIntent = await this.makeUnavailableArtifactTransferIntent(
       current,
       observed.assistantTurnId,
       artifact,
@@ -2569,13 +2597,13 @@ export class OperationService {
     }
   }
 
-  private artifactTransferActionId(
+  private async artifactTransferActionId(
     operationId: string,
     requestDigest: string,
     assistantTurnId: string,
     artifact: OperationArtifactReceiptV1
-  ): string {
-    const evidence = this.journal.evidenceDigest("artifact-transfer-action", {
+  ): Promise<string> {
+    const evidence = await this.journal.evidenceDigest("artifact-transfer-action", {
       operationId,
       requestDigest,
       assistantTurnId,
@@ -2587,17 +2615,17 @@ export class OperationService {
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
   }
 
-  private makeUnavailableArtifactTransferIntent(
+  private async makeUnavailableArtifactTransferIntent(
     current: LoadedOperationJournalV1,
     assistantTurnId: string,
     artifact: OperationArtifactReceiptV1,
     transferActionId: string
-  ): OperationArtifactTransferIntentV1 {
-    const destinationIdentityDigest = this.journal.evidenceDigest("artifact-destination", {
+  ): Promise<OperationArtifactTransferIntentV1> {
+    const destinationIdentityDigest = await this.journal.evidenceDigest("artifact-destination", {
       schemaVersion: OPERATION_ARTIFACT_TRANSFER_INTENT_SCHEMA_VERSION,
       operationId: current.state.operationId,
       requestDigest: current.state.requestDigest,
-      targetBindingDigest: this.targetBindingDigest(current.state),
+      targetBindingDigest: await this.targetBindingDigest(current.state),
       assistantTurnId,
       sourceIdentityDigest: artifact.sourceIdentityDigest,
       kind: artifact.kind,
@@ -2609,7 +2637,7 @@ export class OperationService {
       schemaVersion: OPERATION_ARTIFACT_TRANSFER_INTENT_SCHEMA_VERSION,
       operationId: current.state.operationId,
       requestDigest: current.state.requestDigest,
-      targetBindingDigest: this.targetBindingDigest(current.state),
+      targetBindingDigest: await this.targetBindingDigest(current.state),
       assistantTurnId,
       sourceIdentityDigest: artifact.sourceIdentityDigest,
       kind: artifact.kind,
@@ -2696,7 +2724,7 @@ export class OperationService {
     lookup: ArtifactTransferLookup
   ): Promise<OperationArtifactTransferStateV1 | undefined> {
     const current = await this.journal.load(lookup.operationId, lookup.requestDigest);
-    if (current.state.target === undefined || this.targetBindingDigest(current.state) !== lookup.targetBindingDigest) {
+    if (current.state.target === undefined || await this.targetBindingDigest(current.state) !== lookup.targetBindingDigest) {
       throw new OperationServiceError("operation_request_mismatch", "Artifact transfer target identity does not match durable state.");
     }
     const transfer = current.state.artifactTransfers?.[lookup.transferActionId];
@@ -2817,14 +2845,14 @@ export class OperationService {
    * assistant branch identity is derived from that baseline and the caller's
    * exact control request, then the keyed prepared digest is recomputed.
    */
-  private reconstructSteerIntent(
+  private async reconstructSteerIntent(
     state: OperationStateV1,
     controlActionId: string,
     parentRequestDigest: string,
     parentTargetBindingDigest: string,
     requestDigest: string,
     expectedAssistantTurnId: string
-  ): ControlSteerDurableIntent {
+  ): Promise<ControlSteerDurableIntent> {
     const action = state.actions[controlActionId];
     if (
       action === undefined
@@ -2870,7 +2898,7 @@ export class OperationService {
     } catch {
       throw new OperationServiceError("operation_state_corrupt", "Durable Work-steer prepared material is invalid.");
     }
-    const preparedDigest = this.journal.evidenceDigest("work-steer-prepared", material);
+    const preparedDigest = await this.journal.evidenceDigest("work-steer-prepared", material);
     return Object.freeze({
       schemaVersion: CONTROL_COORDINATOR_SCHEMA_VERSION,
       parentOperationId: state.operationId,
@@ -2890,8 +2918,8 @@ export class OperationService {
 
   private async readControlParent(request: ControlParentReadRequest): Promise<ControlParentSnapshot> {
     const loaded = await this.journal.load(request.operationId, request.parentRequestDigest);
-    const handle = this.journal.handleFromState(loaded.state);
-    this.journal.validateHandle({
+    const handle = await this.journal.handleFromState(loaded.state);
+    await this.journal.validateHandle({
       ...handle,
       schemaVersion: OPERATION_HANDLE_SCHEMA_VERSION,
       operationId: request.operationId,
@@ -2940,7 +2968,7 @@ export class OperationService {
         // completed control or invoke a browser mutation again.
         throw new OperationServiceError("operation_state_corrupt", "Satisfied Work-steer action is missing its durable submission witness.");
       }
-      existingSteerIntent = this.reconstructSteerIntent(
+      existingSteerIntent = await this.reconstructSteerIntent(
         loaded.state,
         action.actionId,
         request.parentRequestDigest,
@@ -3019,7 +3047,7 @@ export class OperationService {
         if (request.steerReceipt === undefined) {
           throw new OperationServiceError("submission_witness_missing", "A satisfied Work-steer receipt requires its rich causal witness.");
         }
-        const prepared = this.reconstructSteerIntent(
+        const prepared = await this.reconstructSteerIntent(
           current.state,
           action.actionId,
           receipt.parentRequestDigest,
@@ -3073,15 +3101,15 @@ export class OperationService {
     let loaded: LoadedOperationJournalV1;
     try {
       loaded = await this.journal.load(handle.operationId, handle.requestDigest);
-      this.journal.validateHandle(handle, loaded.state);
+      await this.journal.validateHandle(handle, loaded.state);
     } catch (error) {
       throw this.serviceError(error, "invalid_operation_handle");
     }
     return loaded;
   }
 
-  private targetBindingDigest(state: OperationStateV1): string {
-    const digest = this.journal.handleFromState(state).targetBindingDigest;
+  private async targetBindingDigest(state: OperationStateV1): Promise<string> {
+    const digest = (await this.journal.handleFromState(state)).targetBindingDigest;
     if (digest === undefined) throw new OperationServiceError("target_binding_missing", "Operation has no durable target binding.");
     return digest;
   }
@@ -3807,17 +3835,11 @@ function stagingKinds(request: OperationSubmitRequestV1): readonly OperationStag
   const kinds: OperationStagingRequest["kind"][] = [];
   const configuration = request.configuration;
   if (configuration !== undefined) {
-    if (
-      configuration.experience !== undefined
-      || configuration.model !== undefined
-      || configuration.modelVersion !== undefined
-      || configuration.mode !== undefined
-      || configuration.additional !== undefined
-    ) {
+    if (configurationHasMenuValues(configuration, request.surface)) {
       kinds.push("configuration_set");
     }
     if (configuration.tools !== undefined) kinds.push("tool_set");
-    if (configuration.reasoning !== undefined) kinds.push("power_select");
+    if (configurationPowerValues(configuration, request.surface).length > 0) kinds.push("power_select");
   }
   kinds.push("composer_set");
   return kinds;

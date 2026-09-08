@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createChatGPT } from "../../src/client.js";
 import type { BrowserLike, CommandResult, PageLike } from "../../src/types.js";
-import { OperationJournal } from "../../src/operations/journal.js";
+import { OperationJournal, OperationJournalError, JOURNAL_RUNTIME_UNAVAILABLE_MESSAGE } from "../../src/operations/journal.js";
 import type { OperationHandleAdapterFactoryContext } from "../../src/operations/client.js";
 import type { OperationBrowserAdapter } from "../../src/operations/service.js";
 import { OPERATION_REQUEST_SCHEMA_VERSION, type OperationHandleV1, type OperationSubmitRequestV1 } from "../../src/operations/types.js";
@@ -22,6 +22,26 @@ import type {
 import { vi } from "vitest";
 
 describe("createChatGPT", () => {
+  it.each(["chat", "work"] as const)("returns an actionable nonresumable journal host blocker for %s", async surface => {
+    const opening = vi.spyOn(OperationJournal, "open").mockRejectedValue(
+      new OperationJournalError("journal_runtime_unavailable", "private host implementation detail")
+    );
+    const browser = { tabs: { create: vi.fn(() => { throw new Error("must not touch browser"); }) } };
+    const chatgpt = createChatGPT({ browser });
+    const args = { operationId: "34343434-3434-4434-8434-343434343434", prompt: "synthetic test" };
+    try {
+      const result = surface === "chat" ? await chatgpt.ask(args) : await chatgpt.work.start(args);
+      expect(result).toMatchObject({
+        ok: false, status: "blocked",
+        blocker: { kind: "unknown", code: "journal_runtime_unavailable", resumable: false },
+        error: { message: JOURNAL_RUNTIME_UNAVAILABLE_MESSAGE, recoverable: false }
+      });
+      expect(result.blocker?.remediation?.[0]?.instruction).toContain("supported Node host");
+      expect(JSON.stringify(result)).not.toContain("private host implementation detail");
+      expect(browser.tabs.create).not.toHaveBeenCalled();
+    } finally { opening.mockRestore(); }
+  });
+
   it("exposes one stable lazy operations facade and honors an explicit state root", async () => {
     const root = await mkdtemp(join(tmpdir(), "chatgpt-operations-client-"));
     try {
@@ -90,7 +110,7 @@ describe("createChatGPT", () => {
     }
   });
 
-  it("prepares a durable operation handle when the Browser host does not expose process", async () => {
+  it("rejects a local journal before writes when the Browser host does not expose process", async () => {
     const root = await mkdtemp(join(tmpdir(), "chatgpt-operation-processless-"));
     const originalProcess = Object.getOwnPropertyDescriptor(globalThis, "process");
     Object.defineProperty(globalThis, "process", {
@@ -100,19 +120,14 @@ describe("createChatGPT", () => {
     });
     try {
       const chatgpt = createChatGPT({ operations: { stateRoot: root } });
-      const prepared = await chatgpt.operations.prepare({
+      await expect(chatgpt.operations.prepare({
         schemaVersion: OPERATION_REQUEST_SCHEMA_VERSION,
         operationId: "20202020-2020-4020-8020-202020202020",
         surface: "chat",
         prompt: "private prompt",
         target: { type: "project", name: "Pokémon Burning Scales" }
-      });
-
-      expect(prepared.handle).toMatchObject({
-        operationId: "20202020-2020-4020-8020-202020202020",
-        phase: "prepared",
-        mutationBoundary: "none"
-      });
+      })).rejects.toMatchObject({ code: "journal_runtime_unavailable" });
+      expect(await readdir(root)).toEqual([]);
     } finally {
       if (originalProcess === undefined) {
         Reflect.deleteProperty(globalThis, "process");
