@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.1-alpha.5
+
+- Recognizes project-scoped composers whose accessible name begins with
+  `New chat in`, verifies that composer fills reconcile before submission, and
+  reads textarea values when content text is empty.
+- Keeps reviewed Power/Advanced locale evidence replays idempotent while
+  preserving the Dutch stop-control safety exception and its provenance note;
+  the capture tool now handles slider-based simplified Chat/Work popovers,
+  restores probed Power values, and respects RTL keyboard direction.
+- Refreshes all 64 advertised non-English locale registries from the visible
+  simplified Chat/Work surface and removes locale-specific ordinal metadata
+  from captured Power labels before reviewed application.
+- Keeps strict configuration verification stable while Chat exposes a combined
+  generation-and-effort opener, Work task controls hydrate, and the independent
+  Fast toggle finishes its opening transition.
+- Lets the release canary hand a confirmed submitted generation to its bounded
+  exact-filename download waiter instead of failing while the file still renders.
+- Tightens visible 404 blocker matching and updates Vitest past the
+  `@vitest/mocker` path-traversal advisory.
+
 ## 0.5.1-alpha.4
 
 - Detects Chrome's explicit blocked-download error page, avoids alternate

@@ -1498,7 +1498,7 @@ describe("ChatGPT backend client", () => {
 
   it("propagates high-level iterator break to transport cancellation", async () => {
     const transport = new StdioBackendTransport({
-      command: [process.execPath, "-e", childScript("hold-stream")]
+      command: [process.execPath, "-e", childScript("await-cancellation")]
     });
     const backend = createChatGPTBackendClient(transport);
     try {
@@ -1516,7 +1516,7 @@ describe("ChatGPT backend client", () => {
 
   it("cancels a direct transport stream when its iterator returns", async () => {
     const transport = new StdioBackendTransport({
-      command: [process.execPath, "-e", childScript("hold-stream")]
+      command: [process.execPath, "-e", childScript("await-cancellation")]
     });
     try {
       const stream = transport.stream(backendRequest("req_direct_return", "runner.stream"));
@@ -1940,6 +1940,8 @@ const stream = request => {
   }
   const delay = mode === "outoforder" ? 20 : mode === "hold-stream" ? 200 : 0;
   setTimeout(() => event(request, { type: "run_item_stream_event", name: "message_completed", item: { type: "message.completed" } }), delay);
+  // Cancellation tests must not race a successful completion five milliseconds later.
+  if (mode === "await-cancellation") return;
   setTimeout(() => event(request, { type: "completed", result: { id: request.requestId } }), delay + 5);
 };
 readline.createInterface({ input: process.stdin }).on("line", line => {

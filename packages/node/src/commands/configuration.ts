@@ -79,18 +79,34 @@ export async function inspectConfiguration(
 
   const page = env.page!;
   try {
-    const detected = await detectExperience(
+    let detected = await detectExperience(
       env,
       args.timeoutMs === undefined ? {} : { timeoutMs: args.timeoutMs }
     );
     if (!detected.ok || detected.data === undefined) {
       return forwardFailure(detected);
     }
+    let detectedData = detected.data;
+    if (args.experience !== undefined && detectedData.experience !== args.experience) {
+      const retryMs = Math.min(
+        args.timeoutMs ?? CONFIGURATION_CONTROL_DISCOVERY_TIMEOUT_MS,
+        CONFIGURATION_CONTROL_DISCOVERY_TIMEOUT_MS
+      );
+      const attempts = Math.max(1, Math.ceil(Math.max(0, retryMs) / CONFIGURATION_CONTROL_POLL_MS));
+      for (let attempt = 1; attempt < attempts; attempt += 1) {
+        await page.waitForTimeout?.(CONFIGURATION_CONTROL_POLL_MS);
+        const retried = await detectExperience(env, { timeoutMs: 0 });
+        if (!retried.ok || retried.data === undefined) return forwardFailure(retried);
+        detected = retried;
+        detectedData = retried.data;
+        if (detectedData.experience === args.experience) break;
+      }
+    }
     const initialChatPopover = (await readChatPopover(page)).snapshot;
     const initialPanel = await readConfigurationPanel(page);
-    const discoveryExperience = detected.data.experience === "unknown"
+    const discoveryExperience = detectedData.experience === "unknown"
       ? args.experience ?? "unknown"
-      : detected.data.experience;
+      : detectedData.experience;
     const rootOpened = await waitForConfigurationRoot(
       page,
       discoveryExperience,
@@ -106,9 +122,9 @@ export async function inspectConfiguration(
       panel.openerLabel = initialPanel.openerLabel;
     }
     let rootItems = rootOpened ? await enumerateVisibleMenuItems(page) : [];
-    const inferredExperience = detected.data.experience === "unknown"
+    const inferredExperience = detectedData.experience === "unknown"
       ? inferExperienceFromConfigurationPanel(panel, rootItems)
-      : detected.data.experience;
+      : detectedData.experience;
     const experience = inferredExperience === "unknown"
       ? discoveryExperience
       : inferredExperience;
@@ -128,7 +144,7 @@ export async function inspectConfiguration(
         },
         context: await contextFromPage(page, {
           experience,
-          selectorProfile: detected.data.selectorProfile
+          selectorProfile: detectedData.selectorProfile
         })
       };
     }
@@ -179,11 +195,12 @@ export async function inspectConfiguration(
       }
       if (chatObservation === undefined) rootItems = await enumerateVisibleMenuItems(page);
     }
+    const openedPopover = rootOpened ? await waitForObservedChatPopover(page) : undefined;
 
-    if (experience !== "unknown" && (await readChatPopover(page)).snapshot !== undefined) {
+    if (experience !== "unknown" && openedPopover !== undefined) {
       try {
         const chat = await inspectChatPopover(page);
-        const data = configurationInspectionFromPopover(experience, detected.data.evidence, chat);
+        const data = configurationInspectionFromPopover(experience, detectedData.evidence, chat);
         if (args.includeOptions === false) data.options = {};
         return resultOk(data, await contextFromPage(page, { experience, selectorProfile: data.selectorProfile }),
           data.verified ? [] : ["The owned configuration views did not provide unique active model and effort evidence."]);
@@ -206,8 +223,8 @@ export async function inspectConfiguration(
 
     const data = configurationInspectionFromSurface(
       experience,
-      detected.data.selectorProfile,
-      detected.data.evidence,
+      detectedData.selectorProfile,
+      detectedData.evidence,
       panel,
       rootItems,
       chatObservation
@@ -353,7 +370,11 @@ export async function applyConfiguration(
     for (const [axis, requested] of selectionEntries(desired, before.experience === "chat" ? CHAT_CONFIGURATION_AXIS_ORDER : CONFIGURATION_AXIS_ORDER)) {
       // A model change can reset effort and alter its available range.
       // Re-observe between axes instead of trusting the initial snapshot.
-      const currentResult = !configurationMutated ? beforeResult : await inspectConfiguration(env, { includeOptions: false });
+      const currentResult: CommandResult<ConfigurationInspectionData> = !configurationMutated ? beforeResult : await inspectConfiguration(env, {
+        experience: before.experience,
+        includeOptions: false,
+        ...(args.timeoutMs === undefined ? {} : { timeoutMs: args.timeoutMs })
+      });
       if (!currentResult.ok || currentResult.data === undefined) return forwardFailure(currentResult);
       const current = currentResult.data;
       if (current.experience !== before.experience) return configurationFailure(page, before, desired, selected, "The composer experience changed during configuration selection.", "experience_mismatch");
@@ -507,10 +528,10 @@ export function configurationInspectionFromSurface(
           && item.ariaLabel !== "Select model")
         .map(menuItemToOption);
       const selectedEffort = chatOptions.filter(option => option.selected === true);
-      const openerValue = panel.openerValue ?? panel.openerLabel;
+      const openerValue = chatOpenerEffortValue(panel.openerValue ?? panel.openerLabel);
       if (chatOptions.length > 0 || openerValue !== undefined) availableAxes.push(axis);
       if (selectedEffort.length === 1) active[axis] = selectedEffort[0]!.label;
-      else if (openerValue !== undefined && (panel.openerValue !== undefined || isStandaloneChatModeLabel(openerValue))
+      else if (openerValue !== undefined && (panel.openerValue !== undefined || isStandaloneChatModeLabel(panel.openerLabel ?? ""))
         && !isConfigurationAxisRow(openerValue)
         && !/^(?:thinking effort|select model|power)$/i.test(openerValue)) active[axis] = openerValue;
       if (chatOptions.length > 0) options[axis] = chatOptions;
@@ -537,6 +558,27 @@ export function configurationInspectionFromSurface(
   };
 }
 
+function chatOpenerEffortValue(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const combined = /^(?:gpt[-\s]*)?[\p{N}]+(?:[.,][\p{N}]+)?\s+(.+)$/u.exec(value.trim());
+  if (combined === null) return value;
+  const effort = combined[1]?.trim();
+  if (effort === undefined || effort.length === 0) return undefined;
+  const labels = [
+    ...localeLabels.configurationOptions.instant,
+    ...localeLabels.configurationOptions.light,
+    ...localeLabels.configurationOptions.medium,
+    ...localeLabels.configurationOptions.high,
+    ...localeLabels.configurationOptions.extraHigh,
+    ...localeLabels.configurationOptions.max,
+    ...localeLabels.configurationOptions.ultra,
+    ...localeLabels.configurationOptions.pro,
+  ];
+  return labels.some(label => normalizeForLabelMatch(label) === normalizeForLabelMatch(effort))
+    ? effort
+    : undefined;
+}
+
 async function inspectWorkAxisOptions(env: RuntimeEnv, axis: ConfigurationAxis): Promise<ConfigurationOption[]> {
   const page = env.page!;
   const options = (await openWorkAxisOptions(env, axis))
@@ -557,12 +599,24 @@ async function selectWorkAxis(
   }
   const initialPopover = (await readChatPopover(page)).snapshot;
   await openConfigurationRoot(page, "work");
-  if ((await readChatPopover(page)).snapshot !== undefined) {
+  if (await waitForObservedChatPopover(page) !== undefined) {
     try {
       const labels = configurationSemanticLabels(requested);
       if (axis === "model") return await selectChatPopoverModel(page, labels);
       if (axis === "effort") return await selectChatPopoverEffort(page, labels);
-      if (axis === "speed") return await selectChatPopoverSpeed(page, labels);
+      if (axis === "speed") {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const selected = await selectChatPopoverSpeed(page, labels);
+          if (selected !== undefined) return selected;
+          if (attempt + 1 < 3) {
+            await closeConfigurationMenus(page);
+            await page.waitForTimeout?.(CONFIGURATION_SELECTION_RETRY_MS);
+            await openConfigurationRoot(page, "work");
+            if (await waitForObservedChatPopover(page) === undefined) return undefined;
+          }
+        }
+        return undefined;
+      }
       return undefined;
     } finally { if (initialPopover === undefined) await closeConfigurationMenus(page); }
   }
@@ -745,7 +799,7 @@ async function selectChatAxis(
   const page = env.page!;
   const initialPopover = (await readChatPopover(page)).snapshot;
   await openConfigurationRoot(page, "chat");
-  if ((await readChatPopover(page)).snapshot !== undefined) {
+  if (await waitForObservedChatPopover(page) !== undefined) {
     try {
       if (axis === "modelVersion" || axis === "model") return await selectChatPopoverModel(page, configurationSemanticLabels(requested));
       if (axis === "effort" || axis === "intelligence") return await selectChatPopoverEffort(page, configurationSemanticLabels(requested));
@@ -879,6 +933,15 @@ async function openConfigurationRoot(page: PageLike, experience: ChatGPTExperien
     }
   }
   return false;
+}
+
+async function waitForObservedChatPopover(page: PageLike): Promise<ChatPopoverSnapshot | undefined> {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const snapshot = (await readChatPopover(page)).snapshot;
+    if (snapshot !== undefined) return snapshot;
+    if (attempt + 1 < 6) await page.waitForTimeout?.(100);
+  }
+  return undefined;
 }
 
 function configurationMenuLooksRecognized(
@@ -1340,7 +1403,7 @@ async function waitForConfigurationUi(page: PageLike, ms: number): Promise<void>
 }
 
 async function closeConfigurationMenus(page: PageLike): Promise<void> {
-  if ((await readChatPopover(page)).snapshot !== undefined) { await closeChatPopover(page); return; }
+  if ((await readChatPopover(page)).snapshot !== undefined) { await closeChatPopover(page); await waitForConfigurationUi(page, 350); return; }
   if (!await pressMenuEscape(page)) return;
   await waitForConfigurationUi(page, 50);
   await pressMenuEscape(page);

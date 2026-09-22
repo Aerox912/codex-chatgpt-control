@@ -1,5 +1,5 @@
 import type { LocatorLike, PageLike } from "../types.js";
-import { anyLabelPattern, escapeRegExp, localeLabels } from "./locale-labels.js";
+import { anyLabelPattern, escapeRegExp, labelOrPrefixPattern, localeLabels } from "./locale-labels.js";
 
 // Language-sensitive label tokens are sourced from the locale registry; the structural
 // clauses (download attributes, file-backend hrefs, blob/data sources) are language-agnostic
@@ -51,14 +51,11 @@ export function composerTextbox(page: PageLike): LocatorLike {
   if (typeof page.getByRole !== "function") {
     return requiredLocator(page, "[contenteditable='true'], textarea");
   }
-  const standardComposer = anyLabelPattern([
-      ...localeLabels.composerTextbox,
-      ...localeLabels.workComposerTextbox
-  ]);
   return page.getByRole("textbox", {
-    // Project home uses a workspace-specific accessible name such as
-    // "New chat in Codex ChatGPT Control" instead of the global Chat label.
-    name: new RegExp(`${standardComposer.source}|^New chat in .+$`, "i")
+    name: labelOrPrefixPattern(
+      [...localeLabels.composerTextbox, ...localeLabels.workComposerTextbox],
+      localeLabels.projectComposerPrefixes
+    )
   });
 }
 
