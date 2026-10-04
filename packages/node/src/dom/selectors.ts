@@ -39,8 +39,9 @@ const generatedArtifactDownloadClauses = [
 
 export const cssSelectors = {
   assistantMessages: "[data-message-author-role='assistant']",
-  userMessages: "[data-message-author-role='user']",
-  roleMessages: "[data-message-author-role]",
+  currentAssistantMessages: "main [data-chatgpt-search-unit-key$=':assistant'][data-chatgpt-search-message-ids]",
+  userMessages: "[data-message-author-role='user'], main [data-chatgpt-search-unit-key$=':user'][data-chatgpt-search-message-ids]",
+  roleMessages: "[data-message-author-role], main [data-chatgpt-search-unit-key$=':user'][data-chatgpt-search-message-ids], main [data-chatgpt-search-unit-key$=':assistant'][data-chatgpt-search-message-ids]",
   conversationTurns: "[data-testid^='conversation-turn']",
   hiddenFileInputs: "input[type='file']",
   downloadControls: downloadControlClauses.join(", "),

@@ -1424,6 +1424,44 @@ describe("downloadLatestFile", () => {
       .toBe("informe.csv");
   });
 
+  it.each([true, false])("requires a paired filename for current preview controls (paired=%s)", async paired => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-control-current-preview-"));
+    const source = join(dir, "native.csv");
+    await writeFile(source, "name,value\nsmoke,1\n");
+    let previewOpen = false;
+    const downloadClick = vi.fn(async () => {});
+    const previewClick = vi.fn(async () => { previewOpen = true; });
+    const card = { parentElement: null, getBoundingClientRect: () => ({ width: 100, height: 20 }), querySelector: () => ({ getAttribute: () => paired ? "canary.csv" : "unrelated.csv" }) };
+    const button = {
+      tagName: "BUTTON", parentElement: card, textContent: "",
+      getAttribute: () => "Open preview of canary.csv",
+      getBoundingClientRect: () => ({ width: 100, height: 20 })
+    };
+    const node = { querySelectorAll: () => [button] };
+    const missing: LocatorLike = { count: async () => 0 };
+    const affordance: LocatorLike = { count: async () => 1, click: previewClick };
+    const currentAssistants: LocatorLike = { count: async () => 1, nth: () => ({ getByRole: () => affordance }) };
+    const download: LocatorLike = { count: async () => previewOpen ? 1 : 0, click: downloadClick };
+    const preview: LocatorLike = { getByRole: (_role, options) => options?.name === "Download" ? download : missing };
+    vi.stubGlobal("document", { querySelectorAll: (selector: string) => selector.startsWith("main ") ? [node] : [] });
+    vi.stubGlobal("window", { getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }) });
+    try {
+      const page: PageLike = {
+        evaluate: async (fn, arg) => fn(arg as never),
+        locator: selector => selector.includes("data-chatgpt-search-unit-key") ? currentAssistants : missing,
+        getByRole: (role, options) => role === "tabpanel" && options?.name === "canary.csv" && options.exact === true ? preview : missing,
+        waitForEvent: async () => ({ path: async () => source }),
+        url: () => "https://chatgpt.com/c/mock", title: async () => "ChatGPT"
+      };
+      const result = await downloadLatestFile({ page }, { destDir: join(dir, "out"), filenamePattern: "^canary\\.csv$", timeoutMs: 100 });
+      expect(result.ok, result.blocker?.message ?? result.error?.message).toBe(paired);
+      expect(previewClick).toHaveBeenCalledTimes(paired ? 1 : 0);
+      expect(downloadClick).toHaveBeenCalledTimes(paired ? 1 : 0);
+      if (paired) await expect(readFile(result.data!.path, "utf8")).resolves.toBe("name,value\nsmoke,1\n");
+      else expect(result.blocker?.code).toBe("download_filename_not_found");
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it("opens a filename-labelled artifact preview and copies a path-only Chrome download", async () => {
     const dir = await mkdtemp(join(tmpdir(), "chatgpt-control-generated-file-download-"));
     const dest = join(dir, "out");

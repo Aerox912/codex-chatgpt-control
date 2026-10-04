@@ -71,6 +71,7 @@ function powerDom(labels = ["Medium", "High", "Pro"], initiallyOpen = false) {
   document.querySelectorAll = selector => {
     if (selector === "main form") return [form];
     if (selector === '[data-testid="composer-intelligence-picker-content"]') return isOpen() ? [root] : [];
+    if (selector === '[data-model-picker-view]') return [];
     throw new Error(`Unexpected selector: ${selector}`);
   };
   vi.stubGlobal("document", document);

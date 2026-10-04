@@ -11,6 +11,17 @@ The Python package is a parity client over the TypeScript browser-control runtim
 - `npm run parity:suite` validates `contracts/v1/parity-suite.json`, which ties every public backend command and fixture to TypeScript tests, Python tests, docs, and deterministic CI gates.
 - Python tests load the same manifest and round-trip every JSON fixture through Pydantic models.
 
+The October 4, 2026 Chat picker selector repair lives in TypeScript, including
+the already-selected Pro path. Python inherits it through `modes.set` and
+`configuration.apply` on the shared backend. No protocol schema changed;
+Python regression coverage preserves the backend's selected-label evidence and
+success/blocker envelope. Browser selectors must continue to have one owner.
+The same dated work item covers current pressed panes, English Send/Stop,
+role-qualified message capture and exact-filename previews. These DOM changes
+belong to the Node backend; Python inherits them without duplicating selectors
+or changing models. Existing fixture round-trips cover unchanged result shapes,
+including non-resumable download uncertainty.
+
 Wire fields stay TypeScript-compatible. Python exposes idiomatic aliases:
 
 | Wire | Python |

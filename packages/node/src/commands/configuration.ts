@@ -22,7 +22,7 @@ import type {
 import { contextFromPage } from "./context.js";
 import { detectExperience, openExperience } from "./experience.js";
 import { setMode } from "./modes.js";
-import { closeChatPopover, inspectChatPopover, readChatPopover, selectChatPopoverEffort, selectChatPopoverModel, selectChatPopoverSpeed, type ChatPopoverSnapshot } from "./chat-popover.js";
+import { closeChatPopover, inspectChatPopover, openChatPopover, readChatPopover, selectChatPopoverEffort, selectChatPopoverModel, selectChatPopoverSpeed, type ChatPopoverSnapshot } from "./chat-popover.js";
 import { ensurePage } from "./session.js";
 
 const WORK_AXES: ConfigurationAxis[] = ["model", "effort", "speed"];
@@ -684,6 +684,10 @@ async function selectChatAxis(
 
 async function openConfigurationRoot(page: PageLike, experience: ChatGPTExperience): Promise<boolean> {
   if (experience !== "unknown" && (await readChatPopover(page)).snapshot !== undefined) return true;
+  if (experience !== "unknown") {
+    const currentPicker = await openChatPopover(page);
+    if (currentPicker !== undefined) return currentPicker;
+  }
   const existing = await readConfigurationPanel(page);
   if (existing.axisRows.length > 0) {
     return true;

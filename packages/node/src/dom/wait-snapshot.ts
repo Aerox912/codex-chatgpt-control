@@ -75,11 +75,18 @@ export async function readWaitDomSnapshot(page: PageLike): Promise<WaitDomSnapsh
     const normalizeLower = (value: string | null | undefined) => (value ?? "").trim().toLowerCase();
 
     // --- Progress: turn counts and latest assistant text metadata (no text transfer) ---
-    const nodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
-    const assistantNodes = nodes.filter(node => node.getAttribute("data-message-author-role") === "assistant");
+    const legacy = Array.from(document.querySelectorAll("[data-message-author-role]"));
+    const nodes = legacy.length > 0 ? legacy : Array.from(document.querySelectorAll(
+      "main [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]"
+    )).filter(node => /:(?:user|assistant)$/.test(node.getAttribute("data-chatgpt-search-unit-key") ?? ""));
+    const assistantNodes = nodes.filter(node => (node.getAttribute("data-message-author-role")
+      ?? node.getAttribute("data-chatgpt-search-unit-key")?.split(":").at(-1)) === "assistant");
     const latestAssistant = assistantNodes.at(-1) as HTMLElement | undefined;
     const latestAssistantTurnIndex = latestAssistant === undefined ? undefined : nodes.indexOf(latestAssistant) + 1;
-    const normalizedText = normalizeWs(latestAssistant?.innerText ?? latestAssistant?.textContent ?? "");
+    const content = latestAssistant?.querySelector?.('[data-markdown-text-style="assistant-message"]');
+    const normalizedText = normalizeWs((content as HTMLElement | null)?.innerText || content?.textContent
+      || (latestAssistant?.innerText ?? latestAssistant?.textContent ?? "")
+        .replace(latestAssistant?.querySelector?.('[data-conversation-role="assistant"]')?.textContent ?? "", ""));
 
     let hash = 0x811c9dc5;
     for (let index = 0; index < normalizedText.length; index += 1) {
@@ -134,7 +141,8 @@ export async function readWaitDomSnapshot(page: PageLike): Promise<WaitDomSnapsh
         && matchingLabels(button, args.stop).length > 0);
     const activeSignals = [...new Set(visibleStopButtons.flatMap(button => matchingLabels(button, args.stop)))];
     const latestAssistantTurn = latestAssistant?.closest("[data-testid^='conversation-turn']")
-      ?? Array.from(document.querySelectorAll("[data-testid^='conversation-turn']")).at(-1);
+      ?? Array.from(document.querySelectorAll("[data-testid^='conversation-turn']")).at(-1)
+      ?? (latestAssistant?.hasAttribute?.("data-chatgpt-search-unit-key") === true ? latestAssistant : undefined);
     const stoppedSignals = latestAssistantTurn === undefined
       ? []
       : [...new Set(Array.from(latestAssistantTurn.querySelectorAll<HTMLElement>(
@@ -153,7 +161,20 @@ export async function readWaitDomSnapshot(page: PageLike): Promise<WaitDomSnapsh
     const turns = Array.from(document.querySelectorAll("[data-testid^='conversation-turn']"));
     let hasResponseActions: boolean | undefined;
     if (turns.length === 0) {
-      hasResponseActions = undefined;
+      if (latestAssistant?.hasAttribute?.("data-chatgpt-search-unit-key") === true) {
+        hasResponseActions = false;
+        let owner: Element | null = latestAssistant;
+        for (let depth = 0; owner !== null && depth < 6 && owner.tagName !== "MAIN"; depth += 1, owner = owner.parentElement) {
+          const assistants: Element[] = Array.from(owner.querySelectorAll('[data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]'));
+          if (owner !== latestAssistant && (assistants.length !== 1 || assistants[0] !== latestAssistant)) break;
+          if (Array.from(owner.querySelectorAll("button")).some(button =>
+            args.actions.some(phrase => [button.getAttribute("aria-label"), button.getAttribute("title"), button.textContent]
+              .some(value => (value ?? "").trim().toLowerCase() === phrase.trim().toLowerCase())))) {
+            hasResponseActions = true;
+            break;
+          }
+        }
+      }
     } else {
       const latestTurn = [...turns].reverse().find(turn =>
         turn.querySelector("[data-message-author-role='assistant']") !== null

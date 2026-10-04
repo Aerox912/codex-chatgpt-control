@@ -10,10 +10,10 @@ import type { LocaleStrings } from "./types.js";
 export const en = {
   // --- Primary interaction path (accessible names) ---
   composerTextbox: ["Chat with ChatGPT", "Ask ChatGPT"],
-  workComposerTextbox: ["Work on anything", "Work on something"],
+  workComposerTextbox: ["Work on anything", "Work on something", "Work with ChatGPT"],
   projectComposerPrefixes: ["New chat in"],
   newWork: ["Work on something else", "New work", "New task"],
-  sendButton: ["Send prompt"],
+  sendButton: ["Send prompt", "Send"],
   searchChatsButton: ["Search chats"],
   searchChatsPlaceholder: ["Search chats..."],
   newChat: ["New chat"],
@@ -92,7 +92,7 @@ export const en = {
   /** Exact-match transient assistant placeholders filtered out of captured responses. */
   transientAssistant: ["thinking", "reasoning", "searching", "searching the web"],
   /** Streaming "stop" control text, matched while a response generates. */
-  stopControl: ["stop generating", "stop streaming", "stop answering"],
+  stopControl: ["stop generating", "stop streaming", "stop answering", "stop"],
   /** Interrupted generation markers shown after the assistant stops before completion. */
   stoppedAssistant: ["stopped thinking", "stopped answering", "generation stopped"],
   /** Response-action affordance text (fallback to the structural copy-button locator). */

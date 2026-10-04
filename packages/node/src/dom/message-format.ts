@@ -92,12 +92,25 @@ export function extractRoleMessageHtml(html: string): RoleMessageHtml[] {
   const root = parseHtmlFragment(html);
   const messages: RoleMessageHtml[] = [];
   walkElementsWithAncestors(root, [], (element, ancestors) => {
-    const role = element.attrs["data-message-author-role"];
+    const current = element.attrs["data-message-author-role"] === undefined
+      && element.attrs["data-chatgpt-search-message-ids"] !== undefined;
+    if (current && !ancestors.some(ancestor => ancestor.tag === "main")) return;
+    const role = element.attrs["data-message-author-role"]
+      ?? (current ? element.attrs["data-chatgpt-search-unit-key"]?.split(":").at(-1) : undefined);
     if (role === "user" || role === "assistant") {
       const metadataElement = [...ancestors]
         .reverse()
         .find(ancestor => ancestor.attrs["data-testid"]?.startsWith("conversation-turn")) ?? element;
-      messages.push({ role, html: serializeChildren(element), metadataHtml: serializeNode(metadataElement) });
+      let content = element;
+      if (current) {
+        walkElements(element, child => {
+          if (role === "user" && child.attrs["data-user-message-bubble"] === "true"
+            || role === "assistant" && child.attrs["data-markdown-text-style"] === "assistant-message"
+              && child.children.length > 0) content = child;
+        });
+      }
+      const messageHtml = serializeChildren(content).replace(/<h4\b[^>]*data-conversation-role=["']assistant["'][^>]*>[\s\S]*?<\/h4>/i, "");
+      messages.push({ role, html: messageHtml, metadataHtml: serializeNode(metadataElement) });
     }
   });
   return messages;
