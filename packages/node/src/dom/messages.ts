@@ -60,16 +60,22 @@ export function extractMessagesFromHtml(html: string, args: ReadMessagesArgs = {
 export async function readMessages(page: PageLike, args: ReadMessagesArgs = {}): Promise<ExtractedMessage[]> {
   if (typeof page.evaluate === "function") {
     const messages = await page.evaluate(() => {
-      const nodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
+      const legacy = Array.from(document.querySelectorAll("[data-message-author-role]"));
+      const nodes = legacy.length > 0 ? legacy : Array.from(document.querySelectorAll(
+        "main [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]"
+      ));
       return nodes
         .map(node => {
-          const role = node.getAttribute("data-message-author-role");
+          const role = node.getAttribute("data-message-author-role")
+            ?? node.getAttribute("data-chatgpt-search-unit-key")?.split(":").at(-1);
           if (role !== "user" && role !== "assistant") {
             return undefined;
           }
+          const content = role === "user" ? node.querySelector?.('[data-user-message-bubble="true"]')
+            : node.querySelector?.('[data-markdown-text-style="assistant-message"]');
           return {
             role,
-            html: node.innerHTML,
+            html: content?.innerHTML || node.innerHTML.replace(/<h4\b[^>]*data-conversation-role=["']assistant["'][^>]*>[\s\S]*?<\/h4>/i, ""),
             metadataHtml: (node.closest("[data-testid^='conversation-turn']") as HTMLElement | null)?.outerHTML ?? node.outerHTML
           };
         })
@@ -97,12 +103,17 @@ export async function readLatestMessage(
 ): Promise<ExtractedMessage | undefined> {
   if (typeof page.evaluate === "function") {
     const message = await page.evaluate((wantedRole: MessageRole) => {
-      const nodes = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
+      const legacy = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
+      const nodes = legacy.length > 0 ? legacy : Array.from(document.querySelectorAll(
+        `main [data-chatgpt-search-unit-key$=":${wantedRole}"][data-chatgpt-search-message-ids]`
+      ));
       const node = nodes.at(-1);
       if (node === undefined) return undefined;
+      const content = wantedRole === "user" ? node.querySelector?.('[data-user-message-bubble="true"]')
+        : node.querySelector?.('[data-markdown-text-style="assistant-message"]');
       return {
         role: wantedRole,
-        html: node.innerHTML,
+        html: content?.innerHTML || node.innerHTML.replace(/<h4\b[^>]*data-conversation-role=["']assistant["'][^>]*>[\s\S]*?<\/h4>/i, ""),
         metadataHtml: (node.closest("[data-testid^='conversation-turn']") as HTMLElement | null)?.outerHTML ?? node.outerHTML
       };
     }, role).catch(() => undefined);
@@ -127,9 +138,17 @@ export async function readLatestMessageText(
 ): Promise<string | undefined> {
   if (typeof page.evaluate === "function") {
     return page.evaluate((wantedRole: MessageRole) => {
-      const nodes = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
+      const legacy = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
+      const nodes = legacy.length > 0 ? legacy : Array.from(document.querySelectorAll(
+        `main [data-chatgpt-search-unit-key$=":${wantedRole}"][data-chatgpt-search-message-ids]`
+      ));
       const node = nodes.at(-1) as HTMLElement | undefined;
-      return node?.innerText ?? node?.textContent ?? undefined;
+      if (node?.getAttribute("data-chatgpt-search-unit-key") === null) return node?.innerText ?? node?.textContent ?? undefined;
+      if (node === undefined) return undefined;
+      const content = wantedRole === "user" ? node.querySelector?.('[data-user-message-bubble="true"]')
+        : node.querySelector?.('[data-markdown-text-style="assistant-message"]');
+      return (content as HTMLElement | null)?.innerText || content?.textContent
+        || (node.innerText ?? node.textContent ?? "").replace(node.querySelector?.('[data-conversation-role="assistant"]')?.textContent ?? "", "").trim();
     }, role).catch(() => undefined);
   }
 
@@ -144,10 +163,18 @@ export async function readLatestMessageTextSnapshot(
 ): Promise<LatestMessageTextSnapshot> {
   if (typeof page.evaluate === "function") {
     return page.evaluate((wantedRole: MessageRole) => {
-      const allNodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
-      const roleNodes = allNodes.filter(node => node.getAttribute("data-message-author-role") === wantedRole);
+      const legacy = Array.from(document.querySelectorAll("[data-message-author-role]"));
+      const allNodes = legacy.length > 0 ? legacy : Array.from(document.querySelectorAll(
+        "main [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]"
+      )).filter(node => /:(?:user|assistant)$/.test(node.getAttribute("data-chatgpt-search-unit-key") ?? ""));
+      const roleNodes = allNodes.filter(node => (node.getAttribute("data-message-author-role")
+        ?? node.getAttribute("data-chatgpt-search-unit-key")?.split(":").at(-1)) === wantedRole);
       const latest = roleNodes.at(-1) as HTMLElement | undefined;
-      const latestText = latest?.innerText ?? latest?.textContent ?? undefined;
+      const content = wantedRole === "user" ? latest?.querySelector?.('[data-user-message-bubble="true"]')
+        : latest?.querySelector?.('[data-markdown-text-style="assistant-message"]');
+      const latestText = (content as HTMLElement | null)?.innerText || content?.textContent
+        || (latest === undefined ? undefined : (latest.innerText ?? latest.textContent ?? "")
+          .replace(latest.querySelector?.('[data-conversation-role="assistant"]')?.textContent ?? "", "").trim());
       const snapshot: { latestText?: string; turnCount: number } = { turnCount: allNodes.length };
       if (latestText !== undefined) snapshot.latestText = latestText;
       return snapshot;
@@ -184,7 +211,12 @@ export async function countPageMessages(page: PageLike, role?: MessageRole): Pro
       const selector = wantedRole === undefined
         ? "[data-message-author-role]"
         : `[data-message-author-role="${wantedRole}"]`;
-      return document.querySelectorAll(selector).length;
+      const legacyCount = document.querySelectorAll(selector).length;
+      if (legacyCount > 0) return legacyCount;
+      const currentSelector = wantedRole === undefined
+        ? 'main [data-chatgpt-search-unit-key$=":user"][data-chatgpt-search-message-ids], main [data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]'
+        : `main [data-chatgpt-search-unit-key$=":${wantedRole}"][data-chatgpt-search-message-ids]`;
+      return document.querySelectorAll(currentSelector).length;
     }, role);
   }
 

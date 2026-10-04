@@ -6,7 +6,8 @@ import {
 } from "../../src/commands/configuration.js";
 import type { MenuItem } from "../../src/dom/menus.js";
 
-import { inspectChatPopover, readChatPopover, selectChatPopoverEffort, selectChatPopoverModel, selectChatPopoverSpeed } from "../../src/commands/chat-popover.js";
+import { inspectChatPopover, openChatPopover, readChatPopover, selectChatPopoverEffort, selectChatPopoverModel, selectChatPopoverSpeed } from "../../src/commands/chat-popover.js";
+import { getMode, setMode } from "../../src/commands/modes.js";
 import { DomNode, element } from "../helpers/dom-tree.js";
 import type { PageLike, LocatorLike } from "../../src/types.js";
 import { discoverPowerSlider } from "../../src/commands/power-discovery.js";
@@ -70,22 +71,27 @@ describe("Chat model and effort configuration classification", () => {
 });
 
 
-function popoverDom(labels = ["Low", "Medium", "High"], work = false) {
+function popoverDom(labels = ["Low", "Medium", "High"], work = false, currentProfile = false) {
   const slider = element("span", { role: "slider", "aria-hidden": "true", "aria-valuemin": "0", "aria-valuemax": String(labels.length - 1), "aria-valuenow": "1" });
   const description = element("span", { id: "power-value" });
   const power = element("div", { role: "menuitem", "aria-label": "Power", "aria-describedby": "power-value" },
-    element("div", { "data-model-reasoning-effort-slider": "" }, slider), description);
-  const simple = element("div", { "data-testid": "composer-model-picker-slider-simple-view" }, power);
+    element("div", { [currentProfile ? "data-model-picker-power-slider" : "data-model-reasoning-effort-slider"]: "" }, slider), description);
+  const simple = element("div", currentProfile ? {} : { "data-testid": "composer-model-picker-slider-simple-view" }, power);
   const radios = (work ? ["Default", "GPT-6 Astra", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna", "GPT-5.5"] : ["Latest", "GPT-5.6 Sol", "GPT-5.5"]).map((label, index) => element("div", {
     role: "menuitemradio", "aria-checked": String(index === (work ? 2 : 0))
-  }, ...(work ? [element("div", { class: "min-w-0" }, element("div", { class: "truncate" }, label), ...(index === 0 ? [element("span", {}, "Recommended set of models")] : []))] : [label])));
-  const advanced = element("div", { "data-testid": "composer-model-picker-slider-advanced-view" }, ...radios);
-  const toggle = element("div", { role: "menuitem", "aria-label": "Select model", "data-interactive": "true" }, "Medium");
+  }, ...(work ? [element("div", { class: "min-w-0" }, element("div", { class: "truncate" }, label), ...(index === 0 ? [element("span", {}, "Recommended set of models")] : []))]
+    : currentProfile && index === 2 ? [element("div", {}, element("span", { class: "truncate" }, label), element("span", { class: "text-xs truncate" }, "Leaving on October 14"))] : [label])));
+  const advanced = element("div", currentProfile ? {} : { "data-testid": "composer-model-picker-slider-advanced-view" }, ...radios);
+  const toggle = element("div", { role: "menuitem", "aria-label": "Select model", "data-interactive": "true",
+    ...(currentProfile ? { "data-model-picker-view-toggle": "true" } : {}) }, "Medium");
   const speed = element("div", { role: "menuitemcheckbox", "aria-label": "Enable fast mode", "aria-checked": "false", "data-fast-mode-enabled": "false", "data-visible": "true" });
-  const owner = element("div", { "data-has-slider": "true", "data-has-advanced-view": "true", "data-model-selection-view": "true" }, toggle, ...(work ? [speed] : []), simple, advanced);
-  const root = element("div", { "data-testid": "composer-intelligence-picker-content" }, owner);
+  if (currentProfile) simple.append(toggle);
+  const owner = element("div", currentProfile ? {} : { "data-has-slider": "true", "data-has-advanced-view": "true", "data-model-selection-view": "true" },
+    ...(currentProfile ? [] : [toggle]), ...(work ? [speed] : []), simple, advanced);
+  const root = currentProfile ? owner : element("div", { "data-testid": "composer-intelligence-picker-content" }, owner);
   const menu = element("div", { role: "menu", "data-state": "open", "aria-labelledby": "menu-trigger" }, root);
-  const trigger = element("button", { id: "menu-trigger" }, "Thinking effort");
+  const trigger = element("button", { id: "menu-trigger",
+    ...(currentProfile ? { "data-codex-intelligence-trigger": "true", "aria-haspopup": "menu", "aria-expanded": "true" } : {}) }, "Thinking effort");
   const document = new DomNode("#document", {}, [trigger, menu]);
   let reopens = 0;
   let toggles = 0;
@@ -93,8 +99,8 @@ function popoverDom(labels = ["Low", "Medium", "High"], work = false) {
   let speedClicks = 0;
   const presses: string[] = [];
   const setView = (view: "simple" | "advanced") => {
-    owner.attributes["data-view"] = view;
-    toggle.attributes["aria-expanded"] = String(view === "advanced");
+    owner.attributes[currentProfile ? "data-model-picker-view" : "data-view"] = view;
+    if (!currentProfile) toggle.attributes["aria-expanded"] = String(view === "advanced");
     speed.attributes["data-visible"] = String(view === "simple");
     speed.attributes["aria-hidden"] = String(view === "advanced");
     toggle.attributes["aria-hidden"] = String(view === "advanced");
@@ -111,25 +117,31 @@ function popoverDom(labels = ["Low", "Medium", "High"], work = false) {
     description.firstChild = null;
     description.append(`${labels[level]}, ${level + 1} of ${labels.length}.`);
   };
-  Object.assign(toggle, { click: () => { toggles += 1; setView(owner.attributes["data-view"] === "simple" ? "advanced" : "simple"); } });
+  Object.assign(toggle, { click: () => { toggles += 1; setView(owner.attributes[currentProfile ? "data-model-picker-view" : "data-view"] === "simple" ? "advanced" : "simple"); } });
   radios.forEach(radio => Object.assign(radio, { click: () => {
     modelClicks += 1;
     radios.forEach(row => { row.attributes["aria-checked"] = String(row === radio); });
     setView("simple");
   } }));
   document.querySelectorAll = selector => {
-    expect(selector).toBe('[data-testid="composer-intelligence-picker-content"]');
-    return [root];
+    if (selector === '[data-testid="composer-intelligence-picker-content"]') return currentProfile ? [] : [root];
+    if (selector === '[data-model-picker-view]') return currentProfile ? [root] : [];
+    if (selector === 'button[data-codex-intelligence-trigger="true"]') return currentProfile && trigger.getAttribute("data-codex-intelligence-trigger") === "true" ? [trigger] : [];
+    throw new Error(`Unconfigured selector: ${selector}`);
   };
   vi.stubGlobal("document", document);
   vi.stubGlobal("window", { getComputedStyle: (node: DomNode) => node.style });
   const page: PageLike = {
     evaluate: async (fn, arg) => fn(arg as never),
     waitForTimeout: async () => {},
+    url: () => "https://chatgpt.com/",
+    title: async () => "ChatGPT",
     locator: selector => {
-      if (selector === '[role="menu"][aria-labelledby="menu-trigger"]') return { count: async () => 1, press: async key => { expect(key).toBe("Escape"); menu.attributes["data-state"] = "closed"; } };
-      if (selector === '[id="menu-trigger"]') return { count: async () => 1, evaluate: async fn => fn(trigger as unknown as Element), click: async () => { reopens += 1; menu.attributes["data-state"] = "open"; setView("simple"); } };
-      expect(selector).toBe('[data-testid="composer-intelligence-picker-content"]');
+      if (selector === '[role="menu"][aria-labelledby="menu-trigger"]') return { count: async () => 1, press: async key => { expect(key).toBe("Escape"); menu.attributes["data-state"] = "closed"; trigger.attributes["aria-expanded"] = "false"; } };
+      if (selector === '[id="menu-trigger"]' || selector === 'button[data-codex-intelligence-trigger="true"][aria-haspopup="menu"]') return {
+        count: async () => selector.startsWith('[id=') || currentProfile ? 1 : 0,
+        evaluate: async fn => fn(trigger as unknown as Element), click: async () => { reopens += 1; menu.attributes["data-state"] = "open"; trigger.attributes["aria-expanded"] = "true"; setView("simple"); } };
+      expect(selector).toBe(currentProfile ? '[data-model-picker-view]' : '[data-testid="composer-intelligence-picker-content"]');
       const rootLocator: LocatorLike = { count: async () => 1, nth: index => { expect(index).toBe(0); return rootLocator; }, locator: scoped => {
         if (scoped === '[role="menuitemcheckbox"][data-fast-mode-enabled]') {
           const speedLocator: LocatorLike = { count: async () => work ? 1 : 0, nth: () => speedLocator,
@@ -141,6 +153,7 @@ function popoverDom(labels = ["Low", "Medium", "High"], work = false) {
           return speedLocator;
         }
         if (scoped === '[role="menuitem"][data-interactive="true"]'
+          || scoped === ':scope > [data-active="true"] [role="menuitemradio"]'
           || scoped === '[data-testid="composer-model-picker-slider-advanced-view"][data-active="true"] [role="menuitemradio"]') {
           const controls = scoped.startsWith('[role="menuitem"]') ? [toggle] : radios;
           const controlLocator = (index?: number): LocatorLike => ({
@@ -151,7 +164,7 @@ function popoverDom(labels = ["Low", "Medium", "High"], work = false) {
           });
           return controlLocator();
         }
-        expect(scoped).toBe('[data-testid="composer-model-picker-slider-simple-view"][data-active="true"] [role="slider"]');
+        expect(scoped).toBe(currentProfile ? ':scope > [data-active="true"] [role="slider"]' : '[data-testid="composer-model-picker-slider-simple-view"][data-active="true"] [role="slider"]');
         const collect = (node: DomNode): DomNode[] => {
           const found = node.getAttribute("role") === "slider" ? [node] : [];
           let child = node.firstChild;
@@ -176,11 +189,166 @@ function popoverDom(labels = ["Low", "Medium", "High"], work = false) {
   };
   setView("simple");
   setLevel(1);
-  return { page, document, menu, root, owner, simple, advanced, toggle, slider, power, radios, speed, description, setView, setLevel,
+  return { page, document, menu, trigger, root, owner, simple, advanced, toggle, slider, power, radios, speed, description, setView, setLevel,
     presses, speedClicks: () => speedClicks, toggles: () => toggles, modelClicks: () => modelClicks, reopens: () => reopens };
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("current model picker without composer test IDs", () => {
+  const labels = ["Instant", "Medium", "High", "Extra High", "Pro"];
+
+  it("reads Pro from the owned ordinal and excludes inactive model radios", async () => {
+    const fixture = popoverDom(labels, false, true);
+    fixture.setLevel(4);
+    expect((await readChatPopover(fixture.page)).snapshot).toMatchObject({
+      profile: "model_picker_v2", view: "simple", effort: "Pro", modelOptions: [],
+      slider: { minimum: 0, maximum: 4, current: 4 }
+    });
+    const inspected = await inspectChatPopover(fixture.page);
+    expect(inspected).toMatchObject({ effort: "Pro", activeModel: "Latest" });
+    expect(inspected?.modelOptions.map(row => row.label)).toEqual(["Latest", "GPT-5.6 Sol", "GPT-5.5"]);
+    expect(configurationMatchesSelection(configurationInspectionFromPopover("chat", [], inspected), { intelligence: "Pro" })).toBe(true);
+    expect(fixture.presses).toEqual([]);
+    expect(fixture.modelClicks()).toBe(0);
+    expect(fixture.owner.attributes["data-model-picker-view"]).toBe("simple");
+  });
+
+  it("accepts already-selected Pro with the picker open without clicking or pressing", async () => {
+    const fixture = popoverDom(labels, false, true);
+    fixture.setLevel(4);
+    expect(await getMode({ page: fixture.page })).toMatchObject({ ok: true, data: { modes: ["Pro"] }, warnings: [] });
+    const result = await setMode({ page: fixture.page }, { model: "Pro", timeoutMs: 0 });
+    expect(result).toMatchObject({ ok: true, status: "ok", data: { selected: ["Pro"], candidates: ["Pro"] }, warnings: [] });
+    expect(fixture.presses).toEqual([]);
+    expect(fixture.toggles()).toBe(0);
+    expect(fixture.reopens()).toBe(0);
+    expect(fixture.menu.attributes["data-state"]).toBe("open");
+  });
+
+  it("opens the structural trigger without relying on its accessible label", async () => {
+    const fixture = popoverDom(labels, false, true);
+    fixture.menu.attributes["data-state"] = "closed";
+    fixture.trigger.attributes["aria-expanded"] = "false";
+    fixture.trigger.attributes["aria-label"] = "Select ChatGPT model";
+    expect(await openChatPopover(fixture.page)).toBe(true);
+    expect(fixture.reopens()).toBe(1);
+    expect(fixture.presses).toEqual([]);
+  });
+
+  it.each([false, true])("resolves a retained composer only when one trigger is visible (bothVisible=%s)", async bothVisible => {
+    const fixture = popoverDom(labels, false, true);
+    fixture.menu.attributes["data-state"] = "closed";
+    fixture.trigger.attributes["aria-expanded"] = "false";
+    const hidden = element("button", { id: "retained-home-trigger", "data-codex-intelligence-trigger": "true", "aria-haspopup": "menu", "aria-expanded": "false" });
+    hidden.rect = bothVisible ? { width: 100, height: 20 } : { width: 0, height: 0 };
+    const query = fixture.document.querySelectorAll;
+    fixture.document.querySelectorAll = selector => selector === 'button[data-codex-intelligence-trigger="true"]'
+      ? [hidden, fixture.trigger] : query(selector);
+    const locator = fixture.page.locator!;
+    const actual = locator('button[data-codex-intelligence-trigger="true"][aria-haspopup="menu"]');
+    const visibleFilter = vi.fn((options: Record<string, unknown>): LocatorLike => {
+      expect(options).toEqual({ visible: true });
+      return bothVisible ? { count: async () => 2 } : actual;
+    });
+    fixture.page.locator = selector => selector.startsWith('button[data-codex-intelligence-trigger')
+      ? { count: async () => 2, filter: visibleFilter } : locator(selector);
+    expect(await openChatPopover(fixture.page)).toBe(!bothVisible);
+    expect(visibleFilter).toHaveBeenCalledTimes(1);
+    expect(fixture.reopens()).toBe(bothVisible ? 0 : 1);
+  });
+
+  it("searches DOM-provided effort labels and verifies the final Pro value", async () => {
+    const fixture = popoverDom(labels, false, true);
+    expect(await selectChatPopoverEffort(fixture.page, ["Pro"])).toBe("Pro");
+    expect(fixture.presses).toEqual(["ArrowLeft", "ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight"]);
+    expect((await readChatPopover(fixture.page)).snapshot?.effort).toBe("Pro");
+    expect(await selectChatPopoverEffort(fixture.page, ["Unavailable"])).toBeUndefined();
+    expect((await readChatPopover(fixture.page)).snapshot?.effort).toBe("Pro");
+  });
+
+  it("selects only a visible owned model and restores the simple view", async () => {
+    const fixture = popoverDom(labels, false, true);
+    expect(await selectChatPopoverModel(fixture.page, ["GPT-5.6 Sol"])).toBe("GPT-5.6 Sol");
+    expect(fixture.modelClicks()).toBe(1);
+    expect(fixture.presses).toEqual([]);
+    expect(fixture.owner.attributes["data-model-picker-view"]).toBe("simple");
+  });
+
+  it("keeps a model's secondary expiry copy out of its selectable label", async () => {
+    const fixture = popoverDom(labels, false, true);
+    expect(await selectChatPopoverModel(fixture.page, ["GPT-5.5"])).toBe("GPT-5.5");
+    expect(fixture.modelClicks()).toBe(1);
+  });
+
+  it("dismisses through focused keyboard input when a menu locator cannot take focus", async () => {
+    const fixture = popoverDom(labels, false, true);
+    let keys = 0;
+    fixture.page.keyboard = { press: async key => {
+      expect(key).toBe("Escape"); keys += 1;
+      fixture.menu.attributes["data-state"] = "closed";
+      fixture.trigger.attributes["aria-expanded"] = "false";
+    } };
+    expect(await inspectChatPopover(fixture.page)).toMatchObject({ activeModel: "Latest", effort: "Medium" });
+    expect(keys).toBe(1);
+    expect(fixture.reopens()).toBe(1);
+  });
+
+  it.each(["wrong-trigger", "missing-trigger", "closed", "inert-track", "missing-slider-owner"])("rejects %s ownership without mutating", async kind => {
+    const fixture = popoverDom(labels, false, true);
+    if (kind === "wrong-trigger") fixture.menu.attributes["aria-labelledby"] = "unrelated";
+    if (kind === "missing-trigger") delete fixture.trigger.attributes["data-codex-intelligence-trigger"];
+    if (kind === "closed") fixture.menu.attributes["data-state"] = "closed";
+    if (kind === "inert-track") fixture.simple.attributes.inert = "";
+    if (kind === "missing-slider-owner") delete fixture.slider.parentNode!.attributes["data-model-picker-power-slider"];
+    expect(await selectChatPopoverEffort(fixture.page, ["Pro"])).toBeUndefined();
+    expect(fixture.presses).toEqual([]);
+    expect(fixture.modelClicks()).toBe(0);
+    expect(fixture.toggles()).toBe(0);
+  });
+
+  it("rejects multiple visible structural roots", async () => {
+    const fixture = popoverDom(labels, false, true);
+    const query = fixture.document.querySelectorAll;
+    fixture.document.querySelectorAll = selector => selector === '[data-model-picker-view]'
+      ? [fixture.root, element("div", { "data-model-picker-view": "simple" })] : query(selector);
+    expect((await readChatPopover(fixture.page)).snapshot).toBeUndefined();
+    expect(fixture.presses).toEqual([]);
+  });
+
+  it.each(["hidden", "disabled", "ambiguous"])("does not click a %s composer trigger", async kind => {
+    const fixture = popoverDom(labels, false, true);
+    fixture.menu.attributes["data-state"] = "closed";
+    fixture.trigger.attributes["aria-expanded"] = "false";
+    if (kind === "hidden") fixture.trigger.attributes.hidden = "";
+    if (kind === "disabled") fixture.trigger.disabled = true;
+    if (kind === "ambiguous") {
+      const locator = fixture.page.locator!;
+      fixture.page.locator = selector => selector.startsWith('button[data-codex-intelligence-trigger')
+        ? { count: async () => 2, click: async () => { throw new Error("Ambiguous trigger clicked"); } } : locator(selector);
+    }
+    expect(await openChatPopover(fixture.page)).toBe(false);
+    expect(fixture.reopens()).toBe(0);
+  });
+
+  it("does not fall back to another opener after opening an unrecognized current menu", async () => {
+    const fixture = popoverDom(labels, false, true);
+    fixture.menu.attributes["data-state"] = "closed";
+    fixture.trigger.attributes["aria-expanded"] = "false";
+    delete fixture.toggle.attributes["data-model-picker-view-toggle"];
+    const query = fixture.document.querySelectorAll;
+    fixture.document.querySelectorAll = selector => selector.includes("role='menu") || selector.includes("role='option'")
+      || selector === "[data-radix-popper-content-wrapper]" ? [] : query(selector);
+    let fallbackClicks = 0;
+    fixture.page.getByRole = () => ({ count: async () => 1, click: async () => { fallbackClicks += 1; } });
+    const result = await setMode({ page: fixture.page }, { model: "Pro", timeoutMs: 0 });
+    expect(result.ok).toBe(false);
+    expect(result.blocker?.kind).toBe("selector_drift");
+    expect(fixture.reopens()).toBe(1);
+    expect(fallbackClicks).toBe(0);
+    expect(fixture.presses).toEqual([]);
+  });
+});
 
 describe("rendered composer popover production DOM callbacks", () => {
   it.each([

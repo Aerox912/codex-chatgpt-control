@@ -12,7 +12,7 @@ import {
   resolvePowerTarget
 } from "./power-discovery.js";
 import { ensurePage } from "./session.js";
-import { closeChatPopover, readChatPopover, selectChatPopoverEffort, selectChatPopoverModel, setChatPopoverView } from "./chat-popover.js";
+import { closeChatPopover, openChatPopover, readChatPopover, selectChatPopoverEffort, selectChatPopoverModel, setChatPopoverView } from "./chat-popover.js";
 
 const DEFAULT_MODE_EFFORT = "Thinking";
 const CURRENT_MODE_LABELS: string[] = dedupeLabels([
@@ -350,7 +350,8 @@ export async function getMode(
   const page = env.page!;
 
   try {
-    const modes = await visibleModeButtonLabelList(page);
+    const popover = (await readChatPopover(page)).snapshot;
+    const modes = popover?.effort === undefined ? await visibleModeButtonLabelList(page) : [popover.effort];
     const warnings = modes.length === 0
       ? ["No mode-labelled composer control is currently visible, so the active ChatGPT mode could not be read."]
       : [];
@@ -463,6 +464,8 @@ async function clickFirstUniqueButton(page: PageLike, labels: string[]): Promise
 }
 
 async function clickModeOpener(page: PageLike, modeButtons: string[]): Promise<boolean> {
+  const currentPicker = await openChatPopover(page);
+  if (currentPicker !== undefined) return currentPicker;
   if (await clickFirstUniqueButton(page, modeButtons)) {
     return true;
   }

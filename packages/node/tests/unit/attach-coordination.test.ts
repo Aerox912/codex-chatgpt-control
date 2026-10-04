@@ -18,6 +18,33 @@ function pageFixture(id: string): PageLike {
 }
 
 describe("ChatGPT browser attachment coordination", () => {
+  it("adapts receiver-bound accessibility keyboard input without replacing a provider keyboard", async () => {
+    const keys: Array<[number | null, string]> = [];
+    class Accessibility {
+      #calls = keys;
+      async pressKey(index: number | null, key: string): Promise<void> { this.#calls.push([index, key]); }
+    }
+    const target = new Accessibility();
+    const ax = new Proxy(target, { get(receiver, property) {
+      const value = Reflect.get(receiver, property, receiver);
+      return typeof value === "function" ? value.bind(receiver) : value;
+    } });
+    for (const hasKeyboard of [false, true]) {
+      let providerKeys = 0;
+      const rawTab = { id: `ax-tab-${hasKeyboard}`, url: () => "https://chatgpt.com/", ax,
+        playwright: { evaluate: pageFixture("unused").evaluate,
+          ...(hasKeyboard ? { keyboard: { press: async () => { providerKeys += 1; } } } : {}) } };
+      const agent = { browsers: {
+        list: async () => [{ id: "extension", type: "extension" }],
+        get: async () => ({ name: "chrome", tabs: { selected: async () => rawTab } })
+      } };
+      const attached = await attachChatGPTBrowser({ agent }, { preferExistingTab: true });
+      await attached.page.keyboard!.press!("Escape");
+      expect(providerKeys).toBe(hasKeyboard ? 1 : 0);
+    }
+    expect(keys).toEqual([[null, "Escape"]]);
+  });
+
   it("normalizes receiver-bound browser bridge proxies before coordination", async () => {
     const rawPage = pageFixture("private-field-tab");
     let createCalls = 0;
