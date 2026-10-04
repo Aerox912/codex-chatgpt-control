@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.1-alpha.6
+
+- Recognizes the current owned Chat model picker when Pro is already selected,
+  including open-picker mode reads and strict configuration verification.
+- Ignores a retained hidden home composer after starting a Work task, while
+  requiring a unique visible picker trigger and verifying its owned menu.
+- Supports its active simple and advanced tracks, ignores model expiry
+  subtitles, and rejects hidden, disabled, ambiguous, or unowned controls.
+- Adapts Chrome's accessibility keyboard for verified picker dismissal and
+  restoration without replacing an existing provider keyboard.
+- Recognizes current pressed Chat/Work pane buttons and the marked composer
+  form, retaining bounded capture and rejecting quoted or ambiguous groups.
+- Accepts observed current English Send and Stop labels while retaining previous
+  labels, composer ownership, disjointness and button-readiness checks.
+- Captures current role-qualified conversation containers and file-only replies,
+  with completion actions bounded to the latest assistant's owner.
+- Supports exact-filename current file previews while preserving native receipt
+  verification and non-resumable uncertainty when download completion is unknown.
+- Keeps Python behavior aligned through the shared backend and a selection
+  envelope regression test; public APIs and wire shapes remain unchanged.
+- Updates the development-only `fast-uri` dependency to its security patch.
+
 ## 0.5.1-alpha.5
 
 - Recognizes project-scoped composers whose accessible name begins with
