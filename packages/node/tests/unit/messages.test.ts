@@ -398,6 +398,15 @@ describe("extractMessagesFromHtml", () => {
     expect(state).toEqual({ observed: true, active: false, stopped: false, signals: [] });
   });
 
+  it("recognizes current Stop only as an activatable composer control", async () => {
+    expect(await readAssistantGenerationState(contentPage('<form><textarea></textarea><button aria-label="Stop"></button></form>')))
+      .toEqual({ observed: true, active: true, stopped: false, signals: ["stop"] });
+    expect(await readAssistantGenerationState(contentPage('<main><p>Stop</p><button aria-label="Stop"></button></main>')))
+      .toEqual({ observed: true, active: false, stopped: false, signals: [] });
+    expect(await readAssistantGenerationState(contentPage('<form><textarea></textarea><button disabled aria-label="Stop"></button></form>')))
+      .toEqual({ observed: true, active: false, stopped: false, signals: [] });
+  });
+
   it.each([
     '<form><textarea></textarea><button disabled aria-label="Stop answering"></button></form>',
     '<form><textarea></textarea></form><button data-testid="stop-button" aria-label="Stop answering"></button>',
@@ -1204,7 +1213,7 @@ describe("extractMessagesFromHtml", () => {
     });
   });
 
-  it("waits for the send button to become ready before clicking", async () => {
+  it.each(["Send prompt", "Send"])("waits for the %s button to become ready before clicking", async sendLabel => {
     let readinessChecks = 0;
     let waitCalls = 0;
     let submitted = false;
@@ -1215,7 +1224,7 @@ describe("extractMessagesFromHtml", () => {
           disabled: readinessChecks < 3,
           ariaDisabled: readinessChecks < 3 ? "true" : null,
           busy: false,
-          label: "Send prompt"
+          label: sendLabel
         } as T;
       },
       click: async () => {
@@ -1246,8 +1255,7 @@ describe("extractMessagesFromHtml", () => {
         throw new Error(`Unexpected evaluate call: ${source}`);
       },
       getByRole: (role, options) => {
-        const name = String(options?.name ?? "");
-        if (role === "button" && /Send prompt/.test(name)) return send;
+        if (role === "button" && options?.name instanceof RegExp && options.name.test(sendLabel)) return send;
         return { count: async () => 0, isVisible: async () => false };
       },
       waitForTimeout: async () => {

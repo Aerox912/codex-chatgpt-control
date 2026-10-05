@@ -400,10 +400,7 @@ export async function readSurfaceSnapshot(page: PageLike): Promise<SurfaceSnapsh
     return { url, composerLabels: [], mainControls: [], mainText: "", selectedSurfaceLabels: [] };
   }
 
-  const snapshot = await page.evaluate((surfaceOptionLabels: {
-    surfaceOptions: string[];
-    composerTextboxes: string[];
-  }) => {
+  const snapshot = await page.evaluate((surfaceOptionLabels: { chat: string[]; work: string[]; composerTextboxes: string[] }) => {
     const visible = (element: Element): boolean => {
       const html = element as HTMLElement;
       const rect = html.getBoundingClientRect?.();
@@ -433,9 +430,16 @@ export async function readSurfaceSnapshot(page: PageLike): Promise<SurfaceSnapsh
     };
     const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
     const normalizeComparable = (value: string): string => normalize(value).toLocaleLowerCase();
-    const wantedSurfaceLabels = new Set(surfaceOptionLabels.surfaceOptions.map(normalizeComparable));
     const wantedComposerLabels = new Set(surfaceOptionLabels.composerTextboxes.map(normalizeComparable));
-    const composerRoots = Array.from(document.querySelectorAll(
+    const chatSurfaceLabels = new Set(surfaceOptionLabels.chat.map(normalizeComparable));
+    const workSurfaceLabels = new Set(surfaceOptionLabels.work.map(normalizeComparable));
+    const wantedSurfaceLabels = new Set([...chatSurfaceLabels, ...workSurfaceLabels]);
+    const currentComposerRoots = Array.from(document.querySelectorAll(
+      'main form[data-thread-find-composer="true"]'
+    )).filter(visible);
+    // Prefer the current structural form marker. Utility classes containing
+    // "composer" occur on many descendants and are not independent roots.
+    const composerRoots = currentComposerRoots.length > 0 ? currentComposerRoots : Array.from(document.querySelectorAll(
       "main form, main [data-testid*='composer' i], main [class*='composer' i]"
     )).filter(visible);
     const main = document.querySelector("main");
@@ -501,13 +505,41 @@ export async function readSurfaceSnapshot(page: PageLike): Promise<SurfaceSnapsh
       .filter(visible)
       .slice(0, 32);
     const mainText = normalize(surfaceTextNodes.map(labelFor).join(" ")).slice(0, 2000);
-    const selectedSurfaceLabels = Array.from(new Set(Array.from(document.querySelectorAll(
+    const selectedRadioLabels = Array.from(document.querySelectorAll(
       "[role='radio'][aria-checked='true'], [role='radio'][data-state='checked'], input[type='radio']:checked"
     ))
       .filter(visible)
       .map(labelFor)
       .map(normalize)
-      .filter(label => wantedSurfaceLabels.has(normalizeComparable(label)))))
+      .filter(label => wantedSurfaceLabels.has(normalizeComparable(label)));
+    // Current home panes use a two-button group. Require both known surface
+    // labels, a unique group outside conversation/overlay content, and exactly
+    // one pressed button; arbitrary pressed controls cannot supply evidence.
+    const pressedGroups = Array.from(document.querySelectorAll("main [role='group']"))
+      .filter(visible)
+      .filter(group => {
+        let ancestor: Element | null = group;
+        for (let depth = 0; ancestor !== null && depth < 64; depth += 1) {
+          if (ancestor.hasAttribute("data-message-author-role") || ancestor.tagName === "ARTICLE"
+            || ["dialog", "menu", "listbox"].includes(ancestor.getAttribute("role") ?? "")) return false;
+          ancestor = ancestor.parentElement;
+        }
+        return ancestor === null;
+      })
+      .map(group => Array.from(group.querySelectorAll("button[aria-pressed]"))
+        .filter(button => button.parentElement === group && visible(button)
+          && button.getAttribute("disabled") === null && button.getAttribute("aria-disabled") !== "true"))
+      .filter(buttons => buttons.length === 2
+        && new Set(buttons.map(button => normalizeComparable(labelFor(button)))).size === 2
+        && buttons.every(button => wantedSurfaceLabels.has(normalizeComparable(labelFor(button)))
+          && ["true", "false"].includes(button.getAttribute("aria-pressed") ?? ""))
+        && buttons.filter(button => chatSurfaceLabels.has(normalizeComparable(labelFor(button)))).length === 1
+        && buttons.filter(button => workSurfaceLabels.has(normalizeComparable(labelFor(button)))).length === 1
+        && buttons.filter(button => button.getAttribute("aria-pressed") === "true").length === 1);
+    const selectedButtonLabels = pressedGroups.length === 1
+      ? pressedGroups[0]!.filter(button => button.getAttribute("aria-pressed") === "true").map(labelFor).map(normalize)
+      : [];
+    const selectedSurfaceLabels = Array.from(new Set([...selectedRadioLabels, ...selectedButtonLabels]))
       .slice(0, 4);
     const workPopoverOpen = Array.from(document.querySelectorAll(
       '[data-testid="composer-intelligence-picker-content"]'
@@ -520,10 +552,8 @@ export async function readSurfaceSnapshot(page: PageLike): Promise<SurfaceSnapsh
     });
     return { composerLabels, mainControls, composerControls, controlGroups, mainText, selectedSurfaceLabels, workPopoverOpen };
   }, {
-    surfaceOptions: [
-      ...localeLabels.experienceOptions.chat,
-      ...localeLabels.experienceOptions.work,
-    ],
+    chat: localeLabels.experienceOptions.chat,
+    work: localeLabels.experienceOptions.work,
     composerTextboxes: [
       ...localeLabels.composerTextbox,
       ...localeLabels.workComposerTextbox,

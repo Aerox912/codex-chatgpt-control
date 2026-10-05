@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.1a6
+
+- Inherits current conversation and exact-filename preview support through the
+  authoritative Node backend; download uncertainty keeps its existing envelope.
+
+- Inherits current Chat picker recognition and verified Pro selection through
+  the shared TypeScript backend, including open-picker no-op selection.
+- Adds a regression test preserving the backend's successful Pro selection
+  envelope. Python APIs and shared wire shapes remain unchanged.
+- Inherits current pressed-pane and marked-composer detection from the backend.
+- Inherits unique visible picker discovery when Work retains a hidden composer.
+- Inherits current English Send and Stop labels with unchanged ownership and
+  readiness checks.
+
 ## 0.5.1a5
 
 - Inherits project-composer recognition, verified composer fill behavior, and

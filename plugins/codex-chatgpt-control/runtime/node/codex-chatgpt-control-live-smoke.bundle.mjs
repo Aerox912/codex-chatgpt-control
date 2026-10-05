@@ -215,10 +215,10 @@ function classifyVisibleText(text) {
 var en = {
   // --- Primary interaction path (accessible names) ---
   composerTextbox: ["Chat with ChatGPT", "Ask ChatGPT"],
-  workComposerTextbox: ["Work on anything", "Work on something"],
+  workComposerTextbox: ["Work on anything", "Work on something", "Work with ChatGPT"],
   projectComposerPrefixes: ["New chat in"],
   newWork: ["Work on something else", "New work", "New task"],
-  sendButton: ["Send prompt"],
+  sendButton: ["Send prompt", "Send"],
   searchChatsButton: ["Search chats"],
   searchChatsPlaceholder: ["Search chats..."],
   newChat: ["New chat"],
@@ -291,7 +291,7 @@ var en = {
   /** Exact-match transient assistant placeholders filtered out of captured responses. */
   transientAssistant: ["thinking", "reasoning", "searching", "searching the web"],
   /** Streaming "stop" control text, matched while a response generates. */
-  stopControl: ["stop generating", "stop streaming", "stop answering"],
+  stopControl: ["stop generating", "stop streaming", "stop answering", "stop"],
   /** Interrupted generation markers shown after the assistant stops before completion. */
   stoppedAssistant: ["stopped thinking", "stopped answering", "generation stopped"],
   /** Response-action affordance text (fallback to the structural copy-button locator). */
@@ -5912,6 +5912,13 @@ function normalizePageProvider(pageOrTab) {
     const value = providerValue(primary, property) ?? providerValue(maybe, property);
     if (isProviderRecord(value)) normalized[property] = value;
   }
+  const rawAx = providerValue(maybe, "ax");
+  if (normalized.keyboard === void 0 && isProviderRecord(rawAx)) {
+    const pressKey = providerCallable(rawAx, "pressKey");
+    if (pressKey !== void 0) normalized.keyboard = { press: async (key) => {
+      await pressKey(null, key);
+    } };
+  }
   if (isProviderRecord(embedded)) normalized.playwright = embedded;
   for (const method of [
     "url",
@@ -6986,10 +6993,19 @@ function extractRoleMessageHtml(html) {
   const root = parseHtmlFragment(html);
   const messages = [];
   walkElementsWithAncestors(root, [], (element, ancestors) => {
-    const role = element.attrs["data-message-author-role"];
+    const current = element.attrs["data-message-author-role"] === void 0 && element.attrs["data-chatgpt-search-message-ids"] !== void 0;
+    if (current && !ancestors.some((ancestor) => ancestor.tag === "main")) return;
+    const role = element.attrs["data-message-author-role"] ?? (current ? element.attrs["data-chatgpt-search-unit-key"]?.split(":").at(-1) : void 0);
     if (role === "user" || role === "assistant") {
       const metadataElement = [...ancestors].reverse().find((ancestor) => ancestor.attrs["data-testid"]?.startsWith("conversation-turn")) ?? element;
-      messages.push({ role, html: serializeChildren(element), metadataHtml: serializeNode(metadataElement) });
+      let content = element;
+      if (current) {
+        walkElements(element, (child) => {
+          if (role === "user" && child.attrs["data-user-message-bubble"] === "true" || role === "assistant" && child.attrs["data-markdown-text-style"] === "assistant-message" && child.children.length > 0) content = child;
+        });
+      }
+      const messageHtml = serializeChildren(content).replace(/<h4\b[^>]*data-conversation-role=["']assistant["'][^>]*>[\s\S]*?<\/h4>/i, "");
+      messages.push({ role, html: messageHtml, metadataHtml: serializeNode(metadataElement) });
     }
   });
   return messages;
@@ -7524,15 +7540,19 @@ function extractMessagesFromHtml(html, args = {}) {
 async function readMessages(page, args = {}) {
   if (typeof page.evaluate === "function") {
     const messages = await page.evaluate(() => {
-      const nodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
+      const legacy = Array.from(document.querySelectorAll("[data-message-author-role]"));
+      const nodes = legacy.length > 0 ? legacy : Array.from(document.querySelectorAll(
+        "main [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]"
+      ));
       return nodes.map((node) => {
-        const role = node.getAttribute("data-message-author-role");
+        const role = node.getAttribute("data-message-author-role") ?? node.getAttribute("data-chatgpt-search-unit-key")?.split(":").at(-1);
         if (role !== "user" && role !== "assistant") {
           return void 0;
         }
+        const content = role === "user" ? node.querySelector?.('[data-user-message-bubble="true"]') : node.querySelector?.('[data-markdown-text-style="assistant-message"]');
         return {
           role,
-          html: node.innerHTML,
+          html: content?.innerHTML || node.innerHTML.replace(/<h4\b[^>]*data-conversation-role=["']assistant["'][^>]*>[\s\S]*?<\/h4>/i, ""),
           metadataHtml: node.closest("[data-testid^='conversation-turn']")?.outerHTML ?? node.outerHTML
         };
       }).filter(Boolean);
@@ -7548,12 +7568,16 @@ async function readMessages(page, args = {}) {
 async function readLatestMessage(page, role = "assistant", format = "markdown", maxChars) {
   if (typeof page.evaluate === "function") {
     const message = await page.evaluate((wantedRole) => {
-      const nodes = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
+      const legacy = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
+      const nodes = legacy.length > 0 ? legacy : Array.from(document.querySelectorAll(
+        `main [data-chatgpt-search-unit-key$=":${wantedRole}"][data-chatgpt-search-message-ids]`
+      ));
       const node = nodes.at(-1);
       if (node === void 0) return void 0;
+      const content = wantedRole === "user" ? node.querySelector?.('[data-user-message-bubble="true"]') : node.querySelector?.('[data-markdown-text-style="assistant-message"]');
       return {
         role: wantedRole,
-        html: node.innerHTML,
+        html: content?.innerHTML || node.innerHTML.replace(/<h4\b[^>]*data-conversation-role=["']assistant["'][^>]*>[\s\S]*?<\/h4>/i, ""),
         metadataHtml: node.closest("[data-testid^='conversation-turn']")?.outerHTML ?? node.outerHTML
       };
     }, role).catch(() => void 0);
@@ -7572,9 +7596,15 @@ async function readLatestMessage(page, role = "assistant", format = "markdown", 
 async function readLatestMessageText(page, role = "assistant") {
   if (typeof page.evaluate === "function") {
     return page.evaluate((wantedRole) => {
-      const nodes = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
+      const legacy = Array.from(document.querySelectorAll(`[data-message-author-role="${wantedRole}"]`));
+      const nodes = legacy.length > 0 ? legacy : Array.from(document.querySelectorAll(
+        `main [data-chatgpt-search-unit-key$=":${wantedRole}"][data-chatgpt-search-message-ids]`
+      ));
       const node = nodes.at(-1);
-      return node?.innerText ?? node?.textContent ?? void 0;
+      if (node?.getAttribute("data-chatgpt-search-unit-key") === null) return node?.innerText ?? node?.textContent ?? void 0;
+      if (node === void 0) return void 0;
+      const content = wantedRole === "user" ? node.querySelector?.('[data-user-message-bubble="true"]') : node.querySelector?.('[data-markdown-text-style="assistant-message"]');
+      return content?.innerText || content?.textContent || (node.innerText ?? node.textContent ?? "").replace(node.querySelector?.('[data-conversation-role="assistant"]')?.textContent ?? "", "").trim();
     }, role).catch(() => void 0);
   }
   return readLatestMessage(page, role, "normalized_text").then((message) => message?.text).catch(() => void 0);
@@ -7582,10 +7612,14 @@ async function readLatestMessageText(page, role = "assistant") {
 async function readLatestMessageTextSnapshot(page, role) {
   if (typeof page.evaluate === "function") {
     return page.evaluate((wantedRole) => {
-      const allNodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
-      const roleNodes = allNodes.filter((node) => node.getAttribute("data-message-author-role") === wantedRole);
+      const legacy = Array.from(document.querySelectorAll("[data-message-author-role]"));
+      const allNodes = legacy.length > 0 ? legacy : Array.from(document.querySelectorAll(
+        "main [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]"
+      )).filter((node) => /:(?:user|assistant)$/.test(node.getAttribute("data-chatgpt-search-unit-key") ?? ""));
+      const roleNodes = allNodes.filter((node) => (node.getAttribute("data-message-author-role") ?? node.getAttribute("data-chatgpt-search-unit-key")?.split(":").at(-1)) === wantedRole);
       const latest = roleNodes.at(-1);
-      const latestText2 = latest?.innerText ?? latest?.textContent ?? void 0;
+      const content = wantedRole === "user" ? latest?.querySelector?.('[data-user-message-bubble="true"]') : latest?.querySelector?.('[data-markdown-text-style="assistant-message"]');
+      const latestText2 = content?.innerText || content?.textContent || (latest === void 0 ? void 0 : (latest.innerText ?? latest.textContent ?? "").replace(latest.querySelector?.('[data-conversation-role="assistant"]')?.textContent ?? "", "").trim());
       const snapshot2 = { turnCount: allNodes.length };
       if (latestText2 !== void 0) snapshot2.latestText = latestText2;
       return snapshot2;
@@ -7609,7 +7643,10 @@ async function countPageMessages(page, role, options) {
   if (typeof page.evaluate === "function") {
     return page.evaluate((wantedRole) => {
       const selector = wantedRole === void 0 ? "[data-message-author-role]" : `[data-message-author-role="${wantedRole}"]`;
-      return document.querySelectorAll(selector).length;
+      const legacyCount = document.querySelectorAll(selector).length;
+      if (legacyCount > 0) return legacyCount;
+      const currentSelector = wantedRole === void 0 ? 'main [data-chatgpt-search-unit-key$=":user"][data-chatgpt-search-message-ids], main [data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]' : `main [data-chatgpt-search-unit-key$=":${wantedRole}"][data-chatgpt-search-message-ids]`;
+      return document.querySelectorAll(currentSelector).length;
     }, role, options);
   }
   return countMessages(await readMessages(page), role);
@@ -7817,8 +7854,9 @@ var generatedArtifactDownloadClauses = [
 ];
 var cssSelectors = {
   assistantMessages: "[data-message-author-role='assistant']",
-  userMessages: "[data-message-author-role='user']",
-  roleMessages: "[data-message-author-role]",
+  currentAssistantMessages: "main [data-chatgpt-search-unit-key$=':assistant'][data-chatgpt-search-message-ids]",
+  userMessages: "[data-message-author-role='user'], main [data-chatgpt-search-unit-key$=':user'][data-chatgpt-search-message-ids]",
+  roleMessages: "[data-message-author-role], main [data-chatgpt-search-unit-key$=':user'][data-chatgpt-search-message-ids], main [data-chatgpt-search-unit-key$=':assistant'][data-chatgpt-search-message-ids]",
   conversationTurns: "[data-testid^='conversation-turn']",
   hiddenFileInputs: "input[type='file']",
   downloadControls: downloadControlClauses.join(", "),
@@ -9479,8 +9517,11 @@ async function readAssistantGenerationState(page, options = {}) {
         const visibleStopButtons = Array.from(document.querySelectorAll("button")).filter((button) => isVisible(button) && button.disabled !== true && button.getAttribute("aria-disabled") !== "true" && isScopedStopControl(button) && matchingLabels2(button, args.send).length === 0 && matchingLabels2(button, args.stop).length > 0);
         const activeSignals = [...new Set(visibleStopButtons.flatMap((button) => matchingLabels2(button, args.stop)))];
         const turns = Array.from(document.querySelectorAll("[data-testid^='conversation-turn']"));
-        const latestAssistant = Array.from(document.querySelectorAll("[data-message-author-role='assistant']")).at(-1);
-        const latestTurn = latestAssistant?.closest("[data-testid^='conversation-turn']") ?? turns.at(-1);
+        const legacyAssistants = Array.from(document.querySelectorAll("[data-message-author-role='assistant']"));
+        const latestAssistant = (legacyAssistants.length > 0 ? legacyAssistants : Array.from(document.querySelectorAll(
+          'main [data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]'
+        ))).at(-1);
+        const latestTurn = latestAssistant?.closest("[data-testid^='conversation-turn']") ?? turns.at(-1) ?? (latestAssistant?.hasAttribute?.("data-chatgpt-search-unit-key") === true ? latestAssistant : void 0);
         const stoppedSignals = latestTurn === void 0 ? [] : [...new Set(Array.from(latestTurn.querySelectorAll(
           "button, [role='status'], [aria-label], [title], p, span, div"
         )).filter((element) => isVisible(element)).flatMap((element) => matchingLabels2(element, args.stopped)))];
@@ -9518,7 +9559,17 @@ async function latestAssistantTurnHasResponseActions(page) {
   if (typeof page.evaluate === "function") {
     const scoped = await page.evaluate((phrases) => {
       const turns = Array.from(document.querySelectorAll("[data-testid^='conversation-turn']"));
-      if (turns.length === 0) return void 0;
+      if (turns.length === 0) {
+        const latest = Array.from(document.querySelectorAll('main [data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]')).at(-1);
+        if (latest === void 0) return void 0;
+        let owner = latest;
+        for (let depth = 0; owner !== null && depth < 6 && owner.tagName !== "MAIN"; depth += 1, owner = owner.parentElement) {
+          const assistants = Array.from(owner.querySelectorAll('[data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]'));
+          if (owner !== latest && (assistants.length !== 1 || assistants[0] !== latest)) break;
+          if (Array.from(owner.querySelectorAll("button")).some((button) => phrases.some((phrase) => [button.innerText, button.textContent, button.getAttribute("aria-label"), button.getAttribute("title")].some((value) => (value ?? "").trim().toLowerCase() === phrase.trim().toLowerCase())))) return true;
+        }
+        return false;
+      }
       const latestTurn = turns.reverse().find(
         (turn) => turn.querySelector("[data-message-author-role='assistant']") !== null
       );
@@ -9688,11 +9739,15 @@ async function readWaitDomSnapshot(page) {
     void __combinedWaitSnapshot;
     const normalizeWs = (value) => value.replace(/\s+/g, " ").trim();
     const normalizeLower = (value) => (value ?? "").trim().toLowerCase();
-    const nodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
-    const assistantNodes = nodes.filter((node) => node.getAttribute("data-message-author-role") === "assistant");
+    const legacy = Array.from(document.querySelectorAll("[data-message-author-role]"));
+    const nodes = legacy.length > 0 ? legacy : Array.from(document.querySelectorAll(
+      "main [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]"
+    )).filter((node) => /:(?:user|assistant)$/.test(node.getAttribute("data-chatgpt-search-unit-key") ?? ""));
+    const assistantNodes = nodes.filter((node) => (node.getAttribute("data-message-author-role") ?? node.getAttribute("data-chatgpt-search-unit-key")?.split(":").at(-1)) === "assistant");
     const latestAssistant = assistantNodes.at(-1);
     const latestAssistantTurnIndex = latestAssistant === void 0 ? void 0 : nodes.indexOf(latestAssistant) + 1;
-    const normalizedText = normalizeWs(latestAssistant?.innerText ?? latestAssistant?.textContent ?? "");
+    const content = latestAssistant?.querySelector?.('[data-markdown-text-style="assistant-message"]');
+    const normalizedText = normalizeWs(content?.innerText || content?.textContent || (latestAssistant?.innerText ?? latestAssistant?.textContent ?? "").replace(latestAssistant?.querySelector?.('[data-conversation-role="assistant"]')?.textContent ?? "", ""));
     let hash = 2166136261;
     for (let index = 0; index < normalizedText.length; index += 1) {
       hash ^= normalizedText.charCodeAt(index);
@@ -9730,7 +9785,7 @@ async function readWaitDomSnapshot(page) {
     };
     const visibleStopButtons = Array.from(document.querySelectorAll("button")).filter((button) => isVisible(button) && button.disabled !== true && button.getAttribute("aria-disabled") !== "true" && isScopedStopControl(button) && matchingLabels2(button, args.send).length === 0 && matchingLabels2(button, args.stop).length > 0);
     const activeSignals = [...new Set(visibleStopButtons.flatMap((button) => matchingLabels2(button, args.stop)))];
-    const latestAssistantTurn = latestAssistant?.closest("[data-testid^='conversation-turn']") ?? Array.from(document.querySelectorAll("[data-testid^='conversation-turn']")).at(-1);
+    const latestAssistantTurn = latestAssistant?.closest("[data-testid^='conversation-turn']") ?? Array.from(document.querySelectorAll("[data-testid^='conversation-turn']")).at(-1) ?? (latestAssistant?.hasAttribute?.("data-chatgpt-search-unit-key") === true ? latestAssistant : void 0);
     const stoppedSignals = latestAssistantTurn === void 0 ? [] : [...new Set(Array.from(latestAssistantTurn.querySelectorAll(
       "button, [role='status'], [aria-label], [title], p, span, div"
     )).filter((element) => isVisible(element)).flatMap((element) => matchingLabels2(element, args.stopped)))];
@@ -9743,7 +9798,18 @@ async function readWaitDomSnapshot(page) {
     const turns = Array.from(document.querySelectorAll("[data-testid^='conversation-turn']"));
     let hasResponseActions;
     if (turns.length === 0) {
-      hasResponseActions = void 0;
+      if (latestAssistant?.hasAttribute?.("data-chatgpt-search-unit-key") === true) {
+        hasResponseActions = false;
+        let owner = latestAssistant;
+        for (let depth = 0; owner !== null && depth < 6 && owner.tagName !== "MAIN"; depth += 1, owner = owner.parentElement) {
+          const assistants = Array.from(owner.querySelectorAll('[data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]'));
+          if (owner !== latestAssistant && (assistants.length !== 1 || assistants[0] !== latestAssistant)) break;
+          if (Array.from(owner.querySelectorAll("button")).some((button) => args.actions.some((phrase) => [button.getAttribute("aria-label"), button.getAttribute("title"), button.textContent].some((value) => (value ?? "").trim().toLowerCase() === phrase.trim().toLowerCase())))) {
+            hasResponseActions = true;
+            break;
+          }
+        }
+      }
     } else {
       const latestTurn = [...turns].reverse().find(
         (turn) => turn.querySelector("[data-message-author-role='assistant']") !== null
@@ -12519,9 +12585,14 @@ async function readSurfaceSnapshot(page) {
     };
     const normalize2 = (value) => value.replace(/\s+/g, " ").trim();
     const normalizeComparable = (value) => normalize2(value).toLocaleLowerCase();
-    const wantedSurfaceLabels = new Set(surfaceOptionLabels.surfaceOptions.map(normalizeComparable));
     const wantedComposerLabels = new Set(surfaceOptionLabels.composerTextboxes.map(normalizeComparable));
-    const composerRoots = Array.from(document.querySelectorAll(
+    const chatSurfaceLabels = new Set(surfaceOptionLabels.chat.map(normalizeComparable));
+    const workSurfaceLabels = new Set(surfaceOptionLabels.work.map(normalizeComparable));
+    const wantedSurfaceLabels = /* @__PURE__ */ new Set([...chatSurfaceLabels, ...workSurfaceLabels]);
+    const currentComposerRoots = Array.from(document.querySelectorAll(
+      'main form[data-thread-find-composer="true"]'
+    )).filter(visible);
+    const composerRoots = currentComposerRoots.length > 0 ? currentComposerRoots : Array.from(document.querySelectorAll(
       "main form, main [data-testid*='composer' i], main [class*='composer' i]"
     )).filter(visible);
     const main = document.querySelector("main");
@@ -12575,9 +12646,19 @@ async function readSurfaceSnapshot(page) {
       "h1, h2, h3, form, [data-testid*='composer' i], [class*='composer' i]"
     )).filter(visible).slice(0, 32);
     const mainText = normalize2(surfaceTextNodes.map(labelFor).join(" ")).slice(0, 2e3);
-    const selectedSurfaceLabels = Array.from(new Set(Array.from(document.querySelectorAll(
+    const selectedRadioLabels = Array.from(document.querySelectorAll(
       "[role='radio'][aria-checked='true'], [role='radio'][data-state='checked'], input[type='radio']:checked"
-    )).filter(visible).map(labelFor).map(normalize2).filter((label) => wantedSurfaceLabels.has(normalizeComparable(label))))).slice(0, 4);
+    )).filter(visible).map(labelFor).map(normalize2).filter((label) => wantedSurfaceLabels.has(normalizeComparable(label)));
+    const pressedGroups = Array.from(document.querySelectorAll("main [role='group']")).filter(visible).filter((group) => {
+      let ancestor = group;
+      for (let depth = 0; ancestor !== null && depth < 64; depth += 1) {
+        if (ancestor.hasAttribute("data-message-author-role") || ancestor.tagName === "ARTICLE" || ["dialog", "menu", "listbox"].includes(ancestor.getAttribute("role") ?? "")) return false;
+        ancestor = ancestor.parentElement;
+      }
+      return ancestor === null;
+    }).map((group) => Array.from(group.querySelectorAll("button[aria-pressed]")).filter((button) => button.parentElement === group && visible(button) && button.getAttribute("disabled") === null && button.getAttribute("aria-disabled") !== "true")).filter((buttons) => buttons.length === 2 && new Set(buttons.map((button) => normalizeComparable(labelFor(button)))).size === 2 && buttons.every((button) => wantedSurfaceLabels.has(normalizeComparable(labelFor(button))) && ["true", "false"].includes(button.getAttribute("aria-pressed") ?? "")) && buttons.filter((button) => chatSurfaceLabels.has(normalizeComparable(labelFor(button)))).length === 1 && buttons.filter((button) => workSurfaceLabels.has(normalizeComparable(labelFor(button)))).length === 1 && buttons.filter((button) => button.getAttribute("aria-pressed") === "true").length === 1);
+    const selectedButtonLabels = pressedGroups.length === 1 ? pressedGroups[0].filter((button) => button.getAttribute("aria-pressed") === "true").map(labelFor).map(normalize2) : [];
+    const selectedSurfaceLabels = Array.from(/* @__PURE__ */ new Set([...selectedRadioLabels, ...selectedButtonLabels])).slice(0, 4);
     const workPopoverOpen = Array.from(document.querySelectorAll(
       '[data-testid="composer-intelligence-picker-content"]'
     )).filter(visible).some((root) => {
@@ -12589,10 +12670,8 @@ async function readSurfaceSnapshot(page) {
     });
     return { composerLabels, mainControls, composerControls, controlGroups, mainText, selectedSurfaceLabels, workPopoverOpen };
   }, {
-    surfaceOptions: [
-      ...localeLabels.experienceOptions.chat,
-      ...localeLabels.experienceOptions.work
-    ],
+    chat: localeLabels.experienceOptions.chat,
+    work: localeLabels.experienceOptions.work,
     composerTextboxes: [
       ...localeLabels.composerTextbox,
       ...localeLabels.workComposerTextbox
@@ -13322,7 +13401,7 @@ async function readChatPopover(page) {
       return current2 === null;
     };
     const normalize2 = (value) => value.replace(/\s+/g, " ").trim();
-    const roots = document.querySelectorAll('[data-testid="composer-intelligence-picker-content"]');
+    const roots = Array.from(document.querySelectorAll('[data-testid="composer-intelligence-picker-content"]')).concat(Array.from(document.querySelectorAll("[data-model-picker-view]")));
     if (roots.length > 8) return { acted: false };
     const activeRoots = Array.from(roots).filter((node) => visible(node));
     if (activeRoots.length !== 1) return { acted: false };
@@ -13338,7 +13417,12 @@ async function readChatPopover(page) {
       ancestor = ancestor.parentNode;
     }
     if (menu?.getAttribute("data-state") !== "open" || !visible(menu)) return { acted: false };
-    const nodes = [];
+    const currentProfile = root.hasAttribute("data-model-picker-view");
+    if (currentProfile) {
+      const triggers = Array.from(document.querySelectorAll('button[data-codex-intelligence-trigger="true"]')).filter((trigger) => trigger.getAttribute("id") === menu.getAttribute("aria-labelledby") && trigger.getAttribute("aria-haspopup") === "menu" && trigger.getAttribute("aria-expanded") === "true");
+      if (triggers.length !== 1) return { acted: false };
+    }
+    const nodes = [root];
     const text = /* @__PURE__ */ new Map();
     let current = root.firstChild;
     let count = 0;
@@ -13372,25 +13456,28 @@ async function readChatPopover(page) {
       }
       return false;
     };
-    const owners = nodes.filter((node) => node.getAttribute("data-has-slider") === "true" && node.getAttribute("data-has-advanced-view") === "true" && node.getAttribute("data-model-selection-view") === "true" && visible(node));
+    const owners = currentProfile ? [root] : nodes.filter((node) => node.getAttribute("data-has-slider") === "true" && node.getAttribute("data-has-advanced-view") === "true" && node.getAttribute("data-model-selection-view") === "true" && visible(node));
     if (owners.length !== 1) return { acted: false };
     const owner = owners[0];
-    const view = owner.getAttribute("data-view");
+    const view = owner.getAttribute(currentProfile ? "data-model-picker-view" : "data-view");
     if (view !== "simple" && view !== "advanced") return { acted: false };
-    const panels = nodes.filter((node) => node.getAttribute("data-testid") === `composer-model-picker-slider-${view}-view` && within(node, owner) && node.getAttribute("data-active") === "true" && visible(node));
+    const panels = nodes.filter((node) => (currentProfile ? node.parentNode === owner : node.getAttribute("data-testid") === `composer-model-picker-slider-${view}-view` && within(node, owner)) && node.getAttribute("data-active") === "true" && visible(node));
     if (panels.length !== 1) return { acted: false };
     const panel = panels[0];
-    const toggles = nodes.filter((node) => node.getAttribute("role") === "menuitem" && node.getAttribute("data-interactive") === "true" && node.getAttribute("aria-expanded") === String(view === "advanced") && within(node, owner) && visible(node));
+    const toggles = nodes.filter((node) => node.getAttribute("role") === "menuitem" && node.getAttribute("data-interactive") === "true" && (currentProfile ? node.getAttribute("data-model-picker-view-toggle") === "true" : node.getAttribute("aria-expanded") === String(view === "advanced")) && within(node, owner) && visible(node));
     if (toggles.length > 1 || view === "simple" && toggles.length !== 1) return { acted: false };
     const modelNodes = view === "advanced" ? nodes.filter((node) => within(node, panel) && node.getAttribute("role") === "menuitemradio" && visible(node)) : [];
     if (modelNodes.length > 32) return { acted: false };
     const modelLabel = (node) => {
-      const primary = nodes.filter((child) => within(child, node) && (child.getAttribute("class") ?? "").split(/\s+/).includes("truncate"));
+      const primary = nodes.filter((child) => {
+        const classes = (child.getAttribute("class") ?? "").split(/\s+/);
+        return within(child, node) && classes.includes("truncate") && !classes.includes("text-xs");
+      });
       return normalize2(primary.length === 1 ? text.get(primary[0]) ?? "" : text.get(node) ?? "");
     };
     const snapshot = {
       view,
-      rootIndex: Array.from(roots).indexOf(root),
+      rootIndex: currentProfile ? Array.from(document.querySelectorAll("[data-model-picker-view]")).indexOf(root) : Array.from(document.querySelectorAll('[data-testid="composer-intelligence-picker-content"]')).indexOf(root),
       toggleIndex: nodes.filter((node) => node.getAttribute("role") === "menuitem" && node.getAttribute("data-interactive") === "true").indexOf(toggles[0]),
       modelOptions: modelNodes.map((node) => ({
         label: modelLabel(node),
@@ -13398,6 +13485,7 @@ async function readChatPopover(page) {
         index: nodes.filter((row) => within(row, panel) && row.getAttribute("role") === "menuitemradio").indexOf(node)
       })).filter((option) => option.label.length > 0)
     };
+    if (currentProfile) snapshot.profile = "model_picker_v2";
     const triggerId = menu.getAttribute("aria-labelledby");
     if (triggerId !== null && triggerId.length > 0 && triggerId.length < 240 && !/\s/.test(triggerId)) snapshot.triggerId = triggerId;
     const checked = snapshot.modelOptions.filter((option) => option.checked);
@@ -13416,7 +13504,7 @@ async function readChatPopover(page) {
       if (sliders.length === 1) {
         const slider = sliders[0];
         const powers = nodes.filter((node) => within(slider, node) && within(node, panel) && node.getAttribute("role") === "menuitem" && visible(node) && config.powerLabels.some((label) => normalize2(node.getAttribute("aria-label") ?? "").toLocaleLowerCase() === label.toLocaleLowerCase()));
-        const sliderOwners = nodes.filter((node) => within(slider, node) && within(node, panel) && node.hasAttribute("data-model-reasoning-effort-slider"));
+        const sliderOwners = nodes.filter((node) => within(slider, node) && within(node, panel) && node.hasAttribute(currentProfile ? "data-model-picker-power-slider" : "data-model-reasoning-effort-slider"));
         const integer = (name) => {
           const raw = slider.getAttribute(name);
           return raw !== null && /^-?\d+$/.test(raw) && Number.isSafeInteger(Number(raw)) ? Number(raw) : void 0;
@@ -13445,11 +13533,46 @@ async function readChatPopover(page) {
   return observation !== void 0 && observation !== null && typeof observation.acted === "boolean" ? observation : { acted: false };
 }
 function observedRoot(page, snapshot) {
-  const roots = page.locator?.('[data-testid="composer-intelligence-picker-content"]');
+  const roots = page.locator?.(snapshot.profile === "model_picker_v2" ? "[data-model-picker-view]" : '[data-testid="composer-intelligence-picker-content"]');
   return roots?.nth?.(snapshot.rootIndex) ?? (snapshot.rootIndex === 0 ? roots : void 0);
 }
+async function openChatPopover(page) {
+  if ((await readChatPopover(page)).snapshot !== void 0) return true;
+  let trigger = page.locator?.('button[data-codex-intelligence-trigger="true"][aria-haspopup="menu"]');
+  let count = await trigger?.count?.().catch(() => 0) ?? 0;
+  if (count === 0) return void 0;
+  if (count > 1 && count <= 8 && typeof trigger?.filter === "function") {
+    trigger = trigger.filter({ visible: true });
+    count = await trigger.count?.().catch(() => 0) ?? 0;
+  }
+  if (count !== 1) return false;
+  if (trigger?.click === void 0 || trigger.evaluate === void 0) return void 0;
+  const actionable = await trigger.evaluate((element) => {
+    if (element.tagName !== "BUTTON" || element.getAttribute("data-codex-intelligence-trigger") !== "true" || element.getAttribute("aria-haspopup") !== "menu") return void 0;
+    let current = element;
+    for (let depth = 0; current !== null && depth < 64; depth += 1) {
+      if (current.nodeType !== 1) break;
+      const node = current;
+      if (node.hidden || node.hasAttribute("hidden") || node.hasAttribute("inert") || node.disabled || node.getAttribute("aria-hidden") === "true" || node.getAttribute("aria-disabled") === "true") return false;
+      const style = window.getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || current === element && style.pointerEvents === "none") return false;
+      current = current.parentNode;
+    }
+    if (current?.nodeType === 1) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && element.getAttribute("aria-expanded") === "false";
+  }).catch(() => void 0);
+  if (actionable === void 0) return void 0;
+  if (!actionable) return false;
+  await trigger.click();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await waitForPopoverTransition(page, 100);
+    if ((await readChatPopover(page)).snapshot !== void 0) return true;
+  }
+  return false;
+}
 async function clickObservedControl(page, snapshot, modelIndex) {
-  const selector = modelIndex === void 0 ? '[role="menuitem"][data-interactive="true"]' : '[data-testid="composer-model-picker-slider-advanced-view"][data-active="true"] [role="menuitemradio"]';
+  const selector = modelIndex === void 0 ? '[role="menuitem"][data-interactive="true"]' : snapshot.profile === "model_picker_v2" ? ':scope > [data-active="true"] [role="menuitemradio"]' : '[data-testid="composer-model-picker-slider-advanced-view"][data-active="true"] [role="menuitemradio"]';
   const candidates = observedRoot(page, snapshot)?.locator?.(selector);
   const index = modelIndex ?? snapshot.toggleIndex;
   const target = candidates?.nth?.(index) ?? (index === 0 ? candidates : void 0);
@@ -13463,7 +13586,7 @@ async function clickObservedControl(page, snapshot, modelIndex) {
       if (node.hidden || node.hasAttribute("hidden") || node.hasAttribute("inert") || node.getAttribute("aria-hidden") === "true" || node.getAttribute("aria-disabled") === "true" || node.getAttribute("data-active") === "false") return void 0;
       const style = window.getComputedStyle(node);
       if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") return void 0;
-      if (node.getAttribute("data-testid") === "composer-intelligence-picker-content") owned = true;
+      if (node.getAttribute("data-testid") === "composer-intelligence-picker-content" || node.getAttribute("data-model-picker-view") === "simple" || node.getAttribute("data-model-picker-view") === "advanced") owned = true;
       current = current.parentNode;
     }
     const rect = element.getBoundingClientRect();
@@ -13479,7 +13602,8 @@ async function clickObservedControl(page, snapshot, modelIndex) {
         if (label.length > 512) return void 0;
         let parent = child.parentNode;
         for (let depth = 0; parent !== null && parent !== element && depth < 64; depth += 1) {
-          if (parent.nodeType === 1 && (parent.getAttribute("class") ?? "").split(/\s+/).includes("truncate")) {
+          const classes = parent.nodeType === 1 ? (parent.getAttribute("class") ?? "").split(/\s+/) : [];
+          if (classes.includes("truncate") && !classes.includes("text-xs")) {
             primary.set(parent, (primary.get(parent) ?? "") + (child.nodeValue ?? ""));
           }
           parent = parent.parentNode;
@@ -13493,9 +13617,9 @@ async function clickObservedControl(page, snapshot, modelIndex) {
       if (child === element || child === null) break;
       child = child.nextSibling;
     }
-    return { role: element.getAttribute("role"), expanded: element.getAttribute("aria-expanded"), label: (primary.size === 1 ? [...primary.values()][0] : label).replace(/\s+/g, " ").trim() };
+    return { role: element.getAttribute("role"), expanded: element.getAttribute("aria-expanded"), viewToggle: element.getAttribute("data-model-picker-view-toggle"), label: (primary.size === 1 ? [...primary.values()][0] : label).replace(/\s+/g, " ").trim() };
   }).catch(() => void 0);
-  if (state === void 0 || state.role !== (modelIndex === void 0 ? "menuitem" : "menuitemradio") || modelIndex === void 0 && state.expanded !== String(snapshot.view === "advanced")) return false;
+  if (state === void 0 || state.role !== (modelIndex === void 0 ? "menuitem" : "menuitemradio") || modelIndex === void 0 && (snapshot.profile === "model_picker_v2" ? state.viewToggle !== "true" : state.expanded !== String(snapshot.view === "advanced"))) return false;
   const expectedModel = snapshot.modelOptions.find((option) => option.index === modelIndex);
   if (modelIndex !== void 0 && (expectedModel === void 0 || state.label !== expectedModel.label)) return false;
   await target.click();
@@ -13506,9 +13630,9 @@ async function closeChatPopover(page, before) {
   if (snapshot === void 0) return false;
   const escapedId = snapshot.triggerId?.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   const menu = escapedId === void 0 ? void 0 : page.locator?.(`[role="menu"][aria-labelledby="${escapedId}"]`);
-  if (menu?.press !== void 0 && await menu.count?.() === 1) await menu.press("Escape");
-  else if (page.keyboard?.press !== void 0) await page.keyboard.press("Escape");
+  if (page.keyboard?.press !== void 0) await page.keyboard.press("Escape");
   else if (page.cua?.keypress !== void 0) await page.cua.keypress({ keys: ["ESC"] });
+  else if (menu?.press !== void 0 && await menu.count?.() === 1) await menu.press("Escape");
   else return false;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     await waitForPopoverTransition(page, 100);
@@ -13523,6 +13647,7 @@ async function waitForPopoverTransition(page, milliseconds) {
 async function reopenChatPopover(page, before) {
   if (before.triggerId === void 0) return void 0;
   if (!await closeChatPopover(page, before)) return void 0;
+  if (before.profile === "model_picker_v2") await waitForPopoverTransition(page, 250);
   const trigger = page.locator?.(`[id="${before.triggerId.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`);
   if (trigger?.click === void 0 || trigger.evaluate === void 0 || await trigger.count?.() !== 1) return void 0;
   const isVisible = () => trigger.evaluate((element) => {
@@ -13619,7 +13744,7 @@ async function selectChatPopoverEffort(page, labels) {
         return void 0;
       }
       if (before.slider.current === target) return before;
-      const candidates = observedRoot(page, before)?.locator?.('[data-testid="composer-model-picker-slider-simple-view"][data-active="true"] [role="slider"]');
+      const candidates = observedRoot(page, before)?.locator?.(before.profile === "model_picker_v2" ? ':scope > [data-active="true"] [role="slider"]' : '[data-testid="composer-model-picker-slider-simple-view"][data-active="true"] [role="slider"]');
       const locator = candidates?.nth?.(before.slider.index) ?? (before.slider.index === 0 ? candidates : void 0);
       if (locator?.press === void 0 || locator.evaluate === void 0 || await locator.count?.() !== 1) return void 0;
       const locatorState = await locator.evaluate((element) => {
@@ -13633,6 +13758,12 @@ async function selectChatPopoverEffort(page, labels) {
           if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") return void 0;
           if (node.getAttribute("data-testid") === "composer-model-picker-slider-simple-view" && node.getAttribute("data-active") === "true") panel = true;
           if (node.getAttribute("data-testid") === "composer-intelligence-picker-content") owned = true;
+          if (node.getAttribute("data-model-picker-view") === "simple") {
+            owned = true;
+            let track = element;
+            while (track !== null && track.parentNode !== node) track = track.parentNode;
+            if (track?.nodeType === 1 && track.getAttribute("data-active") === "true") panel = true;
+          }
           current = current.parentNode;
         }
         const rect = element.getBoundingClientRect();
@@ -14079,7 +14210,8 @@ async function getMode(env, args = {}) {
   }
   const page = env.page;
   try {
-    const modes = await visibleModeButtonLabelList(page);
+    const popover = (await readChatPopover(page)).snapshot;
+    const modes = popover?.effort === void 0 ? await visibleModeButtonLabelList(page) : [popover.effort];
     const warnings = modes.length === 0 ? ["No mode-labelled composer control is currently visible, so the active ChatGPT mode could not be read."] : [];
     return resultOk({ modes }, await contextFromPage(page), warnings);
   } catch (error) {
@@ -14166,6 +14298,8 @@ async function clickFirstUniqueButton(page, labels) {
   return false;
 }
 async function clickModeOpener(page, modeButtons) {
+  const currentPicker = await openChatPopover(page);
+  if (currentPicker !== void 0) return currentPicker;
   if (await clickFirstUniqueButton(page, modeButtons)) {
     return true;
   }
@@ -15289,6 +15423,10 @@ async function selectChatAxis(env, axis, requested, timeoutMs) {
 }
 async function openConfigurationRoot(page, experience) {
   if (experience !== "unknown" && (await readChatPopover(page)).snapshot !== void 0) return true;
+  if (experience !== "unknown") {
+    const currentPicker = await openChatPopover(page);
+    if (currentPicker !== void 0) return currentPicker;
+  }
   const existing = await readConfigurationPanel(page);
   if (existing.axisRows.length > 0) {
     return true;
@@ -16934,12 +17072,16 @@ async function tryGeneratedFilePreviewDownload(page, args) {
   const selected = selectGeneratedFileAffordance(candidates, args);
   if (selected === void 0) return void 0;
   try {
-    const assistantMessages = requiredLocator(page, cssSelectors.assistantMessages);
-    const assistantCount = await locatorCountWithTimeout(
+    let assistantMessages = requiredLocator(page, cssSelectors.assistantMessages);
+    let assistantCount = await locatorCountWithTimeout(
       assistantMessages,
       localGuardTimeout(timeoutMs, 5e3),
       "generated_file_assistant_count_timeout"
     );
+    if (assistantCount === 0) {
+      assistantMessages = requiredLocator(page, cssSelectors.currentAssistantMessages);
+      assistantCount = await locatorCountWithTimeout(assistantMessages, localGuardTimeout(timeoutMs, 5e3), "generated_file_assistant_count_timeout");
+    }
     if (selected.assistantIndex < 0 || selected.assistantIndex >= assistantCount) {
       throw new Error("The selected generated-file assistant turn is no longer present.");
     }
@@ -16967,11 +17109,12 @@ async function tryGeneratedFilePreviewDownload(page, args) {
     }
     await affordance.click({ timeoutMs: localGuardTimeout(timeoutMs, 1e4) });
     const labelledPreview = requiredLocator(page, `section[aria-label="${escapeCssAttribute(selected.filename)}"]`);
+    const currentPreview = page.getByRole?.("tabpanel", { name: selected.filename, exact: true });
     const workbookPreviews = requiredLocator(page, "section[data-testid^='popcorn-']");
     const workbookPreview = typeof workbookPreviews.filter === "function" ? workbookPreviews.filter({ hasText: selected.filename }) : void 0;
     const download = await waitForPreviewDownloadControl(
       page,
-      workbookPreview === void 0 ? [labelledPreview] : [labelledPreview, workbookPreview],
+      [...currentPreview === void 0 ? [] : [currentPreview], labelledPreview, ...workbookPreview === void 0 ? [] : [workbookPreview]],
       timeoutMs
     );
     if (download === void 0) {
@@ -17012,17 +17155,20 @@ async function inspectGeneratedFileAffordances(page, timeoutMs) {
           const prefix = downloadLabels.map((label) => label.trim()).filter(Boolean).sort((left, right) => right.length - left.length).find((label) => lowered.startsWith(`${label.toLocaleLowerCase()} `));
           return prefix === void 0 ? trimmed : trimmed.slice(prefix.length).trim();
         };
-        const assistants = Array.from(document.querySelectorAll("[data-message-author-role='assistant']"));
+        const legacyAssistants = Array.from(document.querySelectorAll("[data-message-author-role='assistant']"));
+        const assistants = legacyAssistants.length > 0 ? legacyAssistants : Array.from(document.querySelectorAll(
+          'main [data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]'
+        ));
         return assistants.flatMap(
           (assistant, assistantIndex) => Array.from(assistant.querySelectorAll("button[aria-label], a[download], a[href*='/backend-api/files/']")).filter(visible).map((element) => {
             const controlLabel = (element.getAttribute("aria-label") ?? element.textContent ?? "").trim();
             const text = (element.textContent ?? "").trim();
             return {
               assistantIndex,
-              filename: normalizedFilename(controlLabel),
+              filename: controlLabel.startsWith("Open preview of ") ? controlLabel.slice("Open preview of ".length) : normalizedFilename(controlLabel),
               controlLabel,
               tag: element.tagName.toLocaleLowerCase(),
-              textFilename: normalizedFilename(text)
+              textFilename: controlLabel.startsWith("Open preview of ") ? element.parentElement?.querySelector("[title]")?.getAttribute("title") ?? "" : normalizedFilename(text)
             };
           }).filter((item) => (item.tag === "button" || item.tag === "a") && fileLike(item.filename) && item.filename === item.textFilename).map(({ assistantIndex: index, filename, controlLabel, tag }) => ({
             assistantIndex: index,

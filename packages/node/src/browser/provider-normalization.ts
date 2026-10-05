@@ -91,6 +91,13 @@ export function normalizePageProvider(pageOrTab: unknown): PageLike {
     const value = providerValue(primary, property) ?? providerValue(maybe, property);
     if (isProviderRecord(value)) normalized[property] = value;
   }
+  // Current Chrome tabs expose focused keyboard input through accessibility.
+  // Preserve an existing provider keyboard and the fork's normalized boundary.
+  const rawAx = providerValue(maybe, "ax");
+  if (normalized.keyboard === undefined && isProviderRecord(rawAx)) {
+    const pressKey = providerCallable(rawAx, "pressKey");
+    if (pressKey !== undefined) normalized.keyboard = { press: async (key: string) => { await pressKey(null, key); } };
+  }
   if (isProviderRecord(embedded)) normalized.playwright = embedded;
 
   for (const method of [

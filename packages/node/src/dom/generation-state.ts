@@ -88,8 +88,12 @@ export async function readAssistantGenerationState(
       const activeSignals = [...new Set(visibleStopButtons.flatMap(button => matchingLabels(button, args.stop)))];
 
       const turns = Array.from(document.querySelectorAll("[data-testid^='conversation-turn']"));
-      const latestAssistant = Array.from(document.querySelectorAll("[data-message-author-role='assistant']")).at(-1);
-      const latestTurn = latestAssistant?.closest("[data-testid^='conversation-turn']") ?? turns.at(-1);
+      const legacyAssistants = Array.from(document.querySelectorAll("[data-message-author-role='assistant']"));
+      const latestAssistant = (legacyAssistants.length > 0 ? legacyAssistants : Array.from(document.querySelectorAll(
+        'main [data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]'
+      ))).at(-1);
+      const latestTurn = latestAssistant?.closest("[data-testid^='conversation-turn']") ?? turns.at(-1)
+        ?? (latestAssistant?.hasAttribute?.("data-chatgpt-search-unit-key") === true ? latestAssistant : undefined);
       const stoppedSignals = latestTurn === undefined
         ? []
         : [...new Set(Array.from(latestTurn.querySelectorAll<HTMLElement>(
@@ -139,7 +143,19 @@ export async function latestAssistantTurnHasResponseActions(page: PageLike): Pro
   if (typeof page.evaluate === "function") {
     const scoped = await page.evaluate((phrases: string[]) => {
       const turns = Array.from(document.querySelectorAll("[data-testid^='conversation-turn']"));
-      if (turns.length === 0) return undefined;
+      if (turns.length === 0) {
+        const latest = Array.from(document.querySelectorAll('main [data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]')).at(-1);
+        if (latest === undefined) return undefined;
+        let owner: Element | null = latest;
+        for (let depth = 0; owner !== null && depth < 6 && owner.tagName !== "MAIN"; depth += 1, owner = owner.parentElement) {
+          const assistants: Element[] = Array.from(owner.querySelectorAll('[data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]'));
+          if (owner !== latest && (assistants.length !== 1 || assistants[0] !== latest)) break;
+          if (Array.from(owner.querySelectorAll("button")).some(button => phrases.some(phrase =>
+            [button.innerText, button.textContent, button.getAttribute("aria-label"), button.getAttribute("title")]
+              .some(value => (value ?? "").trim().toLowerCase() === phrase.trim().toLowerCase())))) return true;
+        }
+        return false;
+      }
       const latestTurn = turns.reverse().find(turn =>
         turn.querySelector("[data-message-author-role='assistant']") !== null
       ) as HTMLElement | undefined;

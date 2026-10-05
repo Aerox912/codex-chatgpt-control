@@ -128,6 +128,35 @@ describe("Chat/Work evidence under composer popovers", () => {
     expect(page.waitForTimeout).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["Chat", "Work"])("reads the current pressed %s pane from its owned two-button group", async selected => {
+    const snapshot = await pressedPaneSnapshot(selected);
+    expect(snapshot.selectedSurfaceLabels).toEqual([selected]);
+    expect(detectExperienceFromSnapshot(snapshot).experience).toBe(selected.toLowerCase());
+  });
+
+  it("uses the current marked composer form without expanding utility-class roots", async () => {
+    const textbox = element("Work with ChatGPT");
+    const composer = element("", [textbox]);
+    composer.querySelectorAll = selector => selector.includes("textarea") ? [textbox] : [];
+    const querySelectorAll = vi.fn((selector: string) => selector === 'main form[data-thread-find-composer="true"]'
+      ? [composer] : []);
+    vi.stubGlobal("document", { querySelector: () => null, querySelectorAll });
+    const snapshot = await readSurfaceSnapshot({
+      url: () => "https://chatgpt.com/", evaluate: async (fn, arg) => fn(arg as never)
+    } as PageLike);
+    expect(querySelectorAll).not.toHaveBeenCalledWith(expect.stringContaining("[class*='composer'"));
+    expect(snapshot.rootBudgetExceeded).toBeUndefined();
+    expect(detectExperienceFromSnapshot(snapshot).experience).toBe("work");
+  });
+
+  it.each(["duplicate", "quoted", "hidden", "disabled", "both-pressed", "unknown-label"])(
+    "rejects %s pressed-pane evidence", async variant => {
+      const snapshot = await pressedPaneSnapshot("Work", variant);
+      expect(snapshot.selectedSurfaceLabels).toEqual([]);
+      expect(detectExperienceFromSnapshot(snapshot).experience).toBe("unknown");
+    }
+  );
+
   it("bounds loading retries and honors a zero timeout", async () => {
     const page = loadingPage(100);
     const result = await detectExperience({ page }, { timeoutMs: 750 });
@@ -151,7 +180,7 @@ type TestElement = {
   parentElement: TestElement | null;
   innerText: string;
   textContent: string;
-  hasAttribute: () => boolean;
+  hasAttribute: (name: string) => boolean;
   getAttribute: (name: string) => string | null;
   getBoundingClientRect: () => { width: number; height: number };
   contains: (node: unknown) => boolean;
@@ -171,6 +200,27 @@ function element(label: string, children: TestElement[] = []): TestElement {
   };
   for (const child of children) child.parentElement = node;
   return node;
+}
+
+async function pressedPaneSnapshot(selected: string, variant = "valid") {
+  const chatButton = element("Chat");
+  const workButton = element(variant === "unknown-label" ? "Something else" : "Work");
+  for (const [button, label] of [[chatButton, "Chat"], [workButton, "Work"]] as const) {
+    button.getAttribute = name => name === "aria-pressed" ? String(label === selected || variant === "both-pressed")
+      : name === "disabled" && variant === "disabled" ? "" : name === "aria-label" ? button.innerText : null;
+  }
+  const group = element("", [chatButton, workButton]);
+  if (variant === "hidden") group.getBoundingClientRect = () => ({ width: 0, height: 0 });
+  const parent = element("", [group]);
+  if (variant === "quoted") parent.hasAttribute = (name: string) => name === "data-message-author-role";
+  const groups = variant === "duplicate" ? [group, group] : [group];
+  vi.stubGlobal("document", {
+    querySelector: () => null,
+    querySelectorAll: (selector: string) => selector === "main [role='group']" ? groups : []
+  });
+  return await readSurfaceSnapshot({
+    url: () => "https://chatgpt.com/", evaluate: async (fn, arg) => fn(arg as never)
+  } as PageLike);
 }
 
 function loadingPage(loadingSnapshots: number, blockerText = ""): PageLike {

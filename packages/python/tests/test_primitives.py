@@ -21,6 +21,22 @@ class RecordingBackend:
 
 
 class PrimitiveFacadeTests(unittest.TestCase):
+    def test_already_selected_pro_preserves_backend_success_and_evidence(self) -> None:
+        class SelectedProBackend(RecordingBackend):
+            def request(self, command: str, payload: dict | None = None):
+                response = super().request(command, payload)
+                response["data"] = {"selected": ["Pro"], "candidates": ["Pro"]}
+                return response
+
+        backend = SelectedProBackend()
+        result = ChatGPT(backend=backend).modes.set(model="Pro", timeout_ms=0)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.data, {"selected": ["Pro"], "candidates": ["Pro"]})
+        self.assertEqual(result.warnings, [])
+        self.assertIsNone(result.blocker)
+        self.assertEqual(backend.requests, [("modes.set", {"model": "Pro", "timeoutMs": 0})])
+
     def test_nested_wire_normalization_only_rewrites_known_sdk_fields(self) -> None:
         self.assertEqual(
             wire_kwargs(

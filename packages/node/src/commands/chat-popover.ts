@@ -5,6 +5,7 @@ import type { LocatorLike, PageLike } from "../types.js";
 export type ChatPopoverSnapshot = {
   view: "simple" | "advanced";
   rootIndex: number;
+  profile?: "model_picker_v2";
   triggerId?: string;
   toggleIndex: number;
   modelOptions: Array<{ label: string; checked: boolean; index: number }>;
@@ -37,7 +38,8 @@ export async function readChatPopover(page: PageLike): Promise<{ snapshot?: Chat
       return current === null;
     };
     const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
-    const roots = document.querySelectorAll('[data-testid="composer-intelligence-picker-content"]');
+    const roots = Array.from(document.querySelectorAll('[data-testid="composer-intelligence-picker-content"]'))
+      .concat(Array.from(document.querySelectorAll('[data-model-picker-view]')));
     if (roots.length > 8) return { acted: false };
     const activeRoots = Array.from(roots).filter(node => visible(node));
     if (activeRoots.length !== 1) return { acted: false };
@@ -50,7 +52,17 @@ export async function readChatPopover(page: PageLike): Promise<{ snapshot?: Chat
       ancestor = ancestor.parentNode;
     }
     if (menu?.getAttribute("data-state") !== "open" || !visible(menu)) return { acted: false };
-    const nodes: Element[] = [];
+    const currentProfile = root.hasAttribute("data-model-picker-view");
+    if (currentProfile) {
+      // Bind this rollout's structural root to its actual composer trigger.
+      // Radix can aria-hide the app while the menu is open, so this ownership
+      // check uses the expanded trigger; reopening checks actionability anew.
+      const triggers = Array.from(document.querySelectorAll('button[data-codex-intelligence-trigger="true"]'))
+        .filter(trigger => trigger.getAttribute("id") === menu!.getAttribute("aria-labelledby")
+          && trigger.getAttribute("aria-haspopup") === "menu" && trigger.getAttribute("aria-expanded") === "true");
+      if (triggers.length !== 1) return { acted: false };
+    }
+    const nodes: Element[] = [root];
     const text = new Map<Element, string>();
     let current: Node | null = root.firstChild;
     let count = 0;
@@ -81,20 +93,22 @@ export async function readChatPopover(page: PageLike): Promise<{ snapshot?: Chat
       }
       return false;
     };
-    const owners = nodes.filter(node => node.getAttribute("data-has-slider") === "true"
+    const owners = currentProfile ? [root] : nodes.filter(node => node.getAttribute("data-has-slider") === "true"
       && node.getAttribute("data-has-advanced-view") === "true"
       && node.getAttribute("data-model-selection-view") === "true" && visible(node));
     if (owners.length !== 1) return { acted: false };
     const owner = owners[0]!;
-    const view = owner.getAttribute("data-view");
+    const view = owner.getAttribute(currentProfile ? "data-model-picker-view" : "data-view");
     if (view !== "simple" && view !== "advanced") return { acted: false };
-    const panels = nodes.filter(node => node.getAttribute("data-testid") === `composer-model-picker-slider-${view}-view`
-      && within(node, owner) && node.getAttribute("data-active") === "true" && visible(node));
+    const panels = nodes.filter(node => (currentProfile ? node.parentNode === owner
+      : node.getAttribute("data-testid") === `composer-model-picker-slider-${view}-view` && within(node, owner))
+      && node.getAttribute("data-active") === "true" && visible(node));
     if (panels.length !== 1) return { acted: false };
     const panel = panels[0]!;
     const toggles = nodes.filter(node => node.getAttribute("role") === "menuitem"
       && node.getAttribute("data-interactive") === "true"
-      && node.getAttribute("aria-expanded") === String(view === "advanced")
+      && (currentProfile ? node.getAttribute("data-model-picker-view-toggle") === "true"
+        : node.getAttribute("aria-expanded") === String(view === "advanced"))
       && within(node, owner) && visible(node));
     if (toggles.length > 1 || (view === "simple" && toggles.length !== 1)) return { acted: false };
     // The structural toggle owns this transition, independently of localized name/text.
@@ -102,16 +116,22 @@ export async function readChatPopover(page: PageLike): Promise<{ snapshot?: Chat
       && node.getAttribute("role") === "menuitemradio" && visible(node)) : [];
     if (modelNodes.length > 32) return { acted: false };
     const modelLabel = (node: Element): string => {
-      const primary = nodes.filter(child => within(child, node) && (child.getAttribute("class") ?? "").split(/\s+/).includes("truncate"));
+      const primary = nodes.filter(child => {
+        const classes = (child.getAttribute("class") ?? "").split(/\s+/);
+        return within(child, node) && classes.includes("truncate") && !classes.includes("text-xs");
+      });
       return normalize(primary.length === 1 ? text.get(primary[0]!) ?? "" : text.get(node) ?? "");
     };
     const snapshot: ChatPopoverSnapshot = {
-      view, rootIndex: Array.from(roots).indexOf(root),
+      view, rootIndex: currentProfile
+        ? Array.from(document.querySelectorAll('[data-model-picker-view]')).indexOf(root)
+        : Array.from(document.querySelectorAll('[data-testid="composer-intelligence-picker-content"]')).indexOf(root),
       toggleIndex: nodes.filter(node => node.getAttribute("role") === "menuitem" && node.getAttribute("data-interactive") === "true").indexOf(toggles[0]!), modelOptions: modelNodes.map(node => ({
         label: modelLabel(node), checked: node.getAttribute("aria-checked") === "true",
         index: nodes.filter(row => within(row, panel) && row.getAttribute("role") === "menuitemradio").indexOf(node)
       })).filter(option => option.label.length > 0)
     };
+    if (currentProfile) snapshot.profile = "model_picker_v2";
     const triggerId = menu.getAttribute("aria-labelledby");
     if (triggerId !== null && triggerId.length > 0 && triggerId.length < 240 && !/\s/.test(triggerId)) snapshot.triggerId = triggerId;
     const checked = snapshot.modelOptions.filter(option => option.checked);
@@ -134,7 +154,8 @@ export async function readChatPopover(page: PageLike): Promise<{ snapshot?: Chat
         const powers = nodes.filter(node => within(slider, node) && within(node, panel)
           && node.getAttribute("role") === "menuitem" && visible(node)
           && config.powerLabels.some(label => normalize(node.getAttribute("aria-label") ?? "").toLocaleLowerCase() === label.toLocaleLowerCase()));
-        const sliderOwners = nodes.filter(node => within(slider, node) && within(node, panel) && node.hasAttribute("data-model-reasoning-effort-slider"));
+        const sliderOwners = nodes.filter(node => within(slider, node) && within(node, panel)
+          && node.hasAttribute(currentProfile ? "data-model-picker-power-slider" : "data-model-reasoning-effort-slider"));
         const integer = (name: string): number | undefined => {
           const raw = slider.getAttribute(name);
           return raw !== null && /^-?\d+$/.test(raw) && Number.isSafeInteger(Number(raw)) ? Number(raw) : undefined;
@@ -165,12 +186,56 @@ export async function readChatPopover(page: PageLike): Promise<{ snapshot?: Chat
 }
 
 function observedRoot(page: PageLike, snapshot: ChatPopoverSnapshot): LocatorLike | undefined {
-  const roots = page.locator?.('[data-testid="composer-intelligence-picker-content"]');
+  const roots = page.locator?.(snapshot.profile === "model_picker_v2"
+    ? '[data-model-picker-view]' : '[data-testid="composer-intelligence-picker-content"]');
   return roots?.nth?.(snapshot.rootIndex) ?? (snapshot.rootIndex === 0 ? roots : undefined);
+}
+
+/** Undefined permits legacy fallback; false prevents another click after a failed current-profile attempt. */
+export async function openChatPopover(page: PageLike): Promise<boolean | undefined> {
+  if ((await readChatPopover(page)).snapshot !== undefined) return true;
+  let trigger = page.locator?.('button[data-codex-intelligence-trigger="true"][aria-haspopup="menu"]');
+  let count = await trigger?.count?.().catch(() => 0) ?? 0;
+  if (count === 0) return undefined;
+  // Work's SPA transition can retain a hidden home composer. Only a unique
+  // rendered trigger is eligible; multiple visible candidates still fail closed.
+  if (count > 1 && count <= 8 && typeof trigger?.filter === "function") {
+    trigger = trigger.filter({ visible: true });
+    count = await trigger.count?.().catch(() => 0) ?? 0;
+  }
+  if (count !== 1) return false;
+  if (trigger?.click === undefined || trigger.evaluate === undefined) return undefined;
+  const actionable = await trigger.evaluate(element => {
+    if (element.tagName !== "BUTTON" || element.getAttribute("data-codex-intelligence-trigger") !== "true"
+      || element.getAttribute("aria-haspopup") !== "menu") return undefined;
+    let current: Node | null = element;
+    for (let depth = 0; current !== null && depth < 64; depth += 1) {
+      if (current.nodeType !== 1) break;
+      const node = current as HTMLButtonElement;
+      if (node.hidden || node.hasAttribute("hidden") || node.hasAttribute("inert") || node.disabled
+        || node.getAttribute("aria-hidden") === "true" || node.getAttribute("aria-disabled") === "true") return false;
+      const style = window.getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0"
+        || (current === element && style.pointerEvents === "none")) return false;
+      current = current.parentNode;
+    }
+    if (current?.nodeType === 1) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && element.getAttribute("aria-expanded") === "false";
+  }).catch(() => undefined);
+  if (actionable === undefined) return undefined;
+  if (!actionable) return false;
+  await trigger.click();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await waitForPopoverTransition(page, 100);
+    if ((await readChatPopover(page)).snapshot !== undefined) return true;
+  }
+  return false;
 }
 
 async function clickObservedControl(page: PageLike, snapshot: ChatPopoverSnapshot, modelIndex?: number): Promise<boolean> {
   const selector = modelIndex === undefined ? '[role="menuitem"][data-interactive="true"]'
+    : snapshot.profile === "model_picker_v2" ? ':scope > [data-active="true"] [role="menuitemradio"]'
     : '[data-testid="composer-model-picker-slider-advanced-view"][data-active="true"] [role="menuitemradio"]';
   const candidates = observedRoot(page, snapshot)?.locator?.(selector);
   const index = modelIndex ?? snapshot.toggleIndex;
@@ -186,7 +251,8 @@ async function clickObservedControl(page: PageLike, snapshot: ChatPopoverSnapsho
         || node.getAttribute("aria-disabled") === "true" || node.getAttribute("data-active") === "false") return undefined;
       const style = window.getComputedStyle(node);
       if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") return undefined;
-      if (node.getAttribute("data-testid") === "composer-intelligence-picker-content") owned = true;
+      if (node.getAttribute("data-testid") === "composer-intelligence-picker-content"
+        || node.getAttribute("data-model-picker-view") === "simple" || node.getAttribute("data-model-picker-view") === "advanced") owned = true;
       current = current.parentNode;
     }
     const rect = element.getBoundingClientRect();
@@ -202,7 +268,8 @@ async function clickObservedControl(page: PageLike, snapshot: ChatPopoverSnapsho
         if (label.length > 512) return undefined;
         let parent = child.parentNode;
         for (let depth = 0; parent !== null && parent !== element && depth < 64; depth += 1) {
-          if (parent.nodeType === 1 && ((parent as Element).getAttribute("class") ?? "").split(/\s+/).includes("truncate")) {
+          const classes = parent.nodeType === 1 ? ((parent as Element).getAttribute("class") ?? "").split(/\s+/) : [];
+          if (classes.includes("truncate") && !classes.includes("text-xs")) {
             primary.set(parent as Element, (primary.get(parent as Element) ?? "") + (child.nodeValue ?? ""));
           }
           parent = parent.parentNode;
@@ -213,10 +280,11 @@ async function clickObservedControl(page: PageLike, snapshot: ChatPopoverSnapsho
       if (child === element || child === null) break;
       child = child.nextSibling;
     }
-    return { role: element.getAttribute("role"), expanded: element.getAttribute("aria-expanded"), label: (primary.size === 1 ? [...primary.values()][0]! : label).replace(/\s+/g, " ").trim() };
+    return { role: element.getAttribute("role"), expanded: element.getAttribute("aria-expanded"), viewToggle: element.getAttribute("data-model-picker-view-toggle"), label: (primary.size === 1 ? [...primary.values()][0]! : label).replace(/\s+/g, " ").trim() };
   }).catch(() => undefined);
   if (state === undefined || state.role !== (modelIndex === undefined ? "menuitem" : "menuitemradio")
-    || (modelIndex === undefined && state.expanded !== String(snapshot.view === "advanced"))) return false;
+    || (modelIndex === undefined && (snapshot.profile === "model_picker_v2"
+      ? state.viewToggle !== "true" : state.expanded !== String(snapshot.view === "advanced")))) return false;
   const expectedModel = snapshot.modelOptions.find(option => option.index === modelIndex);
   if (modelIndex !== undefined && (expectedModel === undefined || state.label !== expectedModel.label)) return false;
   await target.click();
@@ -228,9 +296,9 @@ export async function closeChatPopover(page: PageLike, before?: ChatPopoverSnaps
   if (snapshot === undefined) return false;
   const escapedId = snapshot.triggerId?.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   const menu = escapedId === undefined ? undefined : page.locator?.(`[role="menu"][aria-labelledby="${escapedId}"]`);
-  if (menu?.press !== undefined && await menu.count?.() === 1) await menu.press("Escape");
-  else if (page.keyboard?.press !== undefined) await page.keyboard.press("Escape");
+  if (page.keyboard?.press !== undefined) await page.keyboard.press("Escape");
   else if (page.cua?.keypress !== undefined) await page.cua.keypress({ keys: ["ESC"] });
+  else if (menu?.press !== undefined && await menu.count?.() === 1) await menu.press("Escape");
   else return false;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     await waitForPopoverTransition(page, 100);
@@ -247,6 +315,9 @@ async function waitForPopoverTransition(page: PageLike, milliseconds: number): P
 async function reopenChatPopover(page: PageLike, before: ChatPopoverSnapshot): Promise<ChatPopoverSnapshot | undefined> {
   if (before.triggerId === undefined) return undefined;
   if (!await closeChatPopover(page, before)) return undefined;
+  // The current picker resets its initial view after the close animation.
+  // Reopening during that transition can remount the prior model view.
+  if (before.profile === "model_picker_v2") await waitForPopoverTransition(page, 250);
   // aria-labelledby was read from this exact owned menu before closing. The
   // trigger's accessible name can change when a model view is dismissed.
   const trigger = page.locator?.(`[id="${before.triggerId.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`);
@@ -343,7 +414,9 @@ export async function selectChatPopoverEffort(page: PageLike, labels: string[]):
       const before = await read();
       if (original === undefined || before?.slider === undefined || before.slider.minimum !== original.minimum || before.slider.maximum !== original.maximum) { mayRestore = false; return undefined; }
       if (before.slider.current === target) return before;
-      const candidates = observedRoot(page, before)?.locator?.('[data-testid="composer-model-picker-slider-simple-view"][data-active="true"] [role="slider"]');
+      const candidates = observedRoot(page, before)?.locator?.(before.profile === "model_picker_v2"
+        ? ':scope > [data-active="true"] [role="slider"]'
+        : '[data-testid="composer-model-picker-slider-simple-view"][data-active="true"] [role="slider"]');
       const locator = candidates?.nth?.(before.slider.index) ?? (before.slider.index === 0 ? candidates : undefined);
       if (locator?.press === undefined || locator.evaluate === undefined || await locator.count?.() !== 1) return undefined;
       const locatorState = await locator.evaluate(element => {
@@ -359,6 +432,13 @@ export async function selectChatPopoverEffort(page: PageLike, labels: string[]):
           if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") return undefined;
           if (node.getAttribute("data-testid") === "composer-model-picker-slider-simple-view" && node.getAttribute("data-active") === "true") panel = true;
           if (node.getAttribute("data-testid") === "composer-intelligence-picker-content") owned = true;
+          if (node.getAttribute("data-model-picker-view") === "simple") {
+            owned = true;
+            // The current profile has one active direct track, without test IDs.
+            let track: Node | null = element;
+            while (track !== null && track.parentNode !== node) track = track.parentNode;
+            if (track?.nodeType === 1 && (track as Element).getAttribute("data-active") === "true") panel = true;
+          }
           current = current.parentNode;
         }
         const rect = element.getBoundingClientRect();

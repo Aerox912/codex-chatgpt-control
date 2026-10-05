@@ -172,6 +172,14 @@ timeout Work result is recovered through status/wait/read on the same task, not
 by resubmitting the original prompt. New Work tasks accept the same `project`
 target as `threads.new`; project routing is verified before prompt submission.
 
+Chat Pro selection uses the same command/result shapes on both picker layouts:
+the older composer test IDs and the current `data-model-picker-view` menu bound
+to its expanded composer trigger. `modes.set` returns the observed Pro label
+without changing an already-selected effort, including when that menu is open.
+Strict `configuration.apply` verifies Pro through the effort axis (the
+`intelligence` alias remains supported). Selector drift still blocks unknown,
+hidden, or ambiguous controls; callers must not reinterpret a blocker as success.
+
 `doctor` returns a normal `CommandResult` whose `data.checks` map is extensible. Scenario checks such as `existing_tab`, `artifacts`, `file_preflight`, `localization`, and `reports` may add optional `code`, `blockerKind`, `nextCommand`, and JSON `details` fields to individual check entries while preserving the existing `status`, `message`, and `remediation` fields.
 The additive `compatibility` check is browser-free and exposes the retained
 report in `details`; warning and unknown provenance map to an `unknown` check,
@@ -602,3 +610,18 @@ Python must also load and round-trip the same fixtures through Pydantic models. 
 ## Restricted-host journal authority
 
 The Node backend can use an explicit asynchronous journal service while keeping browser control in its active host. See [the journal service runbook](2026-09-06-journal-service.md) for startup, recovery, transport boundaries, and the intentional TypeScript host API asymmetry. Operation wire shapes and Python facades are unchanged. The private-file transport rejects Windows with `journal_rpc_unsupported_platform` before filesystem access; the existing local Node journal path is unchanged.
+## Current visible Chat and Work compatibility
+
+Current home pane detection supports the structurally scoped pressed Chat/Work
+button group as well as legacy checked radios. It prefers the marked composer
+form over utility-class roots. Browser interaction remains TypeScript-owned;
+these observations do not change the language-neutral response schema.
+
+Current conversation capture also accepts role-qualified search-unit containers
+with message identifiers inside `main`, using the user bubble or assistant
+Markdown body and excluding the accessible speaker heading. Completion checks
+inspect at most six ancestors and stop before crossing another assistant's
+ownership. Generated-file previews require the visible card filename to match
+the preview control, and Downloads stay scoped to that exact filename. The
+existing non-resumable uncertainty result remains mandatory when Chrome does
+not deliver a native download receipt, even if a file may already have saved.

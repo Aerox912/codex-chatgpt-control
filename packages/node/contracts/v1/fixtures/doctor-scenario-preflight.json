@@ -91,7 +91,7 @@
               "fast"
             ],
             "englishCanonicalPresent": true,
-            "labelCandidateCount": 2624,
+            "labelCandidateCount": 2625,
             "missingConfigurationAxisIds": [],
             "missingConfigurationOptionIds": [],
             "missingModeOptionIds": [],
@@ -133,7 +133,7 @@
               "nonEnglishStopControlLocaleCount": 63,
               "nonEnglishStoppedAssistantLocaleCount": 0,
               "registeredLocaleCount": 65,
-              "stopControlCandidateCount": 63,
+              "stopControlCandidateCount": 64,
               "stopControlLocaleCount": 64,
               "stoppedAssistantCandidateCount": 3,
               "stoppedAssistantLocaleCount": 1,

@@ -1345,12 +1345,16 @@ async function tryGeneratedFilePreviewDownload(
   if (selected === undefined) return undefined;
 
   try {
-    const assistantMessages = requiredLocator(page, cssSelectors.assistantMessages);
-    const assistantCount = await locatorCountWithTimeout(
+    let assistantMessages = requiredLocator(page, cssSelectors.assistantMessages);
+    let assistantCount = await locatorCountWithTimeout(
       assistantMessages,
       localGuardTimeout(timeoutMs, 5000),
       "generated_file_assistant_count_timeout"
     );
+    if (assistantCount === 0) {
+      assistantMessages = requiredLocator(page, cssSelectors.currentAssistantMessages);
+      assistantCount = await locatorCountWithTimeout(assistantMessages, localGuardTimeout(timeoutMs, 5000), "generated_file_assistant_count_timeout");
+    }
     if (selected.assistantIndex < 0 || selected.assistantIndex >= assistantCount) {
       throw new Error("The selected generated-file assistant turn is no longer present.");
     }
@@ -1382,6 +1386,7 @@ async function tryGeneratedFilePreviewDownload(
 
     await affordance.click({ timeoutMs: localGuardTimeout(timeoutMs, 10000) });
     const labelledPreview = requiredLocator(page, `section[aria-label="${escapeCssAttribute(selected.filename)}"]`);
+    const currentPreview = page.getByRole?.("tabpanel", { name: selected.filename, exact: true });
     const workbookPreviews = requiredLocator(page, "section[data-testid^='popcorn-']");
     // A provider without locator filtering cannot tie a workbook preview to
     // the selected filename. Keep the explicitly labelled preview usable.
@@ -1390,7 +1395,7 @@ async function tryGeneratedFilePreviewDownload(
       : undefined;
     const download = await waitForPreviewDownloadControl(
       page,
-      workbookPreview === undefined ? [labelledPreview] : [labelledPreview, workbookPreview],
+      [...(currentPreview === undefined ? [] : [currentPreview]), labelledPreview, ...(workbookPreview === undefined ? [] : [workbookPreview])],
       timeoutMs
     );
     if (download === undefined) {
@@ -1440,7 +1445,10 @@ async function inspectGeneratedFileAffordances(
             .find(label => lowered.startsWith(`${label.toLocaleLowerCase()} `));
           return prefix === undefined ? trimmed : trimmed.slice(prefix.length).trim();
         };
-        const assistants = Array.from(document.querySelectorAll("[data-message-author-role='assistant']"));
+        const legacyAssistants = Array.from(document.querySelectorAll("[data-message-author-role='assistant']"));
+        const assistants = legacyAssistants.length > 0 ? legacyAssistants : Array.from(document.querySelectorAll(
+          'main [data-chatgpt-search-unit-key$=":assistant"][data-chatgpt-search-message-ids]'
+        ));
         return assistants.flatMap((assistant, assistantIndex) =>
           Array.from(assistant.querySelectorAll("button[aria-label], a[download], a[href*='/backend-api/files/']"))
             .filter(visible)
@@ -1449,10 +1457,12 @@ async function inspectGeneratedFileAffordances(
               const text = (element.textContent ?? "").trim();
               return {
                 assistantIndex,
-                filename: normalizedFilename(controlLabel),
+                filename: controlLabel.startsWith("Open preview of ") ? controlLabel.slice("Open preview of ".length) : normalizedFilename(controlLabel),
                 controlLabel,
                 tag: element.tagName.toLocaleLowerCase(),
-                textFilename: normalizedFilename(text)
+                textFilename: controlLabel.startsWith("Open preview of ")
+                  ? element.parentElement?.querySelector("[title]")?.getAttribute("title") ?? ""
+                  : normalizedFilename(text)
               };
             })
             .filter(item => (item.tag === "button" || item.tag === "a") && fileLike(item.filename) && item.filename === item.textFilename)
