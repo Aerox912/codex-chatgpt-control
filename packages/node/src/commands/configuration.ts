@@ -1296,6 +1296,18 @@ function activeConfigurationValue(
   inspection: ConfigurationInspectionData,
   axis: ConfigurationAxis
 ): string | undefined {
+  // Chat's current owned popover reports its concrete model as modelVersion;
+  // the Project carousel reports the same choice as model. Resolve either
+  // observed axis before considering the legacy model-as-effort shorthand.
+  if (inspection.experience === "chat" && (axis === "model" || axis === "modelVersion")) {
+    const { model, modelVersion } = inspection.active;
+    if (model !== undefined && modelVersion !== undefined && !configurationValueMatches(model, modelVersion)) return undefined;
+    if (model !== undefined || modelVersion !== undefined
+      || inspection.availableAxes.includes("model")
+      || (inspection.availableAxes.includes("modelVersion") && inspection.active.intelligence === undefined)) {
+      return model ?? modelVersion;
+    }
+  }
   const direct = inspection.active[axis];
   if (direct !== undefined || inspection.experience !== "chat") {
     return direct;

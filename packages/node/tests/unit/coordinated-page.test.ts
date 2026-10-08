@@ -73,6 +73,22 @@ function wrap(page: PageLike, coordinator: ProcessTabCoordinator, tabId: string,
 }
 
 describe("coordinated PageLike facade", () => {
+  it("preserves owned-dialog and selected-state attributes through coordinated locators", async () => {
+    const coordinator = new ProcessTabCoordinator();
+    const calls: string[] = [];
+    const attributes: Record<string, string> = { id: "creation-dialog", "aria-controls": "appearance-dialog", "aria-pressed": "true" };
+    const raw: LocatorLike = {
+      getAttribute: async name => { calls.push(name); return attributes[name] ?? null; }
+    };
+    const page = wrap({ locator: () => raw }, coordinator, "project-tab");
+    const locator = page.locator!("button");
+    expect(await locator.getAttribute!("id")).toBe("creation-dialog");
+    expect(await locator.getAttribute!("aria-controls")).toBe("appearance-dialog");
+    expect(await locator.getAttribute!("aria-pressed")).toBe("true");
+    expect(await locator.getAttribute!("missing")).toBeNull();
+    expect(calls).toEqual(["id", "aria-controls", "aria-pressed", "missing"]);
+  });
+
   it("checks a queued mutation guard inside the actor without affecting unrelated calls", async () => {
     const coordinator = new ProcessTabCoordinator();
     const entered = deferred();

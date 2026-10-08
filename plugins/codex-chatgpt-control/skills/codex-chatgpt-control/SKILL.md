@@ -181,6 +181,18 @@ Power first, then enters the model view, verifies the selected radio, and closes
 the menu. Legacy combined Advanced rows remain supported. Do not treat the
 collapsed value alone as the complete capability graph.
 
+The current Chat model list names the newest model `GPT-6`; older surfaces used
+`Latest`. Pass the user's requested visible name explicitly, for example
+`desired: { model: "GPT-6", effort: "Pro" }`, and verify the model radio and
+Power separately. Do not translate `Latest` into another model silently.
+
+Current Projects expose a `Create` button and presentation rows with a scoped
+`Start new chat in project` control. Creation uses the owned icon/color popover,
+its `Use <color>` buttons and icon grid, then verifies both pressed selections
+before closing the picker and submitting the project form once. Legacy Project
+dialogs remain supported. Missing controls are selector drift, not evidence
+that the account cannot create Projects.
+
 Selector profiles describe observed UI shapes (`chat_legacy_v1`, `chat_simplified_v1`, `work_basic_v1`, and `work_advanced_v1`). They are not plan or entitlement labels. Treat unavailable controls and rollout differences as structured results instead of guessing.
 
 Start Work exactly once, then poll or steer the same task:

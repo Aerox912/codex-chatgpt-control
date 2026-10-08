@@ -359,6 +359,68 @@ describe("ChatGPT Project routing", () => {
     });
     expect(fake.actions.filter(action => action === "create-project")).toHaveLength(1);
   });
+
+  it("opens the exact current presentation row through its scoped new-chat control", async () => {
+    const fake = projectPage({ currentProjectsIndex: true, existingProject: true,
+      similarProjectName: "Codex ChatGPT Controller" });
+    const result = await openOrCreateProjectForNewThread({ page: fake.page },
+      { name: "Codex ChatGPT Control", confirmCreation: true }, 250);
+    expect(result).toMatchObject({ ok: true, data: { created: false } });
+    expect(fake.actions).toEqual(["open-current-project-composer"]);
+  });
+
+  it("rejects duplicate current Project rows before opening or creating anything", async () => {
+    const fake = projectPage({ currentProjectsIndex: true, existingProject: true, matchingProjectCount: 2 });
+    const result = await openOrCreateProjectForNewThread({ page: fake.page },
+      { name: "Codex ChatGPT Control", confirmCreation: true }, 250);
+    expect(result).toMatchObject({ ok: false, blocker: { code: "chatgpt_project_routing_selector_drift" } });
+    expect(result.blocker?.message).toContain("2 visible Projects");
+    expect(fake.actions).toEqual([]);
+  });
+
+  it("requires creation approval on the current Projects page", async () => {
+    const fake = projectPage({ currentProjectsIndex: true, currentAppearance: true });
+    const result = await openOrCreateProjectForNewThread({ page: fake.page },
+      { name: "Codex ChatGPT Control" }, 250);
+    expect(result).toMatchObject({ status: "needs_confirmation",
+      blocker: { code: "chatgpt_project_creation_confirmation_required" } });
+    expect(fake.actions).toEqual([]);
+  });
+
+  it("creates once through the current owned picker after verifying its pressed color and icon", async () => {
+    const fake = projectPage({ currentProjectsIndex: true, currentAppearance: true });
+    const result = await openOrCreateProjectForNewThread({ page: fake.page },
+      { name: "Codex ChatGPT Control", confirmCreation: true }, 250);
+    expect(result).toMatchObject({ ok: true, data: { created: true, icon: "Code Brackets", color: "purple" } });
+    expect(fake.actions).toEqual(["fill:Codex ChatGPT Control", "color:Purple", "icon:Code Brackets",
+      "close-appearance", "create-project"]);
+  });
+
+  it("supports the current sidebar Add new project entry", async () => {
+    const fake = projectPage({ currentSidebar: true, currentAppearance: true, directProjectSection: true,
+      projectsIndexRedirectsHome: true });
+    const result = await openOrCreateProjectForNewThread({ page: fake.page },
+      { name: "Codex ChatGPT Control", confirmCreation: true }, 250);
+    expect(result).toMatchObject({ ok: true, data: { created: true } });
+  });
+
+  for (const failure of ["unownedAppearance", "unverifiedAppearance", "missingCurrentIcon", "duplicateCreateControls"] as const) {
+    it(`blocks current creation when ${failure} prevents an exact verified choice`, async () => {
+      const fake = projectPage({ currentProjectsIndex: true, currentAppearance: true, [failure]: true });
+      const result = await openOrCreateProjectForNewThread({ page: fake.page },
+        { name: "Codex ChatGPT Control", confirmCreation: true }, 250);
+      expect(result).toMatchObject({ ok: false, blocker: { code: "chatgpt_project_routing_selector_drift" } });
+      expect(fake.actions).not.toContain("create-project");
+    });
+  }
+
+  it("does not resubmit current creation after losing its postcondition", async () => {
+    const fake = projectPage({ currentProjectsIndex: true, currentAppearance: true, projectComposerMissingAfterCreate: true });
+    const result = await openOrCreateProjectForNewThread({ page: fake.page },
+      { name: "Codex ChatGPT Control", confirmCreation: true }, 250);
+    expect(result).toMatchObject({ status: "partial", blocker: { code: "chatgpt_project_creation_indeterminate" } });
+    expect(fake.actions.filter(action => action === "create-project")).toHaveLength(1);
+  });
 });
 
 function projectPage(options: {
@@ -377,6 +439,13 @@ function projectPage(options: {
   decoratedGridText?: string;
   similarProjectName?: string;
   sidebarHidden?: boolean;
+  currentProjectsIndex?: boolean;
+  currentAppearance?: boolean;
+  currentSidebar?: boolean;
+  unownedAppearance?: boolean;
+  unverifiedAppearance?: boolean;
+  missingCurrentIcon?: boolean;
+  duplicateCreateControls?: boolean;
 } = {}): { page: PageLike; actions: string[]; navigations: string[] } {
   const actions: string[] = [];
   const navigations: string[] = [];
@@ -387,6 +456,8 @@ function projectPage(options: {
   let sidebarOpen = options.sidebarHidden !== true;
   let showMoreClicks = 0;
   let waits = 0;
+  let selectedColor = "Default";
+  let selectedIcon = "Folder";
 
   const projectVisible = (): boolean =>
     sidebarOpen &&
@@ -455,8 +526,48 @@ function projectPage(options: {
         : projectGridRow
   });
 
-  const customizeDialog = locator({
+  const currentProjectRows = locator({
+    count: () => options.currentProjectsIndex && projectVisible()
+      ? (options.matchingProjectCount ?? 1) + (options.similarProjectName ? 1 : 0) : 0,
+    nth: index => {
+      const name = index < (options.matchingProjectCount ?? 1) ? projectName : options.similarProjectName!;
+      return locator({ count: 1, text: `${name} 1mo`, attributes: { "data-project-row": "true" },
+        getByText: text => text === name ? locator({ count: 1, text: name }) : empty,
+        locator: selector => selector === "*" ? locator({ count: 2, allTextContents: [name, "1mo"] }) : empty,
+        click: () => actions.push("expand-current-project-row"),
+        getByRole: (role, query) => role === "button" && query?.name === "Start new chat in project"
+          ? locator({ count: 1, click: () => {
+            currentUrl = "https://chatgpt.com/g/g-p-test/project";
+            actions.push("open-current-project-composer");
+          } }) : empty
+      });
+    }
+  });
+
+  const currentPicker = locator({
     count: () => customizeDialogOpen ? 1 : 0,
+    press: key => { if (key === "Escape") { customizeDialogOpen = false; actions.push("close-appearance"); } },
+    getByRole: (role, query) => {
+      if (role === "group" && query?.name === "Icon colors") return locator({ count: 1,
+        getByRole: (childRole, childQuery) => childRole === "button" && childQuery?.name === "Use Purple"
+          ? locator({ count: 1, getAttribute: name => name === "aria-pressed" ? String(selectedColor === "Purple") : null,
+            click: () => { selectedColor = "Purple"; actions.push("color:Purple"); } }) : empty
+      });
+      if (role === "grid" && query?.name === "Icons") return locator({ count: 1,
+        getByRole: (childRole, childQuery) => childRole === "button" && childQuery?.name === "Code Brackets"
+          ? locator({ count: options.missingCurrentIcon ? 0 : 1,
+            getAttribute: name => name === "aria-pressed" ? String(selectedIcon === "Code Brackets") : null,
+            click: () => {
+              if (!options.unverifiedAppearance) selectedIcon = "Code Brackets";
+              actions.push("icon:Code Brackets");
+            } }) : empty
+      });
+      return empty;
+    }
+  });
+
+  const customizeDialog = locator({
+    count: () => customizeDialogOpen && !options.currentAppearance ? 1 : 0,
     getByRole: (role, query) => {
       const name = query?.name;
       if (role === "radio" && typeof name === "string") {
@@ -473,14 +584,20 @@ function projectPage(options: {
   });
 
   const createDialog = locator({
-    count: () => createDialogOpen ? 1 : 0,
+    count: () => createDialogOpen && !(options.currentAppearance && customizeDialogOpen) ? 1 : 0,
+    attributes: options.currentAppearance ? { id: "creation-dialog" } : {},
+    locator: selector => selector === 'button[aria-label="Open project icon and color menu"], button[aria-label^="Change icon and color for "]'
+      ? createDialog.getByRole!("button", { name: /Change icon and color for .+/ }) : empty,
     getByRole: (role, query) => {
       const name = query?.name;
       if (role === "textbox" && name === "Project name") {
         return locator({ count: 1, fill: value => { projectName = value; actions.push(`fill:${value}`); } });
       }
       if (role === "button" && name instanceof RegExp) {
-        return locator({ count: 1, click: () => { customizeDialogOpen = true; } });
+        const label = options.currentAppearance ? `Change icon and color for ${projectName}` : "Open project icon and color menu";
+        return locator({ count: name.test(label) ? 1 : 0, click: () => { customizeDialogOpen = true; },
+          getAttribute: attribute => attribute === "aria-controls" && customizeDialogOpen && options.currentAppearance && !options.unownedAppearance
+            ? "appearance-dialog" : null });
       }
       if (role === "dialog" && name === "Customize Project Icon") return customizeDialog;
       if (role === "button" && name === "Create project") {
@@ -508,6 +625,9 @@ function projectPage(options: {
     },
     waitForTimeout: async () => { waits += 1; },
     locator: selector => {
+      if (selector === '[data-projects-rows="true"] [data-project-row="true"]') return currentProjectRows;
+      if (selector === '[role="dialog"][id="creation-dialog"]') return createDialog;
+      if (selector === '[role="dialog"][id="appearance-dialog"]') return currentPicker;
       if (selector === '[data-testid="project-folder-icon"]') return projectIcons;
       return empty;
     },
@@ -537,7 +657,8 @@ function projectPage(options: {
           }
         });
       }
-      if (role === "button" && name === "New project") {
+      if (role === "button" && (name === (options.currentSidebar ? "Add new project" : "New project")
+        || name instanceof RegExp && name.test(options.currentSidebar ? "Add new project" : "New project"))) {
         return locator({
           count: () => sidebarOpen && waits >= (options.projectControlsHydrateAfter ?? 0) ? 1 : 0,
           click: () => { createDialogOpen = true; }
@@ -545,10 +666,14 @@ function projectPage(options: {
       }
       if (role === "button" && name === "New") {
         return locator({
-          count: () => currentUrl === "https://chatgpt.com/projects" ? 1 : 0,
+          count: () => currentUrl === "https://chatgpt.com/projects" && (!options.currentProjectsIndex || options.duplicateCreateControls) ? 1 : 0,
           click: () => { createDialogOpen = true; }
         });
       }
+      if (role === "button" && name === "Create") return locator({
+        count: () => currentUrl === "https://chatgpt.com/projects" && options.currentProjectsIndex ? 1 : 0,
+        click: () => { createDialogOpen = true; }
+      });
       if (role === "heading" && name === "Projects") {
         return locator({ count: () => currentUrl === "https://chatgpt.com/projects" ? 1 : 0 });
       }
@@ -588,6 +713,9 @@ type LocatorOptions = {
   getByRole?: (role: string, options?: Record<string, unknown>) => LocatorLike;
   getByText?: (text: string | RegExp, options?: Record<string, unknown>) => LocatorLike;
   allTextContents?: string[];
+  attributes?: Record<string, string>;
+  getAttribute?: (name: string) => string | null;
+  press?: (key: string) => void;
 };
 
 function locator(options: LocatorOptions): LocatorLike {
@@ -595,11 +723,12 @@ function locator(options: LocatorOptions): LocatorLike {
     count: async () => typeof options.count === "function" ? options.count() : options.count,
     click: async () => { options.click?.(); },
     fill: async value => { options.fill?.(value); },
+    press: async key => { options.press?.(key); },
     innerText: async () => {
       if (options.throwOnInnerText === true) throw new Error("innerText must not run for a zero-count locator");
       return options.text ?? "";
     },
-    getAttribute: async name => name === "href" ? options.href ?? null : null,
+    getAttribute: async name => options.getAttribute?.(name) ?? options.attributes?.[name] ?? (name === "href" ? options.href ?? null : null),
     locator: selector => options.locator?.(selector) ?? locator({ count: 0 }),
     nth: index => options.nth?.(index) ?? locator({ count: 0 }),
     first() { return this; },

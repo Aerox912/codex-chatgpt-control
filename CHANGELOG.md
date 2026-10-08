@@ -1,5 +1,12 @@
 # Changelog
 
+## Aerox Codex plugin 0.5.1-alpha.6+codex.20261008202444
+
+- Support current Project creation controls, owned icon/color popovers, and exact Project lookup in presentation rows.
+- Preserve locator attributes through the coordinated browser facade so dialog ownership and selected appearance can be verified by the public SDK.
+- Verify color and icon selections before a single creation attempt; preserve creation approval, ambiguity rejection, and uncertain-outcome handling.
+- Verify the current GPT-6 + Pro selection across both observed model-axis names without silently aliasing the older Latest model label.
+
 ## Aerox Codex plugin 0.5.1-alpha.6+codex.20261005143000
 
 - Integrated all canonical alpha.6 changes through `1e505394a01cec91d0b4880f3bc6c0cfbd45275c`, retaining host-only browser ownership, Latest/Astra verification, scoped evidence, operation deadlines, and attachment checks.

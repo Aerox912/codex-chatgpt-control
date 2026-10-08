@@ -485,6 +485,7 @@ function wrapLocator(rawLocator: unknown, state: WrapperState, label: string): L
   transaction("innerHTML", "read", 0);
   transaction("count", "read", undefined);
   transaction("allTextContents", "read", 0);
+  transaction("getAttribute", "read", 1);
   transaction("isVisible", "read", 0);
   transaction("evaluate", "mutation", 2);
   transaction("setInputFiles", "mutation", 1);

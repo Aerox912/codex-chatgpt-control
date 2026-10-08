@@ -5324,6 +5324,7 @@ function wrapLocator(rawLocator, state, label) {
   transaction("innerHTML", "read", 0);
   transaction("count", "read", void 0);
   transaction("allTextContents", "read", 0);
+  transaction("getAttribute", "read", 1);
   transaction("isVisible", "read", 0);
   transaction("evaluate", "mutation", 2);
   transaction("setInputFiles", "mutation", 1);
@@ -8504,6 +8505,8 @@ function ensureResult(navigated, targetUrl, expectedConversationId) {
 var CHATGPT_HOME3 = "https://chatgpt.com/";
 var CHATGPT_PROJECTS = "https://chatgpt.com/projects";
 var PROJECT_ICON_SELECTOR = '[data-testid="project-folder-icon"]';
+var PROJECT_INDEX_ROW_SELECTOR = '[data-projects-rows="true"] [data-project-row="true"]';
+var PROJECT_APPEARANCE_TRIGGER_SELECTOR = 'button[aria-label="Open project icon and color menu"], button[aria-label^="Change icon and color for "]';
 var PROJECT_PAGE_PATTERN = /\/g\/(g-p-[^/]+)\/project(?:[/?#]|$)/i;
 var PROJECT_EXPANSION_LIMIT = 100;
 var PROJECT_MISSING_STABILITY_PASSES = 8;
@@ -8745,14 +8748,14 @@ async function revealProjectList(page) {
     }
     return false;
   }
-  const openSidebar = page.getByRole?.("button", { name: "Open sidebar", exact: true });
+  const openSidebar = await firstAvailableButton(page, ["Open sidebar", "Show sidebar"]);
   if (await locatorCount(openSidebar) > 0) {
     await openSidebar?.first?.().click?.();
     await page.waitForTimeout?.(200);
   }
   const projects = page.getByRole?.("button", { name: "Projects", exact: true });
   const directProjects = page.getByText?.("Projects", { exact: true });
-  const newProject = page.getByRole?.("button", { name: "New project", exact: true });
+  const newProject = page.getByRole?.("button", { name: /^(?:New project|Add new project)$/ });
   for (let pass = 0; pass < PROJECT_MISSING_STABILITY_PASSES; pass += 1) {
     if (await locatorCount(projects) > 0 || await locatorCount(directProjects) > 0 || await locatorCount(newProject) > 0) break;
     await page.waitForTimeout?.(250);
@@ -8818,6 +8821,14 @@ async function findProjectRow(page, name) {
   }
 }
 async function findVisibleProjectRow(page, name) {
+  const indexRows = page.locator?.(PROJECT_INDEX_ROW_SELECTOR);
+  const indexMatches = [];
+  for (let index = 0; index < await locatorCount(indexRows); index += 1) {
+    const row = indexRows?.nth?.(index);
+    if (row !== void 0 && await locatorHasExactProjectName(row, name)) indexMatches.push(row);
+  }
+  if (indexMatches.length > 1) throw ambiguousProjectNameError(name, indexMatches.length);
+  if (indexMatches.length === 1) return indexMatches[0];
   const rows = page.getByRole?.("row");
   const rowCount = await locatorCount(rows);
   const rowMatches = [];
@@ -8874,6 +8885,14 @@ function ambiguousProjectNameError(name, count) {
   );
 }
 async function resolveProjectPageUrl(page, row, timeoutMs) {
+  if (await row.getAttribute?.("data-project-row") === "true") {
+    const newChat = row.getByRole?.("button", { name: "Start new chat in project", exact: true });
+    if (await locatorCount(newChat) !== 1) {
+      throw new ProjectSelectorError("The matching Project's new-chat control was missing or ambiguous.");
+    }
+    await newChat?.click?.();
+    return waitForAnyProjectPageUrl(page, timeoutMs);
+  }
   const directHref = await row.getAttribute?.("href");
   const directProjectUrl = directHref === null || directHref === void 0 ? void 0 : projectPageUrlFromHref(directHref);
   if (directProjectUrl !== void 0) return directProjectUrl;
@@ -8907,7 +8926,8 @@ async function openProjectPage(page, url, name, timeoutMs) {
 }
 async function createProject(page, project, timeoutMs) {
   const currentUrl = await pageUrl(page);
-  const createButton = currentUrl?.startsWith(CHATGPT_PROJECTS) ? page.getByRole?.("button", { name: "New", exact: true }) : page.getByRole?.("button", { name: "New project", exact: true });
+  const names = currentUrl?.startsWith(CHATGPT_PROJECTS) ? ["Create", "New"] : ["Add new project", "New project"];
+  const createButton = await uniqueButton(page, names);
   if (await locatorCount(createButton) !== 1) {
     throw new ProjectSelectorError("The visible Project creation control was missing or ambiguous.");
   }
@@ -8921,27 +8941,7 @@ async function createProject(page, project, timeoutMs) {
     throw new ProjectSelectorError("The Project name field was missing or ambiguous.");
   }
   await nameInput?.fill?.(project.name);
-  const appearanceButton = dialog?.getByRole?.("button", { name: /Open project icon and color menu/i });
-  if (await locatorCount(appearanceButton) !== 1) {
-    throw new ProjectSelectorError("The project icon and color control was missing or ambiguous.");
-  }
-  await appearanceButton?.click?.();
-  const customize = dialog?.getByRole?.("dialog", { name: "Customize Project Icon", exact: true });
-  if (!await waitForLocator(customize, page, 3e3)) {
-    throw new ProjectSelectorError("The project icon and color menu did not open.");
-  }
-  const color = customize?.getByRole?.("radio", { name: COLOR_LABELS[project.color], exact: true });
-  const icon = customize?.getByRole?.("radio", { name: project.icon, exact: true });
-  if (await locatorCount(color) !== 1 || await locatorCount(icon) !== 1) {
-    throw new ProjectSelectorError(`The requested ${project.color} ${project.icon} project appearance was not available.`);
-  }
-  await color?.click?.({ force: true });
-  await icon?.click?.({ force: true });
-  const done = customize?.getByRole?.("button", { name: "Done", exact: true });
-  if (await locatorCount(done) !== 1) {
-    throw new ProjectSelectorError("The project appearance confirmation control was missing or ambiguous.");
-  }
-  await done?.click?.();
+  await configureProjectAppearance(page, dialog, project);
   const submit = dialog?.getByRole?.("button", { name: "Create project", exact: true });
   if (await locatorCount(submit) !== 1) {
     throw new ProjectSelectorError("The Create project confirmation control was missing or ambiguous.");
@@ -8957,6 +8957,92 @@ async function createProject(page, project, timeoutMs) {
     throw new ProjectSelectorError(`ChatGPT created "${project.name}", but its Project URL could not be verified.`);
   }
   return normalizeProjectPageUrl(url);
+}
+async function configureProjectAppearance(page, dialog, project) {
+  const dialogId = await dialog.getAttribute?.("id");
+  const owner = dialogId ? ownedDialog(page, dialogId) : dialog;
+  const appearanceButton = owner?.getByRole?.("button", {
+    name: /^(?:Open project icon and color menu|Change icon and color for .+)$/i
+  });
+  if (await locatorCount(appearanceButton) !== 1) {
+    throw new ProjectSelectorError("The project icon and color control was missing or ambiguous.");
+  }
+  const persistentTrigger = dialogId ? owner?.locator?.(PROJECT_APPEARANCE_TRIGGER_SELECTOR) : appearanceButton;
+  await appearanceButton?.click?.();
+  const customize = dialog?.getByRole?.("dialog", { name: "Customize Project Icon", exact: true });
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (await locatorCount(customize) === 1) {
+      await configureLegacyProjectAppearance(customize, project);
+      return;
+    }
+    const pickerId = await locatorCount(persistentTrigger) === 1 ? await persistentTrigger?.getAttribute?.("aria-controls") : void 0;
+    if (pickerId) {
+      const picker = ownedDialog(page, pickerId);
+      if (!await waitForLocator(picker, page, 3e3)) break;
+      const colorName = project.color === "default" ? "Default" : COLOR_LABELS[project.color];
+      const color = picker?.getByRole?.("group", { name: "Icon colors", exact: true })?.getByRole?.("button", { name: `Use ${colorName}`, exact: true });
+      const icon = picker?.getByRole?.("grid", { name: "Icons", exact: true })?.getByRole?.("button", { name: project.icon, exact: true });
+      if (!await waitForLocator(color, page, 3e3) || !await waitForLocator(icon, page, 3e3) || await locatorCount(color) !== 1 || await locatorCount(icon) !== 1) {
+        throw new ProjectSelectorError(`The requested ${project.color} ${project.icon} project appearance was not available.`);
+      }
+      await color?.click?.();
+      await icon?.click?.();
+      if (!await waitForPressed(color, page) || !await waitForPressed(icon, page)) {
+        throw new ProjectSelectorError("The requested project icon and color could not be verified.");
+      }
+      if (picker?.press === void 0) {
+        throw new ProjectSelectorError("The owned project appearance picker could not be closed.");
+      }
+      await picker.press("Escape");
+      if (!await waitForLocator(dialog, page, 3e3)) {
+        throw new ProjectSelectorError("The Create project dialog did not return after selecting its appearance.");
+      }
+      return;
+    }
+    await page.waitForTimeout?.(100);
+  }
+  throw new ProjectSelectorError("The project icon and color menu did not open with verified ownership.");
+}
+async function configureLegacyProjectAppearance(customize, project) {
+  const color = customize?.getByRole?.("radio", { name: COLOR_LABELS[project.color], exact: true });
+  const icon = customize?.getByRole?.("radio", { name: project.icon, exact: true });
+  if (await locatorCount(color) !== 1 || await locatorCount(icon) !== 1) {
+    throw new ProjectSelectorError(`The requested ${project.color} ${project.icon} project appearance was not available.`);
+  }
+  await color?.click?.({ force: true });
+  await icon?.click?.({ force: true });
+  const done = customize?.getByRole?.("button", { name: "Done", exact: true });
+  if (await locatorCount(done) !== 1) {
+    throw new ProjectSelectorError("The project appearance confirmation control was missing or ambiguous.");
+  }
+  await done?.click?.();
+}
+function ownedDialog(page, id2) {
+  return /^[\w:-]+$/.test(id2) ? page.locator?.(`[role="dialog"][id="${id2}"]`) : void 0;
+}
+async function waitForPressed(control, page) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await control.getAttribute?.("aria-pressed") === "true") return true;
+    await page.waitForTimeout?.(100);
+  }
+  return false;
+}
+async function firstAvailableButton(page, names) {
+  for (const name of names) {
+    const button = page.getByRole?.("button", { name, exact: true });
+    if (await locatorCount(button) > 0) return button;
+  }
+  return void 0;
+}
+async function uniqueButton(page, names) {
+  let match;
+  for (const name of names) {
+    const button = page.getByRole?.("button", { name, exact: true });
+    const count = await locatorCount(button);
+    if (count > 1 || count === 1 && match !== void 0) return void 0;
+    if (count === 1) match = button;
+  }
+  return match;
 }
 async function reconcileCreatedProject(page, name, timeoutMs) {
   try {
@@ -15680,6 +15766,13 @@ function configurationMatchesSelection(inspection, desired) {
   });
 }
 function activeConfigurationValue(inspection, axis) {
+  if (inspection.experience === "chat" && (axis === "model" || axis === "modelVersion")) {
+    const { model, modelVersion } = inspection.active;
+    if (model !== void 0 && modelVersion !== void 0 && !configurationValueMatches(model, modelVersion)) return void 0;
+    if (model !== void 0 || modelVersion !== void 0 || inspection.availableAxes.includes("model") || inspection.availableAxes.includes("modelVersion") && inspection.active.intelligence === void 0) {
+      return model ?? modelVersion;
+    }
+  }
   const direct = inspection.active[axis];
   if (direct !== void 0 || inspection.experience !== "chat") {
     return direct;

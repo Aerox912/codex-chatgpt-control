@@ -17,6 +17,18 @@ const item = (label: string, rest: Partial<MenuItem> = {}): MenuItem => ({
 });
 
 describe("Chat model and effort configuration classification", () => {
+  it("verifies a concrete GPT-6 model reported by the current popover's modelVersion axis", () => {
+    const result = configurationInspectionFromSurface("chat", "chat_simplified_v1", [], {
+      openerValue: "Pro", axisRows: [], advancedVisible: false
+    }, [item("GPT-6", { role: "menuitemradio", checked: true })]);
+    expect(result.active).toEqual({ effort: "Pro", modelVersion: "GPT-6" });
+    expect(configurationMatchesSelection(result, { model: "GPT-6", effort: "Pro" })).toBe(true);
+    expect(configurationMatchesSelection(result, { model: "Latest", effort: "Pro" })).toBe(false);
+    expect(configurationMatchesSelection(result, { model: "Pro" })).toBe(false);
+    expect(configurationMatchesSelection({ ...result, active: { effort: "Pro" } }, { model: "Pro" })).toBe(false);
+    expect(configurationMatchesSelection({ ...result, active: { ...result.active, model: "GPT-5.6 Sol" } }, { model: "GPT-6" })).toBe(false);
+  });
+
   it("keeps the axis name separate from the active value and uniquely checked model", () => {
     const result = configurationInspectionFromSurface("chat", "chat_simplified_v1", [], {
       openerLabel: "Thinking effort", openerValue: "Medium", axisRows: [], advancedVisible: false

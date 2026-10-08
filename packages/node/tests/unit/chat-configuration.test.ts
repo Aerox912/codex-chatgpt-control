@@ -7,6 +7,17 @@ import type { LocatorLike, PageLike } from "../../src/types.js";
 const desired = { model: "Latest", intelligence: "Pro" };
 
 describe("Project Chat model and Power configuration", () => {
+  it("verifies the current GPT-6 + Pro selection without translating the old Latest label", async () => {
+    const page = picker({ modelLabels: ["GPT-6", "GPT-5.6 Sol", "GPT-5.5"], selected: ["GPT-6"] });
+    const result = await applyConfiguration({ page }, {
+      experience: "chat", desired: { model: "GPT-6", effort: "Pro" }, strict: true, timeoutMs: 0
+    });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result.data?.after.active).toEqual({ model: "GPT-6", effort: "Pro" });
+    expect(configurationMatchesSelection(result.data!.after, { model: "Latest", effort: "Pro" })).toBe(false);
+    expect(page.mutations).toEqual([]);
+  });
+
   for (const view of ["closed", "root", "model"] as const) {
     it(`reads independent selected values starting from the ${view} view`, async () => {
       const page = picker({ view });
