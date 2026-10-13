@@ -3,6 +3,7 @@ import type { FileChooserLike, LocatorLike, PageLike } from "../../src/types.js"
 import {
   createChatGPTAttachmentProvider,
   inspectChatGPTComposer,
+  inspectChatGPTSendReadiness,
   createChatGPTAttachmentProviderAsync,
   type ChatGPTAttachmentProviderOptions
 } from "../../src/operations/production-chatgpt-attachments.js";
@@ -416,6 +417,123 @@ function runComposerProbe(
   }
 }
 
+function runCurrentLayoutComposerProbe(
+  editorCount = 1,
+  observationOnly = true,
+  includeMenuButton: boolean | "foreign" = false,
+  inputsOwned = true
+) {
+  const document = new ComposerDocument();
+  const outer = new ComposerElement("div");
+  const form = new ComposerElement("form", { "data-chatgpt-composer": "" });
+  outer.append(form);
+  const body = new ComposerElement("div", { "data-composer-body": "" });
+  form.append(body);
+  if (includeMenuButton === true) {
+    form.append(new ComposerElement("button", {
+      "data-composer-navigation-target": "add-context",
+      "aria-expanded": "true"
+    }));
+    const overlay = new ComposerElement("div", { "data-composer-overlay-floating-ui": "true" });
+    overlay.append(new ComposerElement("button", {
+      "data-list-navigation-item": "true",
+      "aria-current": "true",
+      "aria-label": "Add photos & files Upload from computer"
+    }));
+    document.append(overlay);
+  } else if (includeMenuButton === "foreign") {
+    const overlay = new ComposerElement("div", { "data-composer-overlay-floating-ui": "true" });
+    overlay.append(new ComposerElement("button", {
+      "data-list-navigation-item": "true",
+      "aria-current": "true",
+      "aria-label": "Add photos & files Upload from computer"
+    }));
+    document.append(overlay);
+  }
+  for (let index = 0; index < editorCount; index += 1) {
+    body.append(new ComposerElement("div", {
+      contenteditable: "true",
+      role: "textbox",
+      "aria-label": "Ask ChatGPT",
+      "data-composer-markdown": ""
+    }));
+  }
+  for (const accept of ["image/*", "image/*,video/*", "image/*", ""]) {
+    const attributes: Record<string, string> = { type: "file", multiple: "" };
+    if (accept.length > 0) attributes.accept = accept;
+    const input = new ComposerElement("input", attributes);
+    input.files = { length: 0, item: () => null };
+    (inputsOwned ? form : outer).append(input);
+  }
+  document.append(outer);
+
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: document });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" })
+    }
+  });
+  try {
+    return inspectChatGPTComposer({ labels: ["Attach files", "Add photos & files"], observationOnly });
+  } finally {
+    if (previousDocument === undefined) Reflect.deleteProperty(globalThis, "document");
+    else Object.defineProperty(globalThis, "document", previousDocument);
+    if (previousWindow === undefined) Reflect.deleteProperty(globalThis, "window");
+    else Object.defineProperty(globalThis, "window", previousWindow);
+  }
+}
+
+function runCurrentLayoutSendReadiness(editorCount = 1) {
+  const sendButton = {
+    id: "composer-submit-button",
+    disabled: false,
+    closest: () => null,
+    getAttribute: () => null,
+    hasAttribute: () => false,
+    getBoundingClientRect: () => ({ width: 40, height: 40 })
+  };
+  const body = {
+    querySelectorAll: (selector: string) => selector === "button, [role='button']" ? [sendButton] : []
+  };
+  const editors = Array.from({ length: editorCount }, () => ({
+    hidden: false,
+    closest: (selector: string) => selector === "[data-composer-body]" ? body : null,
+    getBoundingClientRect: () => ({ width: 300, height: 40 })
+  }));
+  const document = {
+    querySelectorAll: (selector: string) => selector === "input[type='file']"
+      ? []
+      : selector.includes("[contenteditable='true'][role='textbox']") ? editors : []
+  };
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const previousGetComputedStyle = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: document });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" })
+    }
+  });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({ display: "block", visibility: "visible", opacity: "1" })
+  });
+  try {
+    return inspectChatGPTSendReadiness({ labels: ["Send message"] });
+  } finally {
+    if (previousDocument === undefined) Reflect.deleteProperty(globalThis, "document");
+    else Object.defineProperty(globalThis, "document", previousDocument);
+    if (previousWindow === undefined) Reflect.deleteProperty(globalThis, "window");
+    else Object.defineProperty(globalThis, "window", previousWindow);
+    if (previousGetComputedStyle === undefined) Reflect.deleteProperty(globalThis, "getComputedStyle");
+    else Object.defineProperty(globalThis, "getComputedStyle", previousGetComputedStyle);
+  }
+}
+
 describe("ChatGPT serialized composer attachment metadata", () => {
   const longName = "surface-review-gate-record.json";
   const expected = [{ ordinal: 0, displayName: longName, bytes: 10 }] as const;
@@ -462,6 +580,54 @@ describe("ChatGPT serialized composer attachment metadata", () => {
       matchOrdinal: -1,
       ambiguous: true
     });
+  });
+
+  it("probes the unique general file input above the current composer body", () => {
+    const probe = runCurrentLayoutComposerProbe();
+
+    expect(probe).toMatchObject({
+      status: "ready",
+      composerCount: 1,
+      fileInputCount: 1,
+      inputFilesReadable: true,
+      facts: []
+    });
+  });
+
+  it("fails closed when the current layout exposes multiple visible editors", () => {
+    const probe = runCurrentLayoutComposerProbe(2);
+
+    expect(probe.status).toBe("ambiguous");
+  });
+
+  it("recognizes the current accessible upload button in the production probe", () => {
+    const probe = runCurrentLayoutComposerProbe(1, false, true);
+
+    expect(probe.menuUploadSelector).toBeDefined();
+  });
+
+  it("does not adopt a semantic upload row in a foreign composer overlay", () => {
+    const probe = runCurrentLayoutComposerProbe(1, false, "foreign");
+
+    expect(probe.menuUploadSelector).toBeUndefined();
+    expect(probe.menuOpenerSelector).toBeUndefined();
+    expect(probe.activationCandidateCount).toBe(0);
+  });
+
+  it("does not adopt file inputs that are siblings outside the semantic composer form", () => {
+    const probe = runCurrentLayoutComposerProbe(1, true, false, false);
+
+    expect(probe.status).toBe("ambiguous");
+    expect(probe.fileInputCount).toBe(0);
+    expect(probe.inputFilesReadable).toBe(false);
+  });
+
+  it("checks send readiness in the current data-composer-body", () => {
+    expect(runCurrentLayoutSendReadiness()).toEqual({ status: "ready" });
+  });
+
+  it("fails closed on multiple visible send composers in the current layout", () => {
+    expect(runCurrentLayoutSendReadiness(2)).toEqual({ status: "ambiguous" });
   });
 });
 

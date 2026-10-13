@@ -638,7 +638,8 @@ async function readComposerSendReadiness(
   }
 }
 
-function inspectChatGPTSendReadiness(argument: unknown): Readonly<{
+/** @internal Exact serialized evaluator, exported only for bridge-contract tests. */
+export function inspectChatGPTSendReadiness(argument: unknown): Readonly<{
   status: "ready" | "not_ready" | "ambiguous";
 }> {
   const record = argument !== null && typeof argument === "object" && !Array.isArray(argument)
@@ -658,11 +659,17 @@ function inspectChatGPTSendReadiness(argument: unknown): Readonly<{
   const preferredInputs = [...document.querySelectorAll<HTMLInputElement>("input[type='file']")]
     .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true" && input.id === "upload-files");
   const prompts = [...document.querySelectorAll<HTMLElement>(
-    "#prompt-textarea, [data-testid='prompt-textarea']"
+    "#prompt-textarea, [data-testid='prompt-textarea'], [contenteditable='true'][role='textbox']"
   )].filter(visible);
-  const anchors: Element[] = preferredInputs.length === 1 ? preferredInputs : prompts;
+  if (prompts.length > 1) return { status: "ambiguous" };
+  const anchors: Element[] = prompts.length === 1
+    ? prompts
+    : preferredInputs.length === 1 ? preferredInputs : [];
+  if (anchors.length !== 1) return { status: "ambiguous" };
   const roots = [...new Set(anchors.map(anchor =>
-    anchor.closest("form")
+    anchor.closest("[data-chatgpt-composer]")
+      ?? anchor.closest("form")
+      ?? anchor.closest("[data-composer-body]")
       ?? anchor.closest("[data-testid*='composer' i]")
       ?? anchor.closest("[aria-label*='composer' i]")
       ?? anchor.closest("[class*='composer' i]")
@@ -1090,29 +1097,61 @@ export function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     return { facts, regionCount: nodes.length, orderDeterministic: nodes.length > 0 };
   };
   const composerAncestor = (anchor: Element): HTMLElement | null => {
+    let formBoundary: HTMLElement | null = null;
     let fallback: HTMLElement | null = null;
     let current: Node | null = anchor;
     for (let depth = 0; current !== null && depth < 4096; depth += 1) {
       if (current.nodeType === 1) {
         const element = current as HTMLElement;
-        if (element.tagName === "FORM") return element;
         const testId = (element.getAttribute("data-testid") ?? "").toLocaleLowerCase();
         const classTokens = (element.getAttribute("class") ?? "").toLocaleLowerCase().split(/\s+/u);
-        if (fallback === null && (testId.includes("composer")
+        if (element.hasAttribute("data-chatgpt-composer")) return element;
+        if (element.tagName === "FORM" && formBoundary === null) formBoundary = element;
+        if (fallback === null && (element.hasAttribute("data-composer-body") || testId.includes("composer")
           || classTokens.includes("composer-parent")
           || classTokens.includes("group/composer"))) fallback = element;
       }
       current = current.parentNode;
     }
     if (current !== null) throw new Error("probe limit exceeded");
-    return fallback;
+    return formBoundary ?? fallback;
   };
   const globalInputs = boundedQuery<HTMLInputElement>(document, "input[type='file']")
     .filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
   const preferred = globalInputs.filter(input => input.getAttribute("id") === "upload-files");
   const prompts = boundedQuery<HTMLElement>(document,
-    "#prompt-textarea, [data-testid='prompt-textarea']").filter(visible);
-  const anchors: Element[] = preferred.length === 1 ? preferred : prompts;
+    "#prompt-textarea, [data-testid='prompt-textarea'], [contenteditable='true'][role='textbox']").filter(visible);
+  if (prompts.length > 1) {
+    return {
+      status: "ambiguous",
+      composerCount: prompts.length,
+      fileInputCount: 0,
+      inputFilesReadable: false,
+      attachmentRegionCount: 0,
+      facts: [],
+      secondaryFacts: [],
+      factSource: "none",
+      orderDeterministic: false,
+      activationCandidateCount: 0
+    };
+  }
+  const anchors: Element[] = prompts.length === 1
+    ? prompts
+    : preferred.length === 1 ? preferred : [];
+  if (anchors.length !== 1) {
+    return {
+      status: "unavailable",
+      composerCount: prompts.length,
+      fileInputCount: 0,
+      inputFilesReadable: false,
+      attachmentRegionCount: 0,
+      facts: [],
+      secondaryFacts: [],
+      factSource: "none",
+      orderDeterministic: false,
+      activationCandidateCount: 0
+    };
+  }
   const roots = [...new Set(
     anchors.map(composerAncestor).filter((root): root is HTMLElement => root !== null && visible(root))
   )];
@@ -1134,8 +1173,12 @@ export function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
   const everyInput = boundedQuery<HTMLInputElement>(root, "input[type='file']");
   const allInputs = everyInput.filter(input => !input.disabled && input.getAttribute("aria-disabled") !== "true");
   const scopedPreferred = allInputs.filter(input => input.getAttribute("id") === "upload-files");
-  const nonImage = allInputs.filter(input => input.getAttribute("accept") !== "image/*");
-  const inputs = scopedPreferred.length > 0 ? scopedPreferred : nonImage.length > 0 ? nonImage : allInputs;
+  const general = allInputs.filter(input => input.hasAttribute("multiple")
+    && (input.getAttribute("accept") ?? "").trim().length === 0);
+  const nonMedia = allInputs.filter(input => !/(?:^|,)\s*(?:image|video)\//i.test(input.getAttribute("accept") ?? ""));
+  const inputs = scopedPreferred.length > 0 ? scopedPreferred
+    : general.length > 0 ? general
+      : nonMedia.length > 0 ? nonMedia : allInputs;
   if (inputs.length !== 1) {
     return {
       status: "ambiguous",
@@ -1202,18 +1245,45 @@ export function inspectChatGPTComposer(argument: unknown): RawComposerProbe {
     return inputId.length > 0 && inputRef === inputId || semanticControl(control);
   }));
   const menuRootItems = boundedQuery<HTMLElement>(document, "[role='menu'] [role='menuitem']").filter(visible);
-  const menuFallbackItems = unique(boundedQuery<HTMLElement>(document,
+  const menuFallbackItems = boundedQuery<HTMLElement>(document,
     "[role='menu'] div[tabindex='0'], [role='group'] div[tabindex='0'], [class*='popover' i] div[tabindex='0']")
-    .filter(visible));
-  const menuItems = (menuRootItems.length > 0 ? menuRootItems : menuFallbackItems).filter(item => {
-    const inputId = input.getAttribute("id") ?? "";
-    if (inputId.length > 0 && item.getAttribute("aria-controls") === inputId) return true;
-    return semanticControl(item);
-  });
+    .filter(visible);
+  const menuButtonItems = unique(boundedQuery<HTMLElement>(document,
+    "button[data-list-navigation-item='true'], [role='button'][data-list-navigation-item='true']")
+    .filter(visible)
+    .filter(semanticControl));
+  const currentAddContextTriggers = unique(boundedQuery<HTMLElement>(root,
+    "[data-composer-navigation-target='add-context'][aria-expanded='true']").filter(visible));
+  const visibleComposerOverlays = unique(boundedQuery<HTMLElement>(document,
+    "[data-composer-overlay-floating-ui='true']").filter(visible));
+  const menuCandidates = unique([...menuRootItems, ...menuFallbackItems, ...menuButtonItems]);
+  const menuOwnedByComposer = (item: Element): boolean => {
+    if (contains(root, item)) return true;
+    const currentPortalOwned = currentAddContextTriggers.length === 1
+      && visibleComposerOverlays.length === 1
+      && item.tagName === "BUTTON"
+      && item.getAttribute("data-list-navigation-item") === "true"
+      && item.getAttribute("aria-current") === "true"
+      && contains(visibleComposerOverlays[0]!, item);
+    if (currentPortalOwned) return true;
+    const explicitOwners = unique(boundedQuery<HTMLElement>(root, "button[aria-controls], [role='button'][aria-controls]")
+      .filter(visible)
+      .filter(trigger => trigger.getAttribute("aria-expanded") !== "false"
+        && trigger.getAttribute("data-state") !== "closed")
+      .filter(trigger => (trigger.getAttribute("aria-controls") ?? "").split(/\s+/u).some(id => {
+        if (id.length === 0 || typeof document.getElementById !== "function") return false;
+        const target = document.getElementById(id);
+        return target !== null && contains(target, item);
+      })));
+    return explicitOwners.length === 1;
+  };
+  const menuItems = menuCandidates
+    .filter(item => visible(item) && semanticControl(item) && menuOwnedByComposer(item));
   const menuOpeners = unique(boundedQuery<HTMLElement>(root, "button, [role='button']")
     .filter(visible)
-    .filter(control => control.getAttribute("aria-haspopup") === "menu"
-      && (semanticControl(control) || control.getAttribute("data-testid") !== null)));
+    .filter(control => control.getAttribute("data-composer-navigation-target") === "add-context"
+      || control.getAttribute("aria-haspopup") === "menu"
+        && (semanticControl(control) || control.getAttribute("data-testid") !== null)));
   const directActivationSelector = directCandidates.length === 1 ? cssPath(directCandidates[0]!) : undefined;
   const menuUploadSelector = menuItems.length === 1 ? cssPath(menuItems[0]!) : undefined;
   const menuOpenerSelector = menuOpeners.length === 1 ? cssPath(menuOpeners[0]!) : undefined;

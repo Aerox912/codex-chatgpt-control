@@ -428,6 +428,7 @@ describe("attachFiles", () => {
             getAttribute: (name: string) => name === "accept" ? "*/*" : null
           };
           const composer = {
+            contains: (element: unknown) => element === composerInput,
             querySelectorAll: (selector: string) => selector === "input[type='file']" ? [composerInput] : []
           };
           const textbox = {
@@ -517,6 +518,7 @@ describe("attachFiles", () => {
         palettePattern = options["hasText"] as RegExp;
         return paletteItem;
       },
+      evaluate: async <T>() => true as T,
       click: async () => { paletteClicked = true; }
     };
     const messageLocator: LocatorLike = { count: async () => 0 };
@@ -551,10 +553,125 @@ describe("attachFiles", () => {
     expect(paletteClicked).toBe(true);
     expect(uploadedPaths).toEqual([file]);
     expect(palettePattern?.test("Añadir fotos y archivos")).toBe(true);
-    expect(plusScopeSource).toContain('prompt.closest("form")');
-    const promptClosestIndex = plusScopeSource.indexOf('prompt.closest("form")');
-    expect(promptClosestIndex)
-      .toBeLessThan(plusScopeSource.indexOf("[class*='composer' i]", promptClosestIndex));
+    expect(plusScopeSource).toContain('anchor.closest("form")');
+    const formBoundaryIndex = plusScopeSource.indexOf('anchor.closest("form")');
+    expect(formBoundaryIndex)
+      .toBeLessThan(plusScopeSource.indexOf("[class*='composer' i]", formBoundaryIndex));
+  });
+
+  it("uses the current accessible upload button and submits the exact manifest once", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-control-attach-accessible-menu-"));
+    const first = join(dir, "review-a.md");
+    const second = join(dir, "review-b.pdf");
+    await writeFile(first, "first");
+    await writeFile(second, "second");
+
+    let plusClicked = false;
+    let uploadButtonClicked = false;
+    let uploadButtonPattern: RegExp | undefined;
+    let uploadedPaths: string[] = [];
+    const missing: LocatorLike = { count: async () => 0 };
+    const hiddenInput: LocatorLike = {
+      count: async () => plusClicked ? 1 : 0,
+      isVisible: async () => false,
+      evaluate: async <T>() => true as T
+    };
+    const plusButton: LocatorLike = {
+      count: async () => 1,
+      click: async () => { plusClicked = true; },
+      evaluate: async <T>() => true as T
+    };
+    const uploadButton: LocatorLike = {
+      count: async () => plusClicked ? 1 : 0,
+      evaluate: async <T>() => true as T,
+      click: async () => { uploadButtonClicked = true; }
+    };
+    const messageLocator: LocatorLike = { count: async () => 0 };
+    const page: PageLike = {
+      locator: selector => {
+        if (selector.includes("input[type='file']")) return hiddenInput;
+        if (selector === "#composer-plus-btn, button[aria-label='Add files and more']") return plusButton;
+        if (selector.includes("data-message-author-role")) return messageLocator;
+        return missing;
+      },
+      getByRole: (role, options) => {
+        expect(role).toBe("button");
+        uploadButtonPattern = options?.name as RegExp;
+        expect(uploadButtonPattern.test("Add photos & files Upload from computer")).toBe(true);
+        return uploadButton;
+      },
+      waitForEvent: async () => ({
+        element: () => boundChooserElement(),
+        isMultiple: async () => true,
+        setFiles: async (paths: string[]) => { uploadedPaths = paths; }
+      }),
+      evaluate: async <T, A = unknown>(_fn: (arg: A) => T | Promise<T>, arg?: A): Promise<T> => {
+        if (arg !== null && typeof arg === "object" && "expectedFiles" in arg) {
+          return {
+            supported: true,
+            files: [{ name: "review-a.md", visible: true }, { name: "review-b.pdf", visible: true }],
+            processing: false
+          } as T;
+        }
+        return { supported: true, inputFiles: [], attachmentLabels: [] } as T;
+      },
+      waitForTimeout: async () => {},
+      title: async () => "ChatGPT",
+      url: () => "https://chatgpt.com/"
+    };
+
+    const result = await attachFiles({ page }, { paths: [first, second] });
+
+    expect(result.ok).toBe(true);
+    expect(plusClicked).toBe(true);
+    expect(uploadButtonClicked).toBe(true);
+    expect(uploadButtonPattern).toBeInstanceOf(RegExp);
+    expect(uploadedPaths).toEqual([first, second]);
+  });
+
+  it("refuses a semantic upload button outside the active composer overlay", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-control-attach-foreign-menu-"));
+    const file = join(dir, "notes.txt");
+    await writeFile(file, "hello");
+
+    let uploadButtonClicks = 0;
+    let chooserRegistrations = 0;
+    let setFilesCalls = 0;
+    const missing: LocatorLike = { count: async () => 0 };
+    const foreignButton: LocatorLike = {
+      count: async () => 1,
+      evaluate: async <T>() => false as T,
+      click: async () => { uploadButtonClicks += 1; }
+    };
+    const plusButton: LocatorLike = {
+      count: async () => 1,
+      evaluate: async <T>() => true as T,
+      click: async () => {}
+    };
+    const page: PageLike = {
+      locator: selector => selector.includes("input[type='file']")
+        ? missing
+        : selector === "#composer-plus-btn, button[aria-label='Add files and more']" ? plusButton : missing,
+      getByRole: () => foreignButton,
+      waitForEvent: async () => {
+        chooserRegistrations += 1;
+        return {
+          element: () => boundChooserElement(),
+          setFiles: async () => { setFilesCalls += 1; }
+        };
+      },
+      evaluate: async <T>(): Promise<T> => ({ supported: false, inputFiles: [], attachmentLabels: [] }) as T,
+      waitForTimeout: async () => {},
+      title: async () => "ChatGPT",
+      url: () => "https://chatgpt.com/"
+    };
+
+    const result = await attachFiles({ page }, { paths: [file], timeoutMs: 500 });
+
+    expect(result.ok).toBe(false);
+    expect(uploadButtonClicks).toBe(0);
+    expect(chooserRegistrations).toBe(0);
+    expect(setFilesCalls).toBe(0);
   });
 
   it("refuses an unrelated palette chooser before handing it any file", async () => {
@@ -577,6 +694,7 @@ describe("attachFiles", () => {
     const paletteItem: LocatorLike = {
       count: async () => plusClicked ? 1 : 0,
       filter: () => paletteItem,
+      evaluate: async <T>() => true as T,
       click: async () => {}
     };
     const missing: LocatorLike = { count: async () => 0, filter: () => missing };
@@ -1470,6 +1588,7 @@ describe("attachFiles", () => {
     const menuItem: LocatorLike = {
       count: async () => plusClicked ? 1 : 0,
       filter: () => menuItem,
+      evaluate: async <T>() => true as T,
       click: async () => {}
     };
 
